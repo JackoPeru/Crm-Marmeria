@@ -1,58 +1,60 @@
 const dgram = require('dgram');
 const os = require('os');
+const crypto = require('crypto');
 
 const DISCOVERY_PORT = 41234;
-const BROADCAST_ADDR = '255.255.255.255';
+const BROADCAST_ADDRESS = '255.255.255.255';
+const localAddresses = () => Object.values(os.networkInterfaces()).flat().filter((entry) => entry && entry.family === 'IPv4' && !entry.internal).map((entry) => entry.address);
 
-class Discovery {
-  constructor(serverPort) {
-    this.serverPort = serverPort;
-    this.peers = new Set();
+class DiscoveryAdvertiser {
+  constructor({ port, serverId, name = 'CRM Marmeria' }) {
+    this.port = Number(port);
+    this.serverId = serverId || crypto.randomUUID();
+    this.name = name;
+    this.socket = null;
+  }
+  start() {
+    if (this.socket) return;
     this.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-
-    this.socket.on('message', (message, rinfo) => {
-      const msg = JSON.parse(message.toString());
-      if (msg.type === 'crm-marmeria-discovery' && msg.port !== this.serverPort) {
-        const peer = `${rinfo.address}:${msg.port}`;
-        if (!this.peers.has(peer)) {
-          this.peers.add(peer);
-          console.log(`Discovered peer: ${peer}`);
-          // Optionally, send a response back
-          this.sendMessage({ type: 'crm-marmeria-response', port: this.serverPort }, rinfo.address, rinfo.port);
-        }
-      }
+    this.socket.on('message', (buffer, remote) => {
+      try {
+        const message = JSON.parse(buffer.toString());
+        if (message.type !== 'crm-marmeria-discover') return;
+        const response = Buffer.from(JSON.stringify({ type: 'crm-marmeria-master', serverId: this.serverId, name: this.name, port: this.port, hostname: os.hostname(), addresses: localAddresses() }));
+        this.socket.send(response, remote.port, remote.address);
+      } catch (error) { console.warn('Messaggio discovery ignorato:', error.message); }
     });
-
-    this.socket.on('listening', () => {
-      const address = this.socket.address();
-      console.log(`Discovery socket listening ${address.address}:${address.port}`);
-      this.socket.setBroadcast(true);
-      this.broadcast();
-    });
-
-    this.socket.bind(DISCOVERY_PORT);
-
-    setInterval(() => this.broadcast(), 60000); // Broadcast every minute
+    this.socket.bind(DISCOVERY_PORT, () => this.socket.setBroadcast(true));
   }
-
-  broadcast() {
-    const message = Buffer.from(JSON.stringify({ type: 'crm-marmeria-discovery', port: this.serverPort }));
-    this.socket.send(message, 0, message.length, DISCOVERY_PORT, BROADCAST_ADDR, (err) => {
-      if (err) console.error('Broadcast error:', err);
-      else console.log('Discovery message broadcasted');
-    });
-  }
-
-  sendMessage(msg, host, port) {
-    const message = Buffer.from(JSON.stringify(msg));
-    this.socket.send(message, 0, message.length, port, host, (err) => {
-      if (err) console.error(`Error sending message to ${host}:${port}`, err);
-    });
-  }
-
-  getPeers() {
-    return Array.from(this.peers);
+  stop() {
+    if (!this.socket) return;
+    this.socket.close();
+    this.socket = null;
   }
 }
 
-module.exports = Discovery;
+const discoverMasters = (timeoutMs = 1500) => new Promise((resolve) => {
+  const socket = dgram.createSocket('udp4');
+  const masters = new Map();
+  const finish = () => { try { socket.close(); } catch {} resolve([...masters.values()]); };
+  socket.on('message', (buffer, remote) => {
+    try {
+      const message = JSON.parse(buffer.toString());
+      if (message.type !== 'crm-marmeria-master') return;
+      const address = remote.address;
+      masters.set(message.serverId || `${address}:${message.port}`, { ...message, address, apiUrl: `http://${address}:${message.port}/api` });
+    } catch {}
+  });
+  socket.bind(0, () => {
+    socket.setBroadcast(true);
+    const request = Buffer.from(JSON.stringify({ type: 'crm-marmeria-discover' }));
+    socket.send(request, DISCOVERY_PORT, BROADCAST_ADDRESS);
+    for (const address of localAddresses()) {
+      const parts = address.split('.');
+      if (parts.length === 4) { parts[3] = '255'; socket.send(request, DISCOVERY_PORT, parts.join('.')); }
+    }
+  });
+  setTimeout(finish, timeoutMs);
+});
+
+module.exports = { DiscoveryAdvertiser, discoverMasters, localAddresses };
