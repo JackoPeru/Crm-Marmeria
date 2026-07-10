@@ -1,391 +1,286 @@
-import React, { useState, useEffect } from 'react';
-import { User, Bell, Globe, Palette, Sun, Moon, CalendarDays, Euro, DollarSign, PoundSterling, FileDigit, Printer, Database } from 'lucide-react'; // Icone per le sezioni
-
-// Componente Switch personalizzato con animazione
-const AnimatedSwitch = ({ id, checked, onChange, label }) => {
-  return (
-    <div className="flex items-center justify-between py-3">
-      <label htmlFor={id} className="text-gray-600 dark:text-gray-300 select-none cursor-pointer flex items-center">
-        {label}
-      </label>
-      <button
-        id={id}
-        onClick={onChange}
-        type="button"
-        className={`relative inline-flex items-center h-6 rounded-full w-11 transition-colors duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-dark-bg ${checked ? 'bg-indigo-600 focus:ring-indigo-500' : 'bg-gray-300 dark:bg-gray-600 focus:ring-gray-400'}`}
-      >
-        <span className="sr-only">{label}</span>
-        <span
-          className={`inline-block w-4 h-4 transform bg-white rounded-full transition-transform duration-300 ease-in-out ${checked ? 'translate-x-6' : 'translate-x-1'}`}
-        />
-        <span
-          className={`absolute inset-y-0 left-0 flex items-center justify-center w-5 h-full transition-opacity duration-300 ease-in-out ${checked ? 'opacity-0' : 'opacity-100'}`}
-        >
-          <Moon className="h-3 w-3 text-gray-500 ml-1" />
-        </span>
-        <span
-          className={`absolute inset-y-0 right-0 flex items-center justify-center w-5 h-full transition-opacity duration-300 ease-in-out ${checked ? 'opacity-100' : 'opacity-0'}`}
-        >
-          <Sun className="h-3 w-3 text-yellow-400 mr-1" />
-        </span>
-      </button>
-    </div>
-  );
-};
-
-
+import React, { useEffect, useState } from 'react';
+import {
+  Bell,
+  CalendarDays,
+  Database,
+  FileDigit,
+  Palette,
+  Printer,
+  User,
+} from 'lucide-react';
+import toast from 'react-hot-toast';
 import DataManager from '../components/DataManager';
 import useUI from '../hooks/useUI';
-import { useData } from '../hooks/useData';
+import { useAuth } from '../contexts/AuthContext';
+
+const AnimatedSwitch = ({ id, checked, onChange, label }) => (
+  <div className="flex items-center justify-between py-3">
+    <label htmlFor={id} className="text-gray-600 dark:text-gray-300 select-none cursor-pointer">
+      {label}
+    </label>
+    <button
+      id={id}
+      onClick={onChange}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${checked ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+    >
+      <span className="sr-only">{label}</span>
+      <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
+    </button>
+  </div>
+);
+
+const Section = ({ icon: Icon, title, iconClass, children }) => (
+  <section className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
+    <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
+      <Icon size={24} className={`mr-3 ${iconClass}`} /> {title}
+    </h3>
+    {children}
+  </section>
+);
 
 const SettingsPage = () => {
-  const { theme, userPreferences, changeTheme, updatePreferences, showNotification } = useUI();
-  const { dataState, updateUser } = useData();
-
-  const { user } = dataState;
-  
-  // Stato locale per le preferenze UI
-  const [uiPrefs, setUiPrefs] = useState({
-    darkMode: theme === 'dark',
-    notificationPrefs: userPreferences.notifications || {},
-    formattingPrefs: userPreferences.formatting || { dateFormat: 'DD/MM/YYYY', currencySymbol: '€' },
-    fiscalPrefs: userPreferences.fiscal || { vatNumber: '', taxCode: '', defaultTaxRate: 22 },
-    printPrefs: userPreferences.print || { logoUrl: '', printHeader: true, printFooter: true }
-  });
-  
-  const { darkMode, notificationPrefs, formattingPrefs, fiscalPrefs, printPrefs } = uiPrefs;
-
-  // Stato locale per le preferenze dati
-  const [dataPrefs, setDataPrefs] = useState({
-    customerCodePrefix: 'CLI-',
-    projectCodePrefix: 'PRJ-'
-  });
-
-  // Funzioni per aggiornare le preferenze
-  const updateDataPref = (key, value) => {
-    setDataPrefs(prev => ({ ...prev, [key]: value }));
-  };
-
-  const updateFormattingPref = (key, value) => {
-    const newFormattingPrefs = { ...formattingPrefs, [key]: value };
-    setUiPrefs(prev => ({ ...prev, formattingPrefs: newFormattingPrefs }));
-    updatePreferences({ formatting: newFormattingPrefs });
-  };
-
-  const updateFiscalPref = (key, value) => {
-    const newFiscalPrefs = { ...fiscalPrefs, [key]: value };
-    setUiPrefs(prev => ({ ...prev, fiscalPrefs: newFiscalPrefs }));
-    updatePreferences({ fiscal: newFiscalPrefs });
-  };
-
-  const updatePrintPref = (key, value) => {
-    const newPrintPrefs = { ...printPrefs, [key]: value };
-    setUiPrefs(prev => ({ ...prev, printPrefs: newPrintPrefs }));
-    updatePreferences({ print: newPrintPrefs });
-  };
-
-  // Funzioni mancanti per l'interfaccia
-  const toggleDarkMode = () => {
-    const newTheme = darkMode ? 'light' : 'dark';
-    changeTheme(newTheme);
-    setUiPrefs(prev => ({ ...prev, darkMode: !darkMode }));
-  };
-
-  const toggleNotificationPref = (key) => {
-    const newNotificationPrefs = { ...notificationPrefs, [key]: !notificationPrefs[key] };
-    setUiPrefs(prev => ({ ...prev, notificationPrefs: newNotificationPrefs }));
-    updatePreferences({ notifications: newNotificationPrefs });
-  };
-
-
-
-  // Stato per i dati del profilo utente
-  const [userProfile, setUserProfile] = useState({
+  const { theme, userPreferences, changeTheme, updatePreferences } = useUI();
+  const { user, updateUser } = useAuth();
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profile, setProfile] = useState({
     username: '',
-    email: ''
+    email: '',
+    firstName: '',
+    lastName: '',
   });
 
-  // Carica i dati del profilo utente dallo stato Redux
   useEffect(() => {
-    if (user) {
-      setUserProfile({
-        username: user.name || 'Mario Rossi',
-        email: user.email || 'mario.rossi@example.com'
-      });
-    }
+    if (!user) return;
+    setProfile({
+      username: user.username || '',
+      email: user.email || '',
+      firstName: user.firstName || '',
+      lastName: user.lastName || '',
+    });
   }, [user]);
 
-  // Sincronizza le preferenze UI con lo stato globale
-  useEffect(() => {
-    setUiPrefs(prev => ({
-      ...prev,
-      darkMode: theme === 'dark',
-      notificationPrefs: userPreferences.notifications || {},
-      formattingPrefs: userPreferences.formatting || { dateFormat: 'DD/MM/YYYY', currencySymbol: '€' },
-      fiscalPrefs: userPreferences.fiscal || { vatNumber: '', taxCode: '', defaultTaxRate: 22 },
-      printPrefs: userPreferences.print || { logoUrl: '', printHeader: true, printFooter: true }
-    }));
-  }, [theme, userPreferences]);
-
-
-
-  // Funzione per salvare il profilo utente
-  const saveUserProfile = () => {
-    updateUser(userProfile);
-    alert('Profilo utente salvato con successo!');
+  const notifications = userPreferences.notifications || {};
+  const formatting = userPreferences.formatting || {
+    dateFormat: 'DD/MM/YYYY',
+    currencySymbol: '€',
+  };
+  const fiscal = userPreferences.fiscal || {
+    vatNumber: '',
+    taxCode: '',
+    defaultTaxRate: 22,
+  };
+  const print = userPreferences.print || {
+    logoUrl: '',
+    printHeader: true,
+    printFooter: true,
+  };
+  const dataPreferences = userPreferences.data || {
+    customerCodePrefix: 'CLI-',
+    projectCodePrefix: 'PRJ-',
   };
 
-  // Funzione per aggiornare i campi del profilo
-  const updateUserProfile = (field, value) => {
-    setUserProfile(prev => ({
-      ...prev,
-      [field]: value
-    }));
+  const updateGroup = (group, key, value) => {
+    const current = userPreferences[group] || {};
+    updatePreferences({ [group]: { ...current, [key]: value } });
   };
 
+  const saveProfile = async () => {
+    const normalized = Object.fromEntries(
+      Object.entries(profile).map(([key, value]) => [key, String(value).trim()]),
+    );
+    if (!normalized.username || !normalized.email) {
+      toast.error('Username ed email sono obbligatori');
+      return;
+    }
 
+    setSavingProfile(true);
+    try {
+      await updateUser(normalized);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Aggiornamento profilo non riuscito');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   return (
     <div className="p-4 md:p-8 bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text min-h-screen">
-      <h2 className="text-3xl font-semibold mb-8 text-gray-800 dark:text-gray-100">Impostazioni Applicazione</h2>
+      <h2 className="text-3xl font-semibold mb-8 text-gray-800 dark:text-gray-100">
+        Impostazioni Applicazione
+      </h2>
 
-      {/* Sezione Aspetto */}
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <Palette size={24} className="mr-3 text-indigo-500" /> Aspetto
-        </h3>
-        <AnimatedSwitch 
+      <Section icon={Palette} title="Aspetto" iconClass="text-indigo-500">
+        <AnimatedSwitch
           id="darkMode"
-          checked={darkMode}
-          onChange={toggleDarkMode}
-          label="Tema Scuro"
+          checked={theme === 'dark'}
+          onChange={() => changeTheme(theme === 'dark' ? 'light' : 'dark')}
+          label="Tema scuro"
         />
-        <div className="border-b border-gray-200 dark:border-gray-700"></div>
-        {/* Altre impostazioni di aspetto qui */}
-      </div>
+      </Section>
 
-      {/* Sezione Profilo Utente */}
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <User size={24} className="mr-3 text-blue-500" /> Profilo Utente
-        </h3>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Nome Utente</label>
-            <input 
-              type="text" 
-              id="username" 
-              value={userProfile.username}
-              onChange={(e) => updateUserProfile('username', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500" 
-            />
-          </div>
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Email</label>
-            <input 
-              type="email" 
-              id="email" 
-              value={userProfile.email}
-              onChange={(e) => updateUserProfile('email', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500" 
-            />
-          </div>
-          <button 
-            onClick={saveUserProfile}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md"
-          >
-            Salva Modifiche Profilo
-          </button>
+      <Section icon={User} title="Profilo Utente" iconClass="text-blue-500">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {[
+            ['firstName', 'Nome'],
+            ['lastName', 'Cognome'],
+            ['username', 'Nome utente'],
+            ['email', 'Email'],
+          ].map(([field, label]) => (
+            <label key={field} className="block">
+              <span className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">
+                {label}
+              </span>
+              <input
+                type={field === 'email' ? 'email' : 'text'}
+                value={profile[field] || ''}
+                onChange={(event) => setProfile((previous) => ({
+                  ...previous,
+                  [field]: event.target.value,
+                }))}
+                className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700"
+              />
+            </label>
+          ))}
         </div>
-      </div>
+        <button
+          type="button"
+          onClick={() => void saveProfile()}
+          disabled={savingProfile}
+          className="mt-4 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white rounded-md"
+        >
+          {savingProfile ? 'Salvataggio...' : 'Salva modifiche profilo'}
+        </button>
+      </Section>
 
-      {/* Sezione Notifiche */}
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <Bell size={24} className="mr-3 text-green-500" /> Notifiche
-        </h3>
+      <Section icon={Bell} title="Notifiche" iconClass="text-green-500">
         <AnimatedSwitch
           id="emailNotifications"
-          checked={notificationPrefs.emailNewProjects}
-          onChange={() => toggleNotificationPref('emailNewProjects')}
-          label="Notifiche Email per Nuovi Progetti"
+          checked={Boolean(notifications.emailNewProjects)}
+          onChange={() => updateGroup(
+            'notifications',
+            'emailNewProjects',
+            !notifications.emailNewProjects,
+          )}
+          label="Notifiche email per nuovi progetti"
         />
-        <div className="border-b border-gray-200 dark:border-gray-700"></div>
+        <div className="border-b border-gray-200 dark:border-gray-700" />
         <AnimatedSwitch
           id="inAppNotifications"
-          checked={notificationPrefs.inAppDeadlines}
-          onChange={() => toggleNotificationPref('inAppDeadlines')}
-          label="Notifiche In-App per Scadenze"
+          checked={Boolean(notifications.inAppDeadlines)}
+          onChange={() => updateGroup(
+            'notifications',
+            'inAppDeadlines',
+            !notifications.inAppDeadlines,
+          )}
+          label="Notifiche nell’app per le scadenze"
         />
-      </div>
+      </Section>
 
-
-
-      {/* Sezione Gestione Dati */}
       <DataManager />
 
-      {/* Sezione Preferenze Dati */}
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <Database size={24} className="mr-3 text-purple-500" /> Preferenze Dati
-        </h3>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="customerCodePrefix" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Prefisso Codice Cliente</label>
-            <input 
-              type="text" 
-              id="customerCodePrefix" 
-              value={dataPrefs.customerCodePrefix}
-              onChange={(e) => updateDataPref('customerCodePrefix', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
+      <Section icon={Database} title="Preferenze Dati" iconClass="text-purple-500">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">Prefisso codice cliente</span>
+            <input
+              value={dataPreferences.customerCodePrefix || ''}
+              onChange={(event) => updateGroup('data', 'customerCodePrefix', event.target.value)}
+              className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700"
             />
-          </div>
-          <div>
-            <label htmlFor="projectCodePrefix" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Prefisso Codice Progetto</label>
-            <input 
-              type="text" 
-              id="projectCodePrefix" 
-              value={dataPrefs.projectCodePrefix}
-              onChange={(e) => updateDataPref('projectCodePrefix', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">Prefisso codice progetto</span>
+            <input
+              value={dataPreferences.projectCodePrefix || ''}
+              onChange={(event) => updateGroup('data', 'projectCodePrefix', event.target.value)}
+              className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700"
             />
-          </div>
+          </label>
         </div>
-      </div>
+      </Section>
 
-      {/* Sezione Preferenze di Formattazione */}
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <CalendarDays size={24} className="mr-3 text-teal-500" /> Preferenze di Formattazione
-        </h3>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="dateFormat" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Formato Data</label>
-            <select 
-              id="dateFormat" 
-              value={formattingPrefs.dateFormat}
-              onChange={(e) => updateFormattingPref('dateFormat', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
+      <Section icon={CalendarDays} title="Formattazione" iconClass="text-teal-500">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">Formato data</span>
+            <select
+              value={formatting.dateFormat || 'DD/MM/YYYY'}
+              onChange={(event) => updateGroup('formatting', 'dateFormat', event.target.value)}
+              className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700"
             >
-              <option value="dd/MM/yyyy">GG/MM/AAAA (es. 31/12/2023)</option>
-              <option value="MM/dd/yyyy">MM/GG/AAAA (es. 12/31/2023)</option>
-              <option value="yyyy-MM-dd">AAAA-MM-GG (es. 2023-12-31)</option>
-              <option value="dd MMM yyyy">GG MMM AAAA (es. 31 Dic 2023)</option>
+              <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+              <option value="YYYY-MM-DD">YYYY-MM-DD</option>
             </select>
-          </div>
-          <div>
-            <label htmlFor="currencySymbol" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Simbolo Valuta</label>
-            <select 
-              id="currencySymbol" 
-              value={formattingPrefs.currencySymbol}
-              onChange={(e) => updateFormattingPref('currencySymbol', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">Valuta</span>
+            <select
+              value={formatting.currencySymbol || '€'}
+              onChange={(event) => updateGroup('formatting', 'currencySymbol', event.target.value)}
+              className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700"
             >
               <option value="€">Euro (€)</option>
               <option value="$">Dollaro ($)</option>
               <option value="£">Sterlina (£)</option>
             </select>
-          </div>
+          </label>
         </div>
-      </div>
+      </Section>
 
-      {/* Sezione Impostazioni Fiscali */}
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <FileDigit size={24} className="mr-3 text-orange-500" /> Impostazioni Fiscali
-        </h3>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="vatNumber" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Partita IVA</label>
-            <input 
-              type="text" 
-              id="vatNumber" 
-              value={fiscalPrefs.vatNumber}
-              onChange={(e) => updateFiscalPref('vatNumber', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
+      <Section icon={FileDigit} title="Dati Fiscali" iconClass="text-orange-500">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">Partita IVA</span>
+            <input
+              value={fiscal.vatNumber || ''}
+              onChange={(event) => updateGroup('fiscal', 'vatNumber', event.target.value)}
+              className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700"
             />
-          </div>
-          <div>
-            <label htmlFor="taxCode" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Codice Fiscale</label>
-            <input 
-              type="text" 
-              id="taxCode" 
-              value={fiscalPrefs.taxCode}
-              onChange={(e) => updateFiscalPref('taxCode', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">Codice fiscale</span>
+            <input
+              value={fiscal.taxCode || ''}
+              onChange={(event) => updateGroup('fiscal', 'taxCode', event.target.value)}
+              className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700"
             />
-          </div>
-          <div>
-            <label htmlFor="defaultTaxRate" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Aliquota IVA Predefinita (%)</label>
-            <input 
-              type="number" 
-              id="defaultTaxRate" 
-              value={fiscalPrefs.defaultTaxRate}
-              onChange={(e) => updateFiscalPref('defaultTaxRate', e.target.value)}
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">IVA predefinita (%)</span>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={fiscal.defaultTaxRate ?? 22}
+              onChange={(event) => updateGroup(
+                'fiscal',
+                'defaultTaxRate',
+                Number(event.target.value),
+              )}
+              className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700"
             />
-          </div>
+          </label>
         </div>
-      </div>
+      </Section>
 
-      {/* Sezione Impostazioni di Stampa */}
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <Printer size={24} className="mr-3 text-cyan-500" /> Impostazioni di Stampa
-        </h3>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="logoUrl" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">URL Logo Aziendale (per stampe)</label>
-            <input 
-              type="text" 
-              id="logoUrl" 
-              value={printPrefs.logoUrl}
-              onChange={(e) => updatePrintPref('logoUrl', e.target.value)}
-              placeholder="https://esempio.com/logo.png"
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-          </div>
-          <div>
-            <label htmlFor="printHeader" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Intestazione Predefinita Stampe</label>
-            <textarea 
-              id="printHeader" 
-              rows="3"
-              value={printPrefs.printHeader}
-              onChange={(e) => updatePrintPref('printHeader', e.target.value)}
-              placeholder="Testo da visualizzare nell'intestazione dei documenti stampati..."
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-          </div>
-          <div>
-            <label htmlFor="printFooter" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Piè di Pagina Predefinito Stampe</label>
-            <textarea 
-              id="printFooter" 
-              rows="3"
-              value={printPrefs.printFooter}
-              onChange={(e) => updatePrintPref('printFooter', e.target.value)}
-              placeholder="Testo da visualizzare nel piè di pagina dei documenti stampati (es. Ragione Sociale, P.IVA, Contatti)..."
-              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Sezione Lingua e Regione (Placeholder) */}
-      <div className="p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-        <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
-          <Globe size={24} className="mr-3 text-yellow-500" /> Lingua e Regione
-        </h3>
-        <div>
-          <label htmlFor="language" className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Lingua</label>
-          <select id="language" className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 focus:ring-indigo-500 focus:border-indigo-500">
-            <option>Italiano</option>
-            <option>English (Placeholder)</option>
-          </select>
-        </div>
-        <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
-          Altre impostazioni regionali e di lingua verranno aggiunte qui.
-        </p>
-      </div>
+      <Section icon={Printer} title="Stampa" iconClass="text-pink-500">
+        <AnimatedSwitch
+          id="printHeader"
+          checked={Boolean(print.printHeader)}
+          onChange={() => updateGroup('print', 'printHeader', !print.printHeader)}
+          label="Mostra intestazione"
+        />
+        <div className="border-b border-gray-200 dark:border-gray-700" />
+        <AnimatedSwitch
+          id="printFooter"
+          checked={Boolean(print.printFooter)}
+          onChange={() => updateGroup('print', 'printFooter', !print.printFooter)}
+          label="Mostra piè di pagina"
+        />
+      </Section>
     </div>
   );
 };
