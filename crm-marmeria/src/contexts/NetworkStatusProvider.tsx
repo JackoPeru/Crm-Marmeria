@@ -1,6 +1,16 @@
-import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
+import { cacheService } from '../services/cache';
 import { offlineQueue } from '../services/offlineQueue';
 import { realtimeService } from '../services/realtime';
 
@@ -14,6 +24,7 @@ interface NetworkStatus {
   queuedOperations: number;
   realtimeStatus: 'disconnected' | 'connecting' | 'connected';
 }
+
 interface NetworkStatusContextType {
   networkStatus: NetworkStatus;
   checkConnection: () => Promise<boolean>;
@@ -22,10 +33,14 @@ interface NetworkStatusContextType {
   exitOfflineMode: () => void;
   isForceOffline: boolean;
 }
+
 const NetworkStatusContext = createContext<NetworkStatusContextType | undefined>(undefined);
 
 export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [isForceOffline, setIsForceOffline] = useState(() => localStorage.getItem('forceOfflineMode') === 'true');
+  const [isForceOffline, setIsForceOffline] = useState(
+    () => localStorage.getItem('forceOfflineMode') === 'true',
+  );
+  const forceOfflineRef = useRef(isForceOffline);
   const [networkStatus, setNetworkStatus] = useState<NetworkStatus>({
     isOnline: navigator.onLine,
     isOffline: !navigator.onLine,
@@ -38,12 +53,16 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
   });
 
   const refreshQueueCount = useCallback(async () => {
-    const queuedOperations = await offlineQueue.count();
-    setNetworkStatus((previous) => ({ ...previous, queuedOperations }));
+    try {
+      const queuedOperations = await offlineQueue.count();
+      setNetworkStatus((previous) => ({ ...previous, queuedOperations }));
+    } catch (error) {
+      console.error('Conteggio coda offline fallito:', error);
+    }
   }, []);
 
   const checkConnection = useCallback(async (): Promise<boolean> => {
-    if (isForceOffline || !navigator.onLine) {
+    if (forceOfflineRef.current || !navigator.onLine) {
       setNetworkStatus((previous) => ({
         ...previous,
         isOnline: false,
@@ -55,6 +74,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       await refreshQueueCount();
       return false;
     }
+
     const reachable = await apiClient.checkHealth();
     setNetworkStatus((previous) => ({
       ...previous,
@@ -65,19 +85,34 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       lastOnline: reachable ? new Date() : previous.lastOnline,
       lastOffline: reachable ? previous.lastOffline : new Date(),
     }));
-    if (reachable) realtimeService.connectFromStorage();
-    else realtimeService.disconnect(false);
+
+    if (reachable && localStorage.getItem('crm_auth_token')) {
+      realtimeService.connectFromStorage();
+    } else {
+      realtimeService.disconnect(false);
+    }
     await refreshQueueCount();
     return reachable;
-  }, [isForceOffline, refreshQueueCount]);
+  }, [refreshQueueCount]);
 
   const setApiUrl = useCallback(async (url: string) => {
+    const previousUrl = apiClient.getBaseURL();
     apiClient.setBaseURL(url);
-    setNetworkStatus((previous) => ({ ...previous, apiUrl: apiClient.getBaseURL() }));
+    const nextUrl = apiClient.getBaseURL();
+    if (previousUrl !== nextUrl) {
+      realtimeService.disconnect();
+      await Promise.allSettled([
+        cacheService.clear('customers'),
+        cacheService.clear('materials'),
+      ]);
+      window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
+    }
+    setNetworkStatus((previous) => ({ ...previous, apiUrl: nextUrl }));
     return checkConnection();
   }, [checkConnection]);
 
   const forceOfflineMode = useCallback(() => {
+    forceOfflineRef.current = true;
     setIsForceOffline(true);
     localStorage.setItem('forceOfflineMode', 'true');
     realtimeService.disconnect();
@@ -92,6 +127,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
   }, []);
 
   const exitOfflineMode = useCallback(() => {
+    forceOfflineRef.current = false;
     setIsForceOffline(false);
     localStorage.setItem('forceOfflineMode', 'false');
     void checkConnection();
@@ -104,7 +140,10 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
           const result = await window.electronAPI.network.getPreferences();
           if (result.success && result.prefs?.apiUrl) {
             apiClient.setBaseURL(result.prefs.apiUrl);
-            setNetworkStatus((previous) => ({ ...previous, apiUrl: result.prefs?.apiUrl || previous.apiUrl }));
+            setNetworkStatus((previous) => ({
+              ...previous,
+              apiUrl: result.prefs?.apiUrl || previous.apiUrl,
+            }));
           }
         } catch (error) {
           console.error('Caricamento configurazione rete fallito:', error);
@@ -112,6 +151,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       }
       await checkConnection();
     };
+
     const online = () => void checkConnection();
     const offline = () => {
       realtimeService.disconnect();
@@ -130,12 +170,18 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       }));
     };
     const apiChanged = () => void checkConnection();
+    const authChanged = () => {
+      void refreshQueueCount();
+      if (localStorage.getItem('crm_auth_token')) void checkConnection();
+      else realtimeService.disconnect();
+    };
     const queueChanged = () => void refreshQueueCount();
 
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
     window.addEventListener('crm-realtime-status', realtimeStatus);
     window.addEventListener('crm-api-url-changed', apiChanged);
+    window.addEventListener('crm-auth-changed', authChanged);
     window.addEventListener('crm-offline-queue-changed', queueChanged);
     void initialize();
     const interval = window.setInterval(checkConnection, 10000);
@@ -147,6 +193,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       window.removeEventListener('offline', offline);
       window.removeEventListener('crm-realtime-status', realtimeStatus);
       window.removeEventListener('crm-api-url-changed', apiChanged);
+      window.removeEventListener('crm-auth-changed', authChanged);
       window.removeEventListener('crm-offline-queue-changed', queueChanged);
     };
   }, [checkConnection, refreshQueueCount]);
@@ -158,9 +205,20 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
     forceOfflineMode,
     exitOfflineMode,
     isForceOffline,
-  }), [networkStatus, checkConnection, setApiUrl, forceOfflineMode, exitOfflineMode, isForceOffline]);
+  }), [
+    networkStatus,
+    checkConnection,
+    setApiUrl,
+    forceOfflineMode,
+    exitOfflineMode,
+    isForceOffline,
+  ]);
 
-  return <NetworkStatusContext.Provider value={value}>{children}</NetworkStatusContext.Provider>;
+  return (
+    <NetworkStatusContext.Provider value={value}>
+      {children}
+    </NetworkStatusContext.Provider>
+  );
 };
 
 export const useNetworkStatus = () => {
@@ -168,7 +226,9 @@ export const useNetworkStatus = () => {
   if (!context) throw new Error('useNetworkStatus deve essere utilizzato dentro NetworkStatusProvider');
   return context;
 };
+
 export const useIsOnline = () => useNetworkStatus().networkStatus.isOnline;
+
 export const useConnectionInfo = () => {
   const { networkStatus } = useNetworkStatus();
   return {
@@ -179,4 +239,5 @@ export const useConnectionInfo = () => {
     quality: networkStatus.serverReachable ? 'good' : 'poor',
   };
 };
+
 export default NetworkStatusProvider;
