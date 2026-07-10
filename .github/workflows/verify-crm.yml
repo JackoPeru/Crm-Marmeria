@@ -32,7 +32,7 @@ jobs:
       - name: Install standalone server dependencies
         run: npm install --prefix server
 
-      - name: Check server syntax
+      - name: Check Node and Electron syntax
         run: |
           node --check server/index.js
           node --check server/app.js
@@ -43,6 +43,10 @@ jobs:
           node --check electron/server.cjs
           node --check electron/discovery.cjs
           node --check electron/preload.cjs
+          node --check electron/native-smoke.cjs
+
+      - name: Typecheck TypeScript
+        run: npm run typecheck
 
       - name: Test SQLite create
         run: node server/smoke-test.js create
@@ -53,11 +57,17 @@ jobs:
       - name: Test SQLite conflict detection
         run: node server/smoke-test.js conflict
 
-      - name: Test SQLite snapshot backup
+      - name: Test data integrity and attachments
+        run: node server/smoke-test.js integrity
+
+      - name: Test SQLite snapshot backup and restore
         run: node server/smoke-test.js snapshot
 
-      - name: Test central server health
+      - name: Test central server permissions and realtime
         run: node server/smoke-test.js server
+
+      - name: Test Electron native modules
+        run: xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
 
       - name: Build frontend
         run: npm run build
