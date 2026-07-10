@@ -7,6 +7,7 @@ interface ReplayConfig extends AxiosRequestConfig {
 }
 const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
 const ENTITY_CREATE = /^\/(clients|orders|projects|materials|quotes|invoices)\/?$/;
+const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|quotes|invoices)(\/[^/?]+(\/status)?)?\/?$/;
 const operationId = () => crypto.randomUUID();
 
 class ApiClient {
@@ -63,6 +64,7 @@ class ApiClient {
       async (error) => {
         const config = (error.config || {}) as ReplayConfig & { headers?: Record<string, string> };
         const method = String(config.method || 'get').toLowerCase();
+        const url = String(config.url || '');
         const status = error.response?.status;
 
         if (status === 401) {
@@ -85,9 +87,9 @@ class ApiClient {
           || !error.response;
         const canQueue = isNetworkFailure
           && MUTATING.has(method)
+          && QUEUEABLE_MUTATION.test(url)
           && !config._replay
-          && !(config.data instanceof FormData)
-          && !String(config.url || '').startsWith('/auth/');
+          && !(config.data instanceof FormData);
 
         if (canQueue) {
           let data = config.data;
@@ -98,7 +100,7 @@ class ApiClient {
           await offlineQueue.add({
             id,
             method: method as 'post' | 'put' | 'patch' | 'delete',
-            url: String(config.url),
+            url,
             data,
             headers: {
               'X-Operation-Id': id,
@@ -112,7 +114,7 @@ class ApiClient {
           });
           const optimistic = {
             ...(typeof data === 'object' && data ? data : {}),
-            id: (data as any)?.id || String(config.url || '').split('/').filter(Boolean).pop(),
+            id: (data as any)?.id || url.split('/').filter(Boolean).pop(),
             _queued: true,
           };
           return {
