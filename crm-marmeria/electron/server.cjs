@@ -10,12 +10,17 @@ const { upgradeLegacySnapshots } = require('../server/snapshot-compat');
 // e una per il server Node standalone. Durante l'esecuzione Electron i moduli
 // nativi devono sempre provenire dal node_modules principale.
 const rootRequire = Module.createRequire(path.join(__dirname, '../package.json'));
+const electronNativeModules = {
+  'better-sqlite3': rootRequire.resolve('better-sqlite3'),
+  bcrypt: rootRequire.resolve('bcrypt'),
+};
 const originalLoad = Module._load;
 let createCrmServer;
 try {
   Module._load = function loadElectronNativeModule(request, parent, isMain) {
-    if (request === 'better-sqlite3' || request === 'bcrypt') {
-      return rootRequire(request);
+    const resolvedNativeModule = electronNativeModules[request];
+    if (resolvedNativeModule) {
+      return originalLoad.call(this, resolvedNativeModule, parent, isMain);
     }
     return originalLoad.call(this, request, parent, isMain);
   };
