@@ -2,137 +2,83 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
-// Chiave segreta per JWT (in produzione dovrebbe essere in variabile d'ambiente)
-const JWT_SECRET = process.env.JWT_SECRET || 'crm_marmeria_secret_key_2024';
+let dataDirectory = path.join(__dirname, '../data');
+let jwtSecret = process.env.JWT_SECRET || null;
+const seedUsersPath = path.join(__dirname, '../data/users.json');
 const JWT_EXPIRES_IN = '24h';
 
-// Funzione per leggere gli utenti
-const readUsers = () => {
-  const filePath = path.join(__dirname, '../data/users.json');
-  if (!fs.existsSync(filePath)) {
-    return [];
+const configureAuth = ({ dataDir }) => {
+  dataDirectory = dataDir || dataDirectory;
+  fs.mkdirSync(dataDirectory, { recursive: true });
+  const usersPath = path.join(dataDirectory, 'users.json');
+  if (!fs.existsSync(usersPath)) {
+    if (fs.existsSync(seedUsersPath) && path.resolve(seedUsersPath) !== path.resolve(usersPath)) fs.copyFileSync(seedUsersPath, usersPath);
+    else fs.writeFileSync(usersPath, '[]');
   }
+  if (!jwtSecret) {
+    const secretPath = path.join(dataDirectory, '.jwt-secret');
+    if (!fs.existsSync(secretPath)) fs.writeFileSync(secretPath, crypto.randomBytes(48).toString('hex'));
+    jwtSecret = fs.readFileSync(secretPath, 'utf8').trim();
+  }
+};
+
+const usersFile = () => path.join(dataDirectory, 'users.json');
+const readUsers = () => {
   try {
-    const data = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(data);
+    if (!fs.existsSync(usersFile())) return [];
+    const users = JSON.parse(fs.readFileSync(usersFile(), 'utf8'));
+    return Array.isArray(users) ? users : [];
   } catch (error) {
     console.error('Errore lettura utenti:', error);
     return [];
   }
 };
-
-// Funzione per scrivere gli utenti
 const writeUsers = (users) => {
-  const filePath = path.join(__dirname, '../data/users.json');
+  const filePath = usersFile();
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(filePath, JSON.stringify(users, null, 2));
+    fs.writeFileSync(temporary, JSON.stringify(users, null, 2));
+    fs.renameSync(temporary, filePath);
     return true;
   } catch (error) {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
     console.error('Errore scrittura utenti:', error);
     return false;
   }
 };
-
-// Middleware per verificare il token JWT
+const verifyToken = (token) => {
+  if (!token || !jwtSecret) return null;
+  try {
+    const payload = jwt.verify(token, jwtSecret);
+    return readUsers().find((user) => String(user.id) === String(payload.id) && user.isActive) || null;
+  } catch { return null; }
+};
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-  if (!token) {
-    return res.status(401).json({ error: 'Token di accesso richiesto' });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: 'Token non valido' });
-    }
-    
-    // Verifica che l'utente esista ancora e sia attivo
-    const users = readUsers();
-    const currentUser = users.find(u => u.id === user.id && u.isActive);
-    
-    if (!currentUser) {
-      return res.status(403).json({ error: 'Utente non trovato o disattivato' });
-    }
-    
-    req.user = currentUser;
-    next();
-  });
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Token di accesso richiesto' });
+  const user = verifyToken(token);
+  if (!user) return res.status(403).json({ error: 'Token non valido o utente disattivato' });
+  req.user = user;
+  next();
 };
-
-// Middleware per verificare i permessi
-const requirePermission = (permission) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Autenticazione richiesta' });
-    }
-    
-    if (!req.user.permissions.includes(permission)) {
-      return res.status(403).json({ error: 'Permessi insufficienti' });
-    }
-    
-    next();
-  };
+const requirePermission = (permission) => (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: 'Autenticazione richiesta' });
+  if (!Array.isArray(req.user.permissions) || !req.user.permissions.includes(permission)) return res.status(403).json({ error: 'Permessi insufficienti' });
+  next();
 };
-
-// Middleware per verificare il ruolo
 const requireRole = (roles) => {
-  const roleArray = Array.isArray(roles) ? roles : [roles];
-  
+  const allowed = Array.isArray(roles) ? roles : [roles];
   return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Autenticazione richiesta' });
-    }
-    
-    if (!roleArray.includes(req.user.role)) {
-      return res.status(403).json({ error: 'Ruolo insufficiente' });
-    }
-    
+    if (!req.user) return res.status(401).json({ error: 'Autenticazione richiesta' });
+    if (!allowed.includes(req.user.role)) return res.status(403).json({ error: 'Ruolo insufficiente' });
     next();
   };
 };
+const generateToken = (user) => jwt.sign({ id: String(user.id) }, jwtSecret, { expiresIn: JWT_EXPIRES_IN });
+const hashPassword = (password) => bcrypt.hash(password, 10);
+const verifyPassword = (password, hashedPassword) => bcrypt.compare(password, hashedPassword);
+const findUserByCredentials = (identifier) => readUsers().find((user) => (user.username === identifier || user.email === identifier) && user.isActive);
 
-// Funzione per generare token JWT
-const generateToken = (user) => {
-  const payload = {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    role: user.role,
-    permissions: user.permissions
-  };
-  
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-};
-
-// Funzione per hash della password
-const hashPassword = async (password) => {
-  const saltRounds = 10;
-  return await bcrypt.hash(password, saltRounds);
-};
-
-// Funzione per verificare la password
-const verifyPassword = async (password, hashedPassword) => {
-  return await bcrypt.compare(password, hashedPassword);
-};
-
-// Funzione per trovare utente per username/email
-const findUserByCredentials = (identifier) => {
-  const users = readUsers();
-  return users.find(user => 
-    (user.username === identifier || user.email === identifier) && user.isActive
-  );
-};
-
-module.exports = {
-  authenticateToken,
-  requirePermission,
-  requireRole,
-  generateToken,
-  hashPassword,
-  verifyPassword,
-  findUserByCredentials,
-  readUsers,
-  writeUsers
-};
+module.exports = { configureAuth, authenticateToken, requirePermission, requireRole, generateToken, hashPassword, verifyPassword, verifyToken, findUserByCredentials, readUsers, writeUsers };
