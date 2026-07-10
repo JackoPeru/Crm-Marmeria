@@ -33,98 +33,26 @@ jobs:
           node --check server/app.js
           node --check server/database.js
           node --check server/middleware/auth.js
+          node --check server/smoke-test.js
           node --check electron/main.cjs
           node --check electron/server.cjs
           node --check electron/discovery.cjs
           node --check electron/preload.cjs
 
-      - name: Test SQLite CRUD and conflicts
-        run: |
-          node <<'NODE'
-          const assert = require('assert');
-          const fs = require('fs');
-          const os = require('os');
-          const path = require('path');
-          const { CrmDatabase } = require('./server/database');
-          const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-marmeria-crud-'));
-          const db = new CrmDatabase({
-            dataDir: path.join(root, 'data'),
-            backupDir: path.join(root, 'backups'),
-            attachmentsDir: path.join(root, 'attachments'),
-          });
-          const user = { id: 'ci', username: 'ci' };
-          const created = db.create('project', { name: 'Test CI', status: 'In Attesa' }, user, 'ci-create');
-          assert.equal(created.item.version, 1, 'La creazione deve partire dalla versione 1');
-          const updated = db.update('project', created.item.id, { status: 'Completato' }, 1, user, 'ci-update');
-          assert.equal(updated.item.version, 2, 'L’aggiornamento deve incrementare la versione');
-          let conflictDetected = false;
-          try {
-            db.update('project', created.item.id, { status: 'In Corso' }, 1, user, 'ci-conflict');
-          } catch (error) {
-            conflictDetected = error.status === 409;
-          }
-          assert.equal(conflictDetected, true, 'Una versione obsoleta deve produrre conflitto 409');
-          db.close();
-          fs.rmSync(root, { recursive: true, force: true });
-          NODE
+      - name: Test SQLite create
+        run: node server/smoke-test.js create
+
+      - name: Test SQLite update
+        run: node server/smoke-test.js update
+
+      - name: Test SQLite conflict detection
+        run: node server/smoke-test.js conflict
 
       - name: Test SQLite snapshot backup
-        run: |
-          node <<'NODE'
-          const assert = require('assert');
-          const fs = require('fs');
-          const os = require('os');
-          const path = require('path');
-          const { CrmDatabase } = require('./server/database');
-          (async () => {
-            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-marmeria-backup-'));
-            const db = new CrmDatabase({
-              dataDir: path.join(root, 'data'),
-              backupDir: path.join(root, 'backups'),
-              attachmentsDir: path.join(root, 'attachments'),
-            });
-            db.create('project', { name: 'Backup CI' }, { id: 'ci', username: 'ci' }, 'backup-create');
-            const snapshot = await db.createSnapshot('ci');
-            assert.ok(snapshot.name, 'Il backup deve restituire un nome');
-            assert.ok(fs.existsSync(path.join(root, 'backups', snapshot.name, 'crm-marmeria.db')), 'Il file SQLite del backup deve esistere');
-            assert.ok(db.listSnapshots().some((item) => item.name === snapshot.name), 'Il backup deve essere elencato');
-            db.close();
-            fs.rmSync(root, { recursive: true, force: true });
-          })().catch((error) => {
-            console.error(error);
-            process.exit(1);
-          });
-          NODE
+        run: node server/smoke-test.js snapshot
 
       - name: Test central server health
-        run: |
-          node <<'NODE'
-          const assert = require('assert');
-          const fs = require('fs');
-          const os = require('os');
-          const path = require('path');
-          const { createCrmServer } = require('./server/app');
-          (async () => {
-            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-marmeria-server-'));
-            const instance = await createCrmServer({
-              port: 32123,
-              host: '127.0.0.1',
-              dataDir: path.join(root, 'data'),
-              backupDir: path.join(root, 'backups'),
-              attachmentsDir: path.join(root, 'attachments'),
-              serverName: 'CI',
-            });
-            const response = await fetch('http://127.0.0.1:32123/api/health');
-            assert.equal(response.ok, true, 'L’endpoint health deve rispondere');
-            const body = await response.json();
-            assert.equal(body.mode, 'central-server');
-            await instance.close();
-            fs.rmSync(root, { recursive: true, force: true });
-          })().catch((error) => {
-            console.error(error);
-            process.exit(1);
-          });
-          NODE
+        run: node server/smoke-test.js server
 
       - name: Build frontend
         run: npm run build
