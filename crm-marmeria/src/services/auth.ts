@@ -40,7 +40,9 @@ class AuthService {
       this.setUser(data.user);
       return data;
     } catch (error: any) {
-      const message = error?.response?.data?.error || error?.message || 'Errore durante il login';
+      const message = error?.response?.data?.error
+        || error?.message
+        || 'Errore durante il login';
       throw new Error(message);
     }
   }
@@ -62,7 +64,9 @@ class AuthService {
       this.setUser(user);
       return user;
     } catch (error: any) {
-      const message = error?.response?.data?.error || error?.message || 'Errore durante l’aggiornamento del profilo';
+      const message = error?.response?.data?.error
+        || error?.message
+        || 'Errore durante l’aggiornamento del profilo';
       throw new Error(message);
     }
   }
@@ -142,7 +146,11 @@ class AuthService {
         this.clearAuth();
         return false;
       }
-      if (error?.code === 'ERR_NETWORK' || !error?.response) {
+      if (
+        error?.code === 'ERR_NETWORK'
+        || error?.code === 'ECONNABORTED'
+        || !error?.response
+      ) {
         return Boolean(this.getUser());
       }
       return false;
