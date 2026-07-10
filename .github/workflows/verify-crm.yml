@@ -1,0 +1,42 @@
+name: Verify CRM Marmeria
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches:
+      - fix/core-reliability-2026-07
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: crm-marmeria/package.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Check server syntax
+        run: |
+          node --check server/index.js
+          node --check server/app.js
+          node --check server/database.js
+          node --check server/middleware/auth.js
+          node --check electron/main.cjs
+          node --check electron/server.cjs
+          node --check electron/discovery.cjs
+          node --check electron/preload.cjs
+
+      - name: Build frontend
+        run: npm run build
