@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { authService, User, LoginCredentials, ProfileUpdate } from '../services/auth';
 import toast from 'react-hot-toast';
+import { authService, User, LoginCredentials, ProfileUpdate } from '../services/auth';
+import { cacheService } from '../services/cache';
+import { realtimeService } from '../services/realtime';
 
 interface AuthContextType {
   user: User | null;
@@ -16,6 +18,13 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const clearAccountScopedCaches = async () => {
+  await Promise.allSettled([
+    cacheService.clear('customers'),
+    cacheService.clear('materials'),
+  ]);
+};
+
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -30,7 +39,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         if (token && localUser) {
           const valid = await authService.validateToken();
-          if (mounted) setUser(valid ? authService.getUser() : null);
+          if (mounted) {
+            const validatedUser = valid ? authService.getUser() : null;
+            setUser(validatedUser);
+            if (validatedUser) realtimeService.connectFromStorage();
+          }
         } else if (mounted) {
           setUser(null);
         }
@@ -42,17 +55,31 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
     };
 
-    initialize();
+    const handleExpiredSession = () => {
+      authService.clearAuth();
+      realtimeService.disconnect();
+      setUser(null);
+      void clearAccountScopedCaches();
+      window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
+      toast.error('Sessione scaduta. Accedi nuovamente.', { id: 'session-expired' });
+    };
+
+    window.addEventListener('crm-auth-expired', handleExpiredSession);
+    void initialize();
     return () => {
       mounted = false;
+      window.removeEventListener('crm-auth-expired', handleExpiredSession);
     };
   }, []);
 
   const login = async (credentials: LoginCredentials): Promise<void> => {
     setIsLoading(true);
     try {
+      await clearAccountScopedCaches();
       const response = await authService.login(credentials);
       setUser(response.user);
+      realtimeService.connectFromStorage();
+      window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: response.user }));
       toast.success(`Benvenuto, ${response.user.firstName}!`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Errore durante il login';
@@ -66,8 +93,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const logout = async (): Promise<void> => {
     setIsLoading(true);
     try {
+      realtimeService.disconnect();
       await authService.logout();
+      await clearAccountScopedCaches();
       setUser(null);
+      window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
       toast.success('Logout effettuato con successo');
     } finally {
       setIsLoading(false);
@@ -77,6 +107,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const updateUser = async (profile: ProfileUpdate): Promise<User> => {
     const updated = await authService.updateProfile(profile);
     setUser(updated);
+    window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: updated }));
     toast.success('Profilo aggiornato con successo');
     return updated;
   };
@@ -89,9 +120,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       login,
       logout,
       updateUser,
-      hasPermission: (permission) => authService.hasPermission(permission),
-      hasRole: (role) => authService.hasRole(role),
-      hasAnyRole: (roles) => authService.hasAnyRole(roles),
+      hasPermission: (permission) => user?.permissions.includes(permission) ?? false,
+      hasRole: (role) => user?.role === role,
+      hasAnyRole: (roles) => Boolean(user?.role && roles.includes(user.role)),
     }}>
       {children}
     </AuthContext.Provider>
