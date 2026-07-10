@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const Module = require('module');
 const { app } = require('electron');
 const { DiscoveryAdvertiser, discoverMasters, localAddresses } = require('./discovery.cjs');
+const { upgradeLegacySnapshots } = require('../server/snapshot-compat');
 
 // Il progetto contiene due installazioni distinte: una ricompilata per Electron
 // e una per il server Node standalone. Durante l'esecuzione Electron i moduli
@@ -148,6 +149,10 @@ class CentralCrmServer {
         serverName: 'CRM Marmeria',
         serverId: ownId,
       });
+      const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
+      if (upgradedSnapshots > 0) {
+        console.log(`Aggiornati ${upgradedSnapshots} snapshot legacy con gli account correnti`);
+      }
       this.port = this.instance.port;
       this.backupPath = backupDir;
       this.discovery = new DiscoveryAdvertiser({
