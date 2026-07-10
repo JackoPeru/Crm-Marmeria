@@ -18,13 +18,10 @@ class RealtimeService {
       .replace(/\/api\/?$/, '/ws');
     const target = `${websocketUrl}?token=${encodeURIComponent(token)}`;
 
-    if (
-      this.socket
-      && this.currentUrl === target
-      && [WebSocket.CONNECTING, WebSocket.OPEN].includes(this.socket.readyState)
-    ) {
-      return;
-    }
+    const hasActiveSocket = this.socket
+      && (this.socket.readyState === WebSocket.CONNECTING
+        || this.socket.readyState === WebSocket.OPEN);
+    if (hasActiveSocket && this.currentUrl === target) return;
 
     this.disconnect(false);
     this.shouldReconnect = true;
