@@ -46,7 +46,24 @@ jobs:
           node --check electron/native-smoke.cjs
 
       - name: Typecheck TypeScript
-        run: npm run typecheck
+        id: typecheck
+        continue-on-error: true
+        run: npm run typecheck > typecheck-report.txt 2>&1
+
+      - name: Upload TypeScript report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-report
+          path: crm-marmeria/typecheck-report.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce TypeScript result
+        if: steps.typecheck.outcome == 'failure'
+        run: |
+          cat typecheck-report.txt
+          exit 1
 
       - name: Test SQLite create
         run: node server/smoke-test.js create
