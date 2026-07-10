@@ -85,7 +85,24 @@ jobs:
         run: node server/smoke-test.js server
 
       - name: Test Electron native modules
-        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+        id: electron_native
+        continue-on-error: true
+        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox > electron-native-report.txt 2>&1
+
+      - name: Upload Electron native report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-native-report
+          path: crm-marmeria/electron-native-report.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce Electron native result
+        if: steps.electron_native.outcome == 'failure'
+        run: |
+          cat electron-native-report.txt
+          exit 1
 
       - name: Build frontend
         run: npm run build
