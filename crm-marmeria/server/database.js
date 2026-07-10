@@ -4,18 +4,34 @@ const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 const ENTITY_TYPES = ['client', 'order', 'project', 'material', 'quote', 'invoice'];
+const DOCUMENT_CONFIG = {
+  quote: { field: 'quoteNumber', prefix: 'PREV' },
+  invoice: { field: 'invoiceNumber', prefix: 'FATT' },
+};
 const now = () => new Date().toISOString();
 const clone = (value) => JSON.parse(JSON.stringify(value ?? null));
+const resolved = (value) => path.resolve(String(value));
+const isInside = (parent, child) => {
+  const relative = path.relative(resolved(parent), resolved(child));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
 
 class CrmDatabase {
   constructor({ dataDir, backupDir, attachmentsDir }) {
-    this.dataDir = dataDir;
-    this.backupDir = backupDir;
-    this.attachmentsDir = attachmentsDir;
-    this.dbPath = path.join(dataDir, 'crm-marmeria.db');
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.mkdirSync(backupDir, { recursive: true });
-    fs.mkdirSync(attachmentsDir, { recursive: true });
+    this.dataDir = resolved(dataDir);
+    this.backupDir = resolved(backupDir);
+    this.attachmentsDir = resolved(attachmentsDir);
+    this.dbPath = path.join(this.dataDir, 'crm-marmeria.db');
+    this.usersPath = path.join(this.dataDir, 'users.json');
+    this.snapshotQueue = Promise.resolve();
+
+    if (isInside(this.attachmentsDir, this.backupDir)) {
+      throw new Error('La cartella dei backup non può trovarsi dentro la cartella allegati');
+    }
+
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.mkdirSync(this.backupDir, { recursive: true });
+    fs.mkdirSync(this.attachmentsDir, { recursive: true });
     this.open();
   }
 
@@ -92,13 +108,28 @@ class CrmDatabase {
     }
   }
 
+  normalizeData(type, input) {
+    const data = clone(input) || {};
+    if (type === 'client') {
+      const commercialType = data.clientType
+        || (['Azienda', 'Privato'].includes(data.type) ? data.type : 'Privato');
+      return {
+        ...data,
+        type: commercialType,
+        clientType: commercialType,
+        entityType: 'client',
+      };
+    }
+    return { ...data, type, entityType: type };
+  }
+
   decode(row) {
     if (!row) return null;
-    const data = JSON.parse(row.data_json);
+    const stored = JSON.parse(row.data_json);
+    const data = this.normalizeData(row.entity_type, stored);
     return {
       ...data,
       id: String(row.id),
-      type: data.type || row.entity_type,
       version: Number(row.version),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -108,21 +139,21 @@ class CrmDatabase {
   list(type) {
     this.assertType(type);
     return this.db.prepare(
-      'SELECT * FROM entities WHERE entity_type = ? ORDER BY updated_at DESC'
+      'SELECT * FROM entities WHERE entity_type = ? ORDER BY updated_at DESC',
     ).all(type).map((row) => this.decode(row));
   }
 
   get(type, id) {
     this.assertType(type);
     return this.decode(this.db.prepare(
-      'SELECT * FROM entities WHERE entity_type = ? AND id = ?'
+      'SELECT * FROM entities WHERE entity_type = ? AND id = ?',
     ).get(type, String(id)));
   }
 
   getOperation(operationId) {
     if (!operationId) return null;
     const row = this.db.prepare(
-      'SELECT response_json FROM operations WHERE operation_id = ?'
+      'SELECT response_json FROM operations WHERE operation_id = ?',
     ).get(String(operationId));
     return row ? JSON.parse(row.response_json) : null;
   }
@@ -159,6 +190,44 @@ class CrmDatabase {
     );
   }
 
+  documentNumberExists(type, field, number, excludedId = null) {
+    if (!number) return false;
+    return this.list(type).some((item) => (
+      String(item.id) !== String(excludedId || '')
+      && String(item[field] || '').toUpperCase() === String(number).toUpperCase()
+    ));
+  }
+
+  nextDocumentNumber(type, dateValue) {
+    const config = DOCUMENT_CONFIG[type];
+    if (!config) return null;
+    const parsedDate = new Date(dateValue || Date.now());
+    const year = Number.isNaN(parsedDate.getTime())
+      ? new Date().getFullYear()
+      : parsedDate.getFullYear();
+    const expression = new RegExp(`^${config.prefix}-${year}-(\\d+)$`, 'i');
+    const highest = this.list(type).reduce((maximum, item) => {
+      const match = String(item[config.field] || '').match(expression);
+      return match ? Math.max(maximum, Number(match[1]) || 0) : maximum;
+    }, 0);
+    return `${config.prefix}-${year}-${String(highest + 1).padStart(3, '0')}`;
+  }
+
+  prepareDocumentNumber(type, data, excludedId = null, allowRegeneration = true) {
+    const config = DOCUMENT_CONFIG[type];
+    if (!config) return data;
+    const requested = String(data[config.field] || '').trim();
+    if (!requested || this.documentNumberExists(type, config.field, requested, excludedId)) {
+      if (!allowRegeneration && requested) {
+        const error = new Error(`Il numero ${requested} è già utilizzato`);
+        error.status = 409;
+        throw error;
+      }
+      return { ...data, [config.field]: this.nextDocumentNumber(type, data.date) };
+    }
+    return { ...data, [config.field]: requested };
+  }
+
   create(type, input, user, operationId) {
     this.assertType(type);
     const replay = this.getOperation(operationId);
@@ -172,9 +241,15 @@ class CrmDatabase {
         error.status = 409;
         throw error;
       }
+
+      let payload = this.normalizeData(type, input);
+      payload = this.prepareDocumentNumber(type, payload, null, true);
       const data = {
-        ...clone(input), id, type, version: 1,
-        createdAt: timestamp, updatedAt: timestamp,
+        ...payload,
+        id,
+        version: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
       };
       this.db.prepare(`
         INSERT INTO entities(entity_type, id, data_json, version, created_at, updated_at)
@@ -205,17 +280,19 @@ class CrmDatabase {
         error.current = current;
         throw error;
       }
+
       const timestamp = now();
       const nextVersion = current.version + 1;
-      const next = {
+      let next = this.normalizeData(type, {
         ...current,
         ...clone(patch),
         id: current.id,
-        type,
         version: nextVersion,
         createdAt: current.createdAt,
         updatedAt: timestamp,
-      };
+      });
+      next = this.prepareDocumentNumber(type, next, current.id, false);
+
       this.db.prepare(`
         UPDATE entities
         SET data_json = ?, version = ?, updated_at = ?
@@ -233,7 +310,7 @@ class CrmDatabase {
     const replay = this.getOperation(operationId);
     if (replay) return { ...replay, replayed: true };
 
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const current = this.get(type, id);
       if (!current) {
         const error = new Error('Elemento non trovato');
@@ -246,14 +323,23 @@ class CrmDatabase {
         error.current = current;
         throw error;
       }
+
+      const attachments = this.listAttachments(type, id);
       this.db.prepare(
-        'DELETE FROM entities WHERE entity_type = ? AND id = ?'
+        'DELETE FROM attachments WHERE entity_type = ? AND entity_id = ?',
+      ).run(type, String(id));
+      this.db.prepare(
+        'DELETE FROM entities WHERE entity_type = ? AND id = ?',
       ).run(type, String(id));
       this.writeAudit({ user, type, id, action: 'delete', previous: current, next: null });
       const response = { deleted: true, id: String(id) };
       this.storeOperation(operationId, response);
-      return response;
+      return { response, attachments };
     })();
+
+    this.removeAttachmentFiles(result.attachments);
+    fs.rmSync(this.attachmentDirectory(type, id), { recursive: true, force: true });
+    return result.response;
   }
 
   importEntity(type, input) {
@@ -262,7 +348,13 @@ class CrmDatabase {
     const createdAt = input.createdAt || timestamp;
     const version = Math.max(Number(input.version || 1), 1);
     const id = String(input.id || crypto.randomUUID());
-    const data = { ...clone(input), id, type, version, createdAt, updatedAt: timestamp };
+    const data = this.normalizeData(type, {
+      ...clone(input),
+      id,
+      version,
+      createdAt,
+      updatedAt: timestamp,
+    });
     this.db.prepare(`
       INSERT INTO entities(entity_type, id, data_json, version, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -277,7 +369,7 @@ class CrmDatabase {
 
   migrateLegacy(dataDir) {
     const marker = this.db.prepare(
-      "SELECT value FROM metadata WHERE key = 'legacy_json_migrated'"
+      "SELECT value FROM metadata WHERE key = 'legacy_json_migrated'",
     ).get();
     if (marker) return;
 
@@ -300,6 +392,7 @@ class CrmDatabase {
           console.error(`Migrazione ${filename} fallita:`, error);
         }
       }
+
       const ordersPath = path.join(dataDir, 'orders.json');
       if (fs.existsSync(ordersPath)) {
         try {
@@ -314,8 +407,9 @@ class CrmDatabase {
           console.error('Migrazione orders.json fallita:', error);
         }
       }
+
       this.db.prepare(
-        "INSERT OR REPLACE INTO metadata(key, value) VALUES ('legacy_json_migrated', ?)"
+        "INSERT OR REPLACE INTO metadata(key, value) VALUES ('legacy_json_migrated', ?)",
       ).run(now());
     })();
   }
@@ -323,8 +417,14 @@ class CrmDatabase {
   listAudit({ type, id, limit = 100 }) {
     const conditions = [];
     const values = [];
-    if (type) { conditions.push('entity_type = ?'); values.push(type); }
-    if (id) { conditions.push('entity_id = ?'); values.push(String(id)); }
+    if (type) {
+      conditions.push('entity_type = ?');
+      values.push(type);
+    }
+    if (id) {
+      conditions.push('entity_id = ?');
+      values.push(String(id));
+    }
     values.push(Math.min(Math.max(Number(limit) || 100, 1), 500));
     return this.db.prepare(`
       SELECT * FROM audit_log
@@ -345,34 +445,73 @@ class CrmDatabase {
 
   attachmentDirectory(entityType, entityId) {
     this.assertType(entityType);
-    return path.join(this.attachmentsDir, entityType, String(entityId));
+    const safeEntityId = crypto
+      .createHash('sha256')
+      .update(String(entityId))
+      .digest('hex');
+    return path.join(this.attachmentsDir, entityType, safeEntityId);
   }
 
-  addAttachment({ entityType, entityId, originalName, storedName, mimeType, sizeBytes, user }) {
-    this.assertType(entityType);
-    const record = {
-      id: crypto.randomUUID(),
-      entityType,
-      entityId: String(entityId),
-      originalName,
-      storedName,
-      mimeType: mimeType || 'application/octet-stream',
-      sizeBytes: Number(sizeBytes || 0),
-      createdBy: user?.id ? String(user.id) : null,
-      createdAt: now(),
+  attachmentRecord(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      originalName: row.original_name,
+      storedName: row.stored_name,
+      mimeType: row.mime_type,
+      sizeBytes: row.size_bytes,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
     };
-    this.db.prepare(`
-      INSERT INTO attachments(
-        id, entity_type, entity_id, original_name, stored_name,
-        mime_type, size_bytes, created_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      record.id, record.entityType, record.entityId, record.originalName,
-      record.storedName, record.mimeType, record.sizeBytes,
-      record.createdBy, record.createdAt,
-    );
-    this.writeAudit({ user, type: entityType, id: entityId, action: 'attachment.add', previous: null, next: record });
-    return record;
+  }
+
+  addAttachments(records, user) {
+    if (!Array.isArray(records) || !records.length) return [];
+    return this.db.transaction(() => records.map((input) => {
+      this.assertType(input.entityType);
+      const record = {
+        id: crypto.randomUUID(),
+        entityType: input.entityType,
+        entityId: String(input.entityId),
+        originalName: input.originalName,
+        storedName: input.storedName,
+        mimeType: input.mimeType || 'application/octet-stream',
+        sizeBytes: Number(input.sizeBytes || 0),
+        createdBy: user?.id ? String(user.id) : null,
+        createdAt: now(),
+      };
+      this.db.prepare(`
+        INSERT INTO attachments(
+          id, entity_type, entity_id, original_name, stored_name,
+          mime_type, size_bytes, created_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.id,
+        record.entityType,
+        record.entityId,
+        record.originalName,
+        record.storedName,
+        record.mimeType,
+        record.sizeBytes,
+        record.createdBy,
+        record.createdAt,
+      );
+      this.writeAudit({
+        user,
+        type: record.entityType,
+        id: record.entityId,
+        action: 'attachment.add',
+        previous: null,
+        next: record,
+      });
+      return record;
+    }))();
+  }
+
+  addAttachment(input) {
+    return this.addAttachments([input], input.user)[0];
   }
 
   listAttachments(entityType, entityId) {
@@ -381,46 +520,48 @@ class CrmDatabase {
       SELECT * FROM attachments
       WHERE entity_type = ? AND entity_id = ?
       ORDER BY created_at DESC
-    `).all(entityType, String(entityId)).map((row) => ({
-      id: row.id,
-      entityType: row.entity_type,
-      entityId: row.entity_id,
-      originalName: row.original_name,
-      storedName: row.stored_name,
-      mimeType: row.mime_type,
-      sizeBytes: row.size_bytes,
-      createdBy: row.created_by,
-      createdAt: row.created_at,
-    }));
+    `).all(entityType, String(entityId)).map((row) => this.attachmentRecord(row));
   }
 
   getAttachment(id) {
-    const row = this.db.prepare('SELECT * FROM attachments WHERE id = ?').get(String(id));
-    if (!row) return null;
-    const absolutePath = path.join(
-      this.attachmentDirectory(row.entity_type, row.entity_id),
-      row.stored_name,
+    const record = this.attachmentRecord(
+      this.db.prepare('SELECT * FROM attachments WHERE id = ?').get(String(id)),
     );
+    if (!record) return null;
     return {
-      id: row.id,
-      entityType: row.entity_type,
-      entityId: row.entity_id,
-      originalName: row.original_name,
-      storedName: row.stored_name,
-      mimeType: row.mime_type,
-      sizeBytes: row.size_bytes,
-      createdBy: row.created_by,
-      createdAt: row.created_at,
-      absolutePath,
+      ...record,
+      absolutePath: path.join(
+        this.attachmentDirectory(record.entityType, record.entityId),
+        record.storedName,
+      ),
     };
+  }
+
+  removeAttachmentFiles(records) {
+    for (const record of records || []) {
+      const absolutePath = path.join(
+        this.attachmentDirectory(record.entityType, record.entityId),
+        record.storedName,
+      );
+      if (fs.existsSync(absolutePath)) fs.rmSync(absolutePath, { force: true });
+    }
   }
 
   deleteAttachment(id, user) {
     const record = this.getAttachment(id);
     if (!record) return null;
-    this.db.prepare('DELETE FROM attachments WHERE id = ?').run(String(id));
-    if (fs.existsSync(record.absolutePath)) fs.unlinkSync(record.absolutePath);
-    this.writeAudit({ user, type: record.entityType, id: record.entityId, action: 'attachment.delete', previous: record, next: null });
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM attachments WHERE id = ?').run(String(id));
+      this.writeAudit({
+        user,
+        type: record.entityType,
+        id: record.entityId,
+        action: 'attachment.delete',
+        previous: record,
+        next: null,
+      });
+    })();
+    if (fs.existsSync(record.absolutePath)) fs.rmSync(record.absolutePath, { force: true });
     return record;
   }
 
@@ -428,7 +569,7 @@ class CrmDatabase {
     const data = {};
     for (const type of ENTITY_TYPES) data[type] = this.list(type);
     return {
-      version: '3.0',
+      version: '3.1',
       exportedAt: now(),
       data,
       audit: this.listAudit({ limit: 500 }),
@@ -441,52 +582,104 @@ class CrmDatabase {
       error.status = 400;
       throw error;
     }
+
+    for (const type of ENTITY_TYPES) {
+      if (backup.data[type] != null && !Array.isArray(backup.data[type])) {
+        const error = new Error(`La sezione ${type} del backup non è valida`);
+        error.status = 400;
+        throw error;
+      }
+    }
+
     this.db.transaction(() => {
+      this.db.prepare('DELETE FROM attachments').run();
+      this.db.prepare('DELETE FROM operations').run();
       this.db.prepare('DELETE FROM entities').run();
       for (const type of ENTITY_TYPES) {
         const items = Array.isArray(backup.data[type]) ? backup.data[type] : [];
         items.forEach((item) => this.importEntity(type, item));
       }
-      this.writeAudit({ user, type: 'database', id: 'all', action: 'restore.json', previous: null, next: { exportedAt: backup.exportedAt } });
+      this.writeAudit({
+        user,
+        type: 'database',
+        id: 'all',
+        action: 'restore.json',
+        previous: null,
+        next: { exportedAt: backup.exportedAt },
+      });
     })();
+
+    fs.rmSync(this.attachmentsDir, { recursive: true, force: true });
+    fs.mkdirSync(this.attachmentsDir, { recursive: true });
   }
 
   snapshotName(label) {
-    const safe = String(label || 'backup').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 40);
-    return `${new Date().toISOString().replace(/[:.]/g, '-')}_${safe}`;
+    const safe = String(label || 'backup')
+      .replace(/[^a-zA-Z0-9_-]+/g, '-')
+      .slice(0, 40);
+    const suffix = crypto.randomUUID().slice(0, 8);
+    return `${new Date().toISOString().replace(/[:.]/g, '-')}_${safe}_${suffix}`;
   }
 
-  async createSnapshot(label = 'manuale') {
+  createSnapshot(label = 'manuale') {
+    const task = this.snapshotQueue.then(() => this.createSnapshotInternal(label));
+    this.snapshotQueue = task.catch(() => undefined);
+    return task;
+  }
+
+  async createSnapshotInternal(label) {
     const name = this.snapshotName(label);
+    const temporary = path.join(this.backupDir, `.${name}.tmp`);
     const destination = path.join(this.backupDir, name);
-    fs.mkdirSync(destination, { recursive: true });
-    const dbDestination = path.join(destination, 'crm-marmeria.db');
-    await this.db.backup(dbDestination);
-    const attachmentDestination = path.join(destination, 'attachments');
-    if (fs.existsSync(this.attachmentsDir)) {
-      fs.cpSync(this.attachmentsDir, attachmentDestination, { recursive: true });
+    fs.rmSync(temporary, { recursive: true, force: true });
+    fs.mkdirSync(temporary, { recursive: true });
+
+    try {
+      await this.db.backup(path.join(temporary, 'crm-marmeria.db'));
+      if (fs.existsSync(this.usersPath)) {
+        fs.copyFileSync(this.usersPath, path.join(temporary, 'users.json'));
+      }
+      if (fs.existsSync(this.attachmentsDir)) {
+        fs.cpSync(this.attachmentsDir, path.join(temporary, 'attachments'), {
+          recursive: true,
+        });
+      }
+      const metadata = {
+        name,
+        label,
+        version: 2,
+        createdAt: now(),
+      };
+      fs.writeFileSync(
+        path.join(temporary, 'metadata.json'),
+        JSON.stringify(metadata, null, 2),
+      );
+      fs.renameSync(temporary, destination);
+      this.pruneSnapshots(30);
+      return metadata;
+    } catch (error) {
+      fs.rmSync(temporary, { recursive: true, force: true });
+      throw error;
     }
-    const metadata = { name, label, createdAt: now() };
-    fs.writeFileSync(path.join(destination, 'metadata.json'), JSON.stringify(metadata, null, 2));
-    this.pruneSnapshots(30);
-    return metadata;
   }
 
   listSnapshots() {
     if (!fs.existsSync(this.backupDir)) return [];
     return fs.readdirSync(this.backupDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
       .map((entry) => {
         const directory = path.join(this.backupDir, entry.name);
         const metadataPath = path.join(directory, 'metadata.json');
+        const databasePath = path.join(directory, 'crm-marmeria.db');
+        if (!fs.existsSync(metadataPath) || !fs.existsSync(databasePath)) return null;
         try {
           const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
           return { ...metadata, sizeBytes: this.directorySize(directory) };
         } catch {
-          const stats = fs.statSync(directory);
-          return { name: entry.name, label: 'backup', createdAt: stats.mtime.toISOString(), sizeBytes: this.directorySize(directory) };
+          return null;
         }
       })
+      .filter(Boolean)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }
 
@@ -495,7 +688,9 @@ class CrmDatabase {
     if (!fs.existsSync(directory)) return total;
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const fullPath = path.join(directory, entry.name);
-      total += entry.isDirectory() ? this.directorySize(fullPath) : fs.statSync(fullPath).size;
+      total += entry.isDirectory()
+        ? this.directorySize(fullPath)
+        : fs.statSync(fullPath).size;
     }
     return total;
   }
@@ -503,37 +698,94 @@ class CrmDatabase {
   pruneSnapshots(keep = 30) {
     const snapshots = this.listSnapshots();
     snapshots.slice(keep).forEach((snapshot) => {
-      fs.rmSync(path.join(this.backupDir, snapshot.name), { recursive: true, force: true });
+      fs.rmSync(path.join(this.backupDir, snapshot.name), {
+        recursive: true,
+        force: true,
+      });
     });
   }
 
-  restoreSnapshot(name) {
+  restoreSnapshot(name, user) {
     if (!/^[a-zA-Z0-9_.-]+$/.test(String(name))) {
       const error = new Error('Nome backup non valido');
       error.status = 400;
       throw error;
     }
+
     const source = path.join(this.backupDir, String(name));
     const dbSource = path.join(source, 'crm-marmeria.db');
+    const usersSource = path.join(source, 'users.json');
+    const attachmentsSource = path.join(source, 'attachments');
     if (!fs.existsSync(dbSource)) {
       const error = new Error('Backup non trovato');
       error.status = 404;
       throw error;
     }
 
-    this.close();
-    fs.copyFileSync(dbSource, this.dbPath);
-    for (const suffix of ['-wal', '-shm']) {
-      const stale = `${this.dbPath}${suffix}`;
-      if (fs.existsSync(stale)) fs.rmSync(stale, { force: true });
+    const stageRoot = path.join(this.dataDir, `.restore-${crypto.randomUUID()}`);
+    const stageDb = path.join(stageRoot, 'crm-marmeria.db');
+    const stageUsers = path.join(stageRoot, 'users.json');
+    const stageAttachments = path.join(stageRoot, 'attachments');
+    fs.mkdirSync(stageRoot, { recursive: true });
+
+    try {
+      fs.copyFileSync(dbSource, stageDb);
+      if (fs.existsSync(usersSource)) fs.copyFileSync(usersSource, stageUsers);
+      if (fs.existsSync(attachmentsSource)) {
+        fs.cpSync(attachmentsSource, stageAttachments, { recursive: true });
+      } else {
+        fs.mkdirSync(stageAttachments, { recursive: true });
+      }
+
+      this.close();
+      for (const suffix of ['-wal', '-shm']) {
+        fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
+      }
+
+      const previousDb = `${this.dbPath}.previous`;
+      const previousUsers = `${this.usersPath}.previous`;
+      const previousAttachments = `${this.attachmentsDir}.previous`;
+      fs.rmSync(previousDb, { force: true });
+      fs.rmSync(previousUsers, { force: true });
+      fs.rmSync(previousAttachments, { recursive: true, force: true });
+
+      if (fs.existsSync(this.dbPath)) fs.renameSync(this.dbPath, previousDb);
+      if (fs.existsSync(this.usersPath)) fs.renameSync(this.usersPath, previousUsers);
+      if (fs.existsSync(this.attachmentsDir)) {
+        fs.renameSync(this.attachmentsDir, previousAttachments);
+      }
+
+      try {
+        fs.renameSync(stageDb, this.dbPath);
+        if (fs.existsSync(stageUsers)) fs.renameSync(stageUsers, this.usersPath);
+        fs.renameSync(stageAttachments, this.attachmentsDir);
+        fs.rmSync(previousDb, { force: true });
+        fs.rmSync(previousUsers, { force: true });
+        fs.rmSync(previousAttachments, { recursive: true, force: true });
+      } catch (swapError) {
+        fs.rmSync(this.dbPath, { force: true });
+        fs.rmSync(this.usersPath, { force: true });
+        fs.rmSync(this.attachmentsDir, { recursive: true, force: true });
+        if (fs.existsSync(previousDb)) fs.renameSync(previousDb, this.dbPath);
+        if (fs.existsSync(previousUsers)) fs.renameSync(previousUsers, this.usersPath);
+        if (fs.existsSync(previousAttachments)) {
+          fs.renameSync(previousAttachments, this.attachmentsDir);
+        }
+        throw swapError;
+      }
+    } finally {
+      fs.rmSync(stageRoot, { recursive: true, force: true });
+      if (!this.db?.open) this.open();
     }
-    const attachmentSource = path.join(source, 'attachments');
-    fs.rmSync(this.attachmentsDir, { recursive: true, force: true });
-    fs.mkdirSync(this.attachmentsDir, { recursive: true });
-    if (fs.existsSync(attachmentSource)) {
-      fs.cpSync(attachmentSource, this.attachmentsDir, { recursive: true });
-    }
-    this.open();
+
+    this.writeAudit({
+      user,
+      type: 'database',
+      id: 'all',
+      action: 'restore.snapshot',
+      previous: null,
+      next: { snapshot: String(name) },
+    });
     return this.listSnapshots().find((snapshot) => snapshot.name === name) || { name };
   }
 }
