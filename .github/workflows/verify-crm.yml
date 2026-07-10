@@ -38,6 +38,7 @@ jobs:
           node --check server/app.js
           node --check server/database.js
           node --check server/middleware/auth.js
+          node --check server/snapshot-compat.js
           node --check server/smoke-test.js
           node --check electron/main.cjs
           node --check electron/server.cjs
