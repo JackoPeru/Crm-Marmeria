@@ -13,7 +13,11 @@ class CentralCrmServer {
     this.sharedDataPath = null;
     this.serverId = null;
   }
-  identityPath() { return path.join(app.getPath('userData'), 'crm-server-id.txt'); }
+
+  identityPath() {
+    return path.join(app.getPath('userData'), 'crm-server-id.txt');
+  }
+
   getServerId() {
     if (this.serverId) return this.serverId;
     const filePath = this.identityPath();
@@ -21,8 +25,43 @@ class CentralCrmServer {
     this.serverId = fs.readFileSync(filePath, 'utf8').trim();
     return this.serverId;
   }
+
+  migrateLegacyData(dataDir) {
+    if (fs.existsSync(path.join(dataDir, 'crm-marmeria.db'))) return;
+
+    const legacyDirectories = [
+      path.join(app.getPath('userData'), 'shared-data'),
+      path.join(app.getPath('userData'), 'crm-data'),
+    ];
+    const mappings = {
+      'customers.json': 'clients.json',
+      'clients.json': 'clients.json',
+      'projects.json': 'projects.json',
+      'materials.json': 'materials.json',
+      'quotes.json': 'quotes.json',
+      'invoices.json': 'invoices.json',
+      'orders.json': 'orders.json',
+    };
+
+    for (const sourceDirectory of legacyDirectories) {
+      if (!fs.existsSync(sourceDirectory)) continue;
+      for (const [sourceName, destinationName] of Object.entries(mappings)) {
+        const source = path.join(sourceDirectory, sourceName);
+        const destination = path.join(dataDir, destinationName);
+        if (!fs.existsSync(source) || fs.existsSync(destination)) continue;
+        try {
+          fs.copyFileSync(source, destination);
+          console.log(`Dati legacy migrati: ${sourceName} → ${destinationName}`);
+        } catch (error) {
+          console.error(`Migrazione legacy ${sourceName} fallita:`, error);
+        }
+      }
+    }
+  }
+
   async start(port = 3001, backupPath = null, options = {}) {
     if (this.instance) return { success: true, message: 'Server già attivo', ...this.getStatus() };
+
     const discovered = await discoverMasters(1200);
     const ownId = this.getServerId();
     const otherMasters = discovered.filter((master) => master.serverId !== ownId);
@@ -32,6 +71,7 @@ class CentralCrmServer {
       error.masters = otherMasters;
       throw error;
     }
+
     const root = path.join(app.getPath('userData'), 'crm-central-data');
     const dataDir = path.join(root, 'data');
     const attachmentsDir = path.join(root, 'attachments');
@@ -39,13 +79,28 @@ class CentralCrmServer {
     fs.mkdirSync(dataDir, { recursive: true });
     fs.mkdirSync(attachmentsDir, { recursive: true });
     fs.mkdirSync(backupDir, { recursive: true });
-    this.instance = await createCrmServer({ port: Number(port), host: '0.0.0.0', dataDir, attachmentsDir, backupDir, serverName: 'CRM Marmeria', serverId: ownId });
+    this.migrateLegacyData(dataDir);
+
+    this.instance = await createCrmServer({
+      port: Number(port),
+      host: '0.0.0.0',
+      dataDir,
+      attachmentsDir,
+      backupDir,
+      serverName: 'CRM Marmeria',
+      serverId: ownId,
+    });
     this.port = Number(port);
     this.sharedDataPath = backupDir;
-    this.discovery = new DiscoveryAdvertiser({ port: this.port, serverId: ownId, name: 'CRM Marmeria' });
+    this.discovery = new DiscoveryAdvertiser({
+      port: this.port,
+      serverId: ownId,
+      name: 'CRM Marmeria',
+    });
     this.discovery.start();
     return { success: true, message: 'Server centrale avviato', ...this.getStatus() };
   }
+
   async stop() {
     this.discovery?.stop();
     this.discovery = null;
@@ -54,9 +109,19 @@ class CentralCrmServer {
     this.port = null;
     return { success: true, message: 'Server centrale arrestato' };
   }
+
   getStatus() {
     const addresses = localAddresses();
-    return { isRunning: Boolean(this.instance), mode: this.instance ? 'master' : 'stopped', port: this.port, serverId: this.getServerId(), addresses, apiUrls: this.port ? addresses.map((address) => `http://${address}:${this.port}/api`) : [], localApiUrl: this.port ? `http://127.0.0.1:${this.port}/api` : null, backupPath: this.sharedDataPath };
+    return {
+      isRunning: Boolean(this.instance),
+      mode: this.instance ? 'master' : 'stopped',
+      port: this.port,
+      serverId: this.getServerId(),
+      addresses,
+      apiUrls: this.port ? addresses.map((address) => `http://${address}:${this.port}/api`) : [],
+      localApiUrl: this.port ? `http://127.0.0.1:${this.port}/api` : null,
+      backupPath: this.sharedDataPath,
+    };
   }
 }
 
