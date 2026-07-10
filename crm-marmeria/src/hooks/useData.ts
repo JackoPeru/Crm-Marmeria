@@ -1,61 +1,55 @@
 import { useClients } from './useClients';
-import { useOrders } from './useOrders';
 import { useMaterials } from './useMaterials';
 import { useAuth } from '../contexts/AuthContext';
+import { useBusinessData } from '../contexts/BusinessDataContext';
 import { useAnalytics } from './useAnalytics';
 
-/**
- * Hook unificato per accedere a tutti i dati dell'applicazione
- * Combina tutti gli hook specifici per fornire un'interfaccia centralizzata
- */
 export const useData = () => {
   const clients = useClients();
-  const orders = useOrders();
   const materials = useMaterials();
   const auth = useAuth();
+  const business = useBusinessData();
   const analytics = useAnalytics();
 
+  const normalizedUser = auth.user
+    ? { ...auth.user, name: auth.user.username }
+    : null;
+
   return {
-    // Dati utente
-    user: auth.user,
+    user: normalizedUser,
     isAuthenticated: auth.isAuthenticated,
-    
-    // Clienti
+    updateUser: auth.updateUser,
+
     customers: clients.clients,
     customersLoading: clients.loading,
     addCustomer: clients.addClient,
     updateCustomer: clients.updateClient,
     deleteCustomer: clients.removeClient,
-    
-    // Progetti (ordini)
-    projects: orders.orders,
-    projectsLoading: orders.loading,
-    addProject: orders.addOrder,
-    updateProject: orders.updateOrder,
-    deleteProject: orders.removeOrder,
-    
-    // Materiali
+
+    projects: business.projects,
+    projectsLoading: business.loading,
+    addProject: business.addProject,
+    updateProject: business.updateProject,
+    deleteProject: business.deleteProject,
+
     materials: materials.materials,
     materialsLoading: materials.loading,
     addMaterial: materials.addMaterial,
     updateMaterial: materials.updateMaterial,
     deleteMaterial: materials.removeMaterial,
-    
-    // Preventivi (subset di ordini con tipo 'quote')
-    quotes: orders.orders.filter(order => order.type === 'quote'),
-    quotesLoading: orders.loading,
-    addQuote: (quoteData: any) => orders.addOrder({ ...quoteData, type: 'quote' }),
-    updateQuote: orders.updateOrder,
-    deleteQuote: orders.removeOrder,
-    
-    // Fatture (subset di ordini con tipo 'invoice')
-    invoices: orders.orders.filter(order => order.type === 'invoice'),
-    invoicesLoading: orders.loading,
-    addInvoice: (invoiceData: any) => orders.addOrder({ ...invoiceData, type: 'invoice' }),
-    updateInvoice: orders.updateOrder,
-    deleteInvoice: orders.removeOrder,
-    
-    // Analytics e statistiche
+
+    quotes: business.quotes,
+    quotesLoading: business.loading,
+    addQuote: business.addQuote,
+    updateQuote: business.updateQuote,
+    deleteQuote: business.deleteQuote,
+
+    invoices: business.invoices,
+    invoicesLoading: business.loading,
+    addInvoice: business.addInvoice,
+    updateInvoice: business.updateInvoice,
+    deleteInvoice: business.deleteInvoice,
+
     analytics: {
       dailySummary: analytics.dailySummary,
       weeklySummary: analytics.weeklySummary,
@@ -64,15 +58,14 @@ export const useData = () => {
       trendData: analytics.trendData
     },
     analyticsLoading: analytics.loading,
-    
-    // Stato generale
+
     dataState: {
-      user: auth.user,
+      user: normalizedUser,
       customers: clients.clients,
-      projects: orders.orders,
+      projects: business.projects,
       materials: materials.materials,
-      quotes: orders.orders.filter(order => order.type === 'quote'),
-      invoices: orders.orders.filter(order => order.type === 'invoice'),
+      quotes: business.quotes,
+      invoices: business.invoices,
     }
   };
 };
