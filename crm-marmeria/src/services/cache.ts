@@ -15,7 +15,7 @@ interface CrmCacheDB extends DBSchema {
   analytics: { key: string; value: CacheEntry };
 }
 
-type CacheStore = keyof CrmCacheDB;
+type CacheStore = 'customers' | 'projects' | 'orders' | 'materials' | 'analytics';
 
 class CacheService {
   private db: IDBPDatabase<CrmCacheDB> | null = null;
