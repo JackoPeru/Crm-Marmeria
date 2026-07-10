@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --check index.js && node --check app.js && node --check database.js"
+    "test": "node --check index.js && node --check app.js && node --check database.js && node smoke-test.js create && node smoke-test.js update && node smoke-test.js conflict && node smoke-test.js snapshot && node smoke-test.js server"
   },
   "license": "MIT",
   "dependencies": {
