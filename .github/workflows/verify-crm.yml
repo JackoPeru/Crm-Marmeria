@@ -22,10 +22,15 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: crm-marmeria/package.json
+          cache-dependency-path: |
+            crm-marmeria/package.json
+            crm-marmeria/server/package.json
 
-      - name: Install dependencies
+      - name: Install Electron app dependencies
         run: npm install
+
+      - name: Install standalone server dependencies
+        run: npm install --prefix server
 
       - name: Check server syntax
         run: |
