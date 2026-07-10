@@ -14,17 +14,43 @@ const configureAuth = ({ dataDir }) => {
   fs.mkdirSync(dataDirectory, { recursive: true });
   const usersPath = path.join(dataDirectory, 'users.json');
   if (!fs.existsSync(usersPath)) {
-    if (fs.existsSync(seedUsersPath) && path.resolve(seedUsersPath) !== path.resolve(usersPath)) fs.copyFileSync(seedUsersPath, usersPath);
-    else fs.writeFileSync(usersPath, '[]');
+    if (fs.existsSync(seedUsersPath) && path.resolve(seedUsersPath) !== path.resolve(usersPath)) {
+      fs.copyFileSync(seedUsersPath, usersPath);
+    } else {
+      fs.writeFileSync(usersPath, '[]');
+    }
   }
   if (!jwtSecret) {
     const secretPath = path.join(dataDirectory, '.jwt-secret');
     if (!fs.existsSync(secretPath)) fs.writeFileSync(secretPath, crypto.randomBytes(48).toString('hex'));
     jwtSecret = fs.readFileSync(secretPath, 'utf8').trim();
   }
+
+  // Migrazione non distruttiva: gli account operai già esistenti possono
+  // aggiornare soltanto i campi di produzione consentiti dal backend.
+  const users = readUsers();
+  let changed = false;
+  const requiredWorkerPermissions = [
+    'dashboard.view',
+    'projects.view', 'projects.edit',
+    'materials.view', 'materials.edit',
+    'orders.view', 'orders.edit',
+  ];
+  const migratedUsers = users.map((user) => {
+    if (user.role !== 'worker') return user;
+    const permissions = new Set(Array.isArray(user.permissions) ? user.permissions : []);
+    const before = permissions.size;
+    requiredWorkerPermissions.forEach((permission) => permissions.add(permission));
+    if (permissions.size !== before) changed = true;
+    return { ...user, permissions: [...permissions] };
+  });
+  if (changed && !writeUsers(migratedUsers)) {
+    throw new Error('Migrazione permessi operai fallita');
+  }
 };
 
 const usersFile = () => path.join(dataDirectory, 'users.json');
+
 const readUsers = () => {
   try {
     if (!fs.existsSync(usersFile())) return [];
@@ -35,6 +61,7 @@ const readUsers = () => {
     return [];
   }
 };
+
 const writeUsers = (users) => {
   const filePath = usersFile();
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -48,13 +75,17 @@ const writeUsers = (users) => {
     return false;
   }
 };
+
 const verifyToken = (token) => {
   if (!token || !jwtSecret) return null;
   try {
     const payload = jwt.verify(token, jwtSecret);
     return readUsers().find((user) => String(user.id) === String(payload.id) && user.isActive) || null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 };
+
 const authenticateToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Token di accesso richiesto' });
@@ -63,11 +94,15 @@ const authenticateToken = (req, res, next) => {
   req.user = user;
   next();
 };
+
 const requirePermission = (permission) => (req, res, next) => {
   if (!req.user) return res.status(401).json({ error: 'Autenticazione richiesta' });
-  if (!Array.isArray(req.user.permissions) || !req.user.permissions.includes(permission)) return res.status(403).json({ error: 'Permessi insufficienti' });
+  if (!Array.isArray(req.user.permissions) || !req.user.permissions.includes(permission)) {
+    return res.status(403).json({ error: 'Permessi insufficienti' });
+  }
   next();
 };
+
 const requireRole = (roles) => {
   const allowed = Array.isArray(roles) ? roles : [roles];
   return (req, res, next) => {
@@ -76,9 +111,24 @@ const requireRole = (roles) => {
     next();
   };
 };
+
 const generateToken = (user) => jwt.sign({ id: String(user.id) }, jwtSecret, { expiresIn: JWT_EXPIRES_IN });
 const hashPassword = (password) => bcrypt.hash(password, 10);
 const verifyPassword = (password, hashedPassword) => bcrypt.compare(password, hashedPassword);
-const findUserByCredentials = (identifier) => readUsers().find((user) => (user.username === identifier || user.email === identifier) && user.isActive);
+const findUserByCredentials = (identifier) => readUsers().find((user) => (
+  (user.username === identifier || user.email === identifier) && user.isActive
+));
 
-module.exports = { configureAuth, authenticateToken, requirePermission, requireRole, generateToken, hashPassword, verifyPassword, verifyToken, findUserByCredentials, readUsers, writeUsers };
+module.exports = {
+  configureAuth,
+  authenticateToken,
+  requirePermission,
+  requireRole,
+  generateToken,
+  hashPassword,
+  verifyPassword,
+  verifyToken,
+  findUserByCredentials,
+  readUsers,
+  writeUsers,
+};
