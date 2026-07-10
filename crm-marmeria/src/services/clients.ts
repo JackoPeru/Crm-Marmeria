@@ -18,6 +18,7 @@ export interface Client {
   createdAt: string;
   updatedAt: string;
 }
+
 export interface CreateClientRequest {
   name: string;
   email: string;
@@ -34,10 +35,15 @@ export interface CreateClientRequest {
 const normalizeClient = (client: any): Client => ({
   ...client,
   id: String(client.id),
-  type: client.clientType || (client.type === 'Azienda' || client.type === 'Privato' ? client.type : 'Privato'),
-  clientType: client.clientType || (client.type === 'Azienda' || client.type === 'Privato' ? client.type : undefined),
+  type: client.clientType
+    || (client.type === 'Azienda' || client.type === 'Privato' ? client.type : 'Privato'),
+  clientType: client.clientType
+    || (client.type === 'Azienda' || client.type === 'Privato' ? client.type : undefined),
 });
-const payloadWithClientType = <T extends Partial<CreateClientRequest>>(data: T): T & { clientType?: string } => ({
+
+const payloadWithClientType = <T extends Partial<CreateClientRequest>>(
+  data: T,
+): T & { clientType?: string } => ({
   ...data,
   clientType: data.type || data.clientType,
 });
@@ -53,7 +59,9 @@ class ClientsService {
       return clients;
     } catch (error: any) {
       const cached = await cacheService.get<Client[]>('customers', 'all');
-      if ((error.code === 'ERR_NETWORK' || !error.response) && cached) return cached.map(normalizeClient);
+      if ((error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED' || !error.response) && cached) {
+        return cached.map(normalizeClient);
+      }
       throw error;
     }
   }
@@ -66,7 +74,9 @@ class ClientsService {
       return client;
     } catch (error: any) {
       const cached = await cacheService.get<Client>('customers', String(id));
-      if ((error.code === 'ERR_NETWORK' || !error.response) && cached) return normalizeClient(cached);
+      if ((error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED' || !error.response) && cached) {
+        return normalizeClient(cached);
+      }
       throw error;
     }
   }
@@ -91,11 +101,13 @@ class ClientsService {
     return client;
   }
 
-  async deleteClient(id: string): Promise<void> {
-    await api.delete(`/clients/${String(id)}`);
+  async deleteClient(id: string, version?: number): Promise<void> {
+    const response = await api.delete(`/clients/${String(id)}`, {
+      headers: version != null ? { 'If-Match': String(version) } : undefined,
+    });
     await cacheService.delete('customers', String(id));
     await cacheService.delete('customers', 'all');
-    toast.success('Cliente eliminato con successo');
+    if (response.status !== 202) toast.success('Cliente eliminato con successo');
   }
 
   async searchClients(query: string): Promise<Client[]> {
@@ -104,26 +116,43 @@ class ClientsService {
       return response.data.map(normalizeClient);
     } catch (error: any) {
       const cached = await cacheService.get<Client[]>('customers', 'all');
-      if ((error.code === 'ERR_NETWORK' || !error.response) && cached) {
+      if ((error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED' || !error.response) && cached) {
         const normalized = cached.map(normalizeClient);
-        const q = query.toLowerCase();
-        return normalized.filter((client) => client.name.toLowerCase().includes(q) || client.email.toLowerCase().includes(q));
+        const loweredQuery = query.toLowerCase();
+        return normalized.filter((client) => (
+          client.name.toLowerCase().includes(loweredQuery)
+          || client.email.toLowerCase().includes(loweredQuery)
+        ));
       }
       throw error;
     }
   }
 
-  async getClientsStats(): Promise<{ total: number; byType: Record<string, number>; recentlyAdded: number }> {
-    const clients = await this.getClients();
-    const byType = clients.reduce<Record<string, number>>((result, client) => {
-      result[client.type] = (result[client.type] || 0) + 1;
-      return result;
-    }, {});
-    return {
-      total: clients.length,
-      byType,
-      recentlyAdded: clients.filter((client) => new Date(client.createdAt).getTime() > Date.now() - 604800000).length,
-    };
+  async getClientsStats(): Promise<{
+    total: number;
+    byType: Record<string, number>;
+    recentlyAdded: number;
+  }> {
+    try {
+      return (await api.get('/clients/stats')).data;
+    } catch (error: any) {
+      const clients = await cacheService.get<Client[]>('customers', 'all');
+      if ((error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED' || !error.response) && clients) {
+        const normalized = clients.map(normalizeClient);
+        const byType = normalized.reduce<Record<string, number>>((result, client) => {
+          result[client.type] = (result[client.type] || 0) + 1;
+          return result;
+        }, {});
+        return {
+          total: normalized.length,
+          byType,
+          recentlyAdded: normalized.filter(
+            (client) => new Date(client.createdAt).getTime() > Date.now() - 604800000,
+          ).length,
+        };
+      }
+      throw error;
+    }
   }
 
   async clearCache(): Promise<void> {
