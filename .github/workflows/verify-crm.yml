@@ -38,5 +38,40 @@ jobs:
           node --check electron/discovery.cjs
           node --check electron/preload.cjs
 
+      - name: Smoke test SQLite, versions and backups
+        run: |
+          node <<'NODE'
+          const assert = require('assert');
+          const fs = require('fs');
+          const os = require('os');
+          const path = require('path');
+          const { CrmDatabase } = require('./server/database');
+
+          (async () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-marmeria-ci-'));
+            const db = new CrmDatabase({
+              dataDir: path.join(root, 'data'),
+              backupDir: path.join(root, 'backups'),
+              attachmentsDir: path.join(root, 'attachments'),
+            });
+            const user = { id: 'ci', username: 'ci' };
+            const created = db.create('project', { name: 'Test CI', status: 'In Attesa' }, user, 'ci-create');
+            assert.equal(created.item.version, 1);
+            const updated = db.update('project', created.item.id, { status: 'Completato' }, 1, user, 'ci-update');
+            assert.equal(updated.item.version, 2);
+            assert.throws(
+              () => db.update('project', created.item.id, { status: 'In Corso' }, 1, user, 'ci-conflict'),
+              (error) => error.status === 409,
+            );
+            await db.createSnapshot('ci');
+            assert.equal(db.listSnapshots().length, 1);
+            db.close();
+            fs.rmSync(root, { recursive: true, force: true });
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
       - name: Build frontend
         run: npm run build
