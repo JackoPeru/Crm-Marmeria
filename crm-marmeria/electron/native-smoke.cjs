@@ -4,6 +4,10 @@ const path = require('path');
 const Module = require('module');
 
 const rootRequire = Module.createRequire(path.join(__dirname, '../package.json'));
+const electronNativeModules = {
+  'better-sqlite3': rootRequire.resolve('better-sqlite3'),
+  bcrypt: rootRequire.resolve('bcrypt'),
+};
 const originalLoad = Module._load;
 let database = null;
 let root = null;
@@ -19,14 +23,20 @@ const cleanup = () => {
 
 try {
   Module._load = function loadElectronNativeModule(request, parent, isMain) {
-    if (request === 'better-sqlite3' || request === 'bcrypt') {
-      return rootRequire(request);
+    const resolvedNativeModule = electronNativeModules[request];
+    if (resolvedNativeModule) {
+      return originalLoad.call(this, resolvedNativeModule, parent, isMain);
     }
     return originalLoad.call(this, request, parent, isMain);
   };
 
   const { CrmDatabase } = require('../server/database');
-  const bcrypt = rootRequire('bcrypt');
+  const bcrypt = originalLoad.call(
+    Module,
+    electronNativeModules.bcrypt,
+    module,
+    false,
+  );
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-electron-native-'));
   database = new CrmDatabase({
     dataDir: path.join(root, 'data'),
