@@ -85,7 +85,7 @@ jobs:
         run: node server/smoke-test.js server
 
       - name: Test Electron native modules
-        run: xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
 
       - name: Build frontend
         run: npm run build
