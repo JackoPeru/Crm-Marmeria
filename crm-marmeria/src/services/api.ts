@@ -1,14 +1,16 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import toast from 'react-hot-toast';
-import { offlineQueue } from './offlineQueue';
+import { getCurrentQueueScope, offlineQueue } from './offlineQueue';
 
 interface ReplayConfig extends AxiosRequestConfig {
   _replay?: boolean;
 }
+
 const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
 const ENTITY_CREATE = /^\/(clients|orders|projects|materials|quotes|invoices)\/?$/;
 const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|quotes|invoices)(\/[^/?]+(\/status)?)?\/?$/;
 const operationId = () => crypto.randomUUID();
+const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 
 class ApiClient {
   private axiosInstance: AxiosInstance;
@@ -24,13 +26,18 @@ class ApiClient {
   }
 
   getBaseURL(): string {
-    return localStorage.getItem('crm_api_base_url')
-      || import.meta.env.VITE_API_BASE_URL
-      || 'http://127.0.0.1:3001/api';
+    return normalizeBaseUrl(
+      localStorage.getItem('crm_api_base_url')
+        || import.meta.env.VITE_API_BASE_URL
+        || 'http://127.0.0.1:3001/api',
+    );
   }
 
   setBaseURL(url: string): void {
-    const normalized = String(url).trim().replace(/\/$/, '');
+    const normalized = normalizeBaseUrl(String(url));
+    if (!/^https?:\/\//i.test(normalized)) {
+      throw new Error('L’indirizzo del server deve iniziare con http:// o https://');
+    }
     localStorage.setItem('crm_api_base_url', normalized);
     this.axiosInstance.defaults.baseURL = normalized;
     window.dispatchEvent(new CustomEvent('crm-api-url-changed', { detail: normalized }));
@@ -39,6 +46,7 @@ class ApiClient {
   private setupInterceptors(): void {
     this.axiosInstance.interceptors.request.use((config: any) => {
       config.baseURL = this.getBaseURL();
+      config.headers = config.headers || {};
       const token = localStorage.getItem('crm_auth_token');
       if (token) config.headers.Authorization = `Bearer ${token}`;
 
@@ -46,7 +54,13 @@ class ApiClient {
       if (MUTATING.has(method)) {
         config.headers['X-Operation-Id'] = config.headers['X-Operation-Id'] || operationId();
         const version = config.data?.expectedVersion ?? config.data?.version;
-        if (version != null && version !== '') config.headers['If-Match'] = String(version);
+        if (
+          version != null
+          && version !== ''
+          && config.headers['If-Match'] == null
+        ) {
+          config.headers['If-Match'] = String(version);
+        }
         if (
           method === 'post'
           && ENTITY_CREATE.test(String(config.url || ''))
@@ -75,7 +89,7 @@ class ApiClient {
         if (status === 409) {
           window.dispatchEvent(new CustomEvent('crm-version-conflict', {
             detail: {
-              url: config.url,
+              url,
               current: error.response?.data?.current,
               message: error.response?.data?.error,
             },
@@ -94,36 +108,44 @@ class ApiClient {
         if (canQueue) {
           let data = config.data;
           if (typeof data === 'string') {
-            try { data = JSON.parse(data); } catch { /* mantiene il contenuto originale */ }
+            try {
+              data = JSON.parse(data);
+            } catch {
+              // Mantiene il contenuto originale se non è JSON.
+            }
           }
-          const id = String(config.headers?.['X-Operation-Id'] || operationId());
-          await offlineQueue.add({
-            id,
-            method: method as 'post' | 'put' | 'patch' | 'delete',
-            url,
-            data,
-            headers: {
-              'X-Operation-Id': id,
-              ...(config.headers?.['If-Match']
-                ? { 'If-Match': String(config.headers['If-Match']) }
-                : {}),
-            },
-          });
-          toast('Modifica salvata in coda: verrà inviata quando il server torna disponibile.', {
-            id: 'offline-queued',
-          });
-          const optimistic = {
-            ...(typeof data === 'object' && data ? data : {}),
-            id: (data as any)?.id || url.split('/').filter(Boolean).pop(),
-            _queued: true,
-          };
-          return {
-            data: optimistic,
-            status: 202,
-            statusText: 'Queued Offline',
-            headers: {},
-            config,
-          } as AxiosResponse;
+
+          const scope = getCurrentQueueScope();
+          if (scope) {
+            const id = String(config.headers?.['X-Operation-Id'] || operationId());
+            await offlineQueue.add({
+              id,
+              method: method as 'post' | 'put' | 'patch' | 'delete',
+              url,
+              data,
+              headers: {
+                'X-Operation-Id': id,
+                ...(config.headers?.['If-Match']
+                  ? { 'If-Match': String(config.headers['If-Match']) }
+                  : {}),
+              },
+            }, scope);
+            toast('Modifica salvata in coda: verrà inviata quando il server torna disponibile.', {
+              id: 'offline-queued',
+            });
+            const optimistic = {
+              ...(typeof data === 'object' && data ? data : {}),
+              id: (data as any)?.id || url.split('/').filter(Boolean).pop(),
+              _queued: true,
+            };
+            return {
+              data: optimistic,
+              status: 202,
+              statusText: 'Queued Offline',
+              headers: {},
+              config,
+            } as AxiosResponse;
+          }
         }
 
         if (isNetworkFailure) {
@@ -152,9 +174,12 @@ class ApiClient {
 
   async replayOfflineQueue(): Promise<void> {
     if (this.replaying) return;
+    const scope = getCurrentQueueScope();
+    if (!scope) return;
+
     this.replaying = true;
     try {
-      for (const request of await offlineQueue.list()) {
+      for (const request of await offlineQueue.list(scope)) {
         if (request.blocked) continue;
         try {
           await this.axiosInstance.request({
@@ -162,15 +187,19 @@ class ApiClient {
             url: request.url,
             data: request.data,
             headers: request.headers,
+            baseURL: request.apiBaseUrl,
             _replay: true,
           } as ReplayConfig);
           await offlineQueue.remove(request.id);
         } catch (error: any) {
-          if ([400, 403, 404, 409].includes(error.response?.status)) {
+          const responseStatus = error.response?.status;
+          if ([400, 403, 404, 409].includes(responseStatus)) {
+            const currentVersion = Number(error.response?.data?.current?.version);
             await offlineQueue.markFailure(
               request.id,
               error.response?.data?.error || error.message,
               true,
+              Number.isFinite(currentVersion) ? currentVersion : undefined,
             );
             window.dispatchEvent(new CustomEvent('crm-offline-operation-failed', {
               detail: { request, error: error.response?.data },
