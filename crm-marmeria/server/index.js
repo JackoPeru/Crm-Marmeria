@@ -1,91 +1,30 @@
-const express=require('express');
-const cors=require('cors');
-const fs=require('fs');
-const path=require('path');
-const crypto=require('crypto');
-const {authenticateToken,requirePermission,requireRole,generateToken,hashPassword,verifyPassword,findUserByCredentials,readUsers,writeUsers}=require('./middleware/auth');
+const path = require('path');
+const { createCrmServer } = require('./app');
 
-const app=express();
-const PORT=Number(process.env.PORT||3001);
-const DATA_DIR=path.join(__dirname,'data');
-const COLLECTIONS=['clients','orders','materials'];
-const queues=new Map();
-fs.mkdirSync(DATA_DIR,{recursive:true});
-app.use(cors({origin:'*',methods:['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'],allowedHeaders:['Content-Type','Authorization']}));
-app.use(express.json({limit:'50mb'}));
-app.use(express.urlencoded({extended:true,limit:'50mb'}));
+let instance = null;
 
-const file=(name)=>{if(!COLLECTIONS.includes(name))throw new Error(`Collezione non supportata: ${name}`);return path.join(DATA_DIR,`${name}.json`)};
-const readSync=(name)=>{try{const p=file(name);if(!fs.existsSync(p))return[];const v=JSON.parse(fs.readFileSync(p,'utf8'));return Array.isArray(v)?v:[]}catch(e){console.error(`Errore lettura ${name}:`,e);return[]}};
-const atomicWrite=async(name,data)=>{const p=file(name),tmp=`${p}.${process.pid}.${Date.now()}.tmp`;await fs.promises.writeFile(tmp,JSON.stringify(data,null,2),'utf8');await fs.promises.rename(tmp,p)};
-const mutate=(name,fn)=>{const previous=queues.get(name)||Promise.resolve();const current=previous.then(async()=>{const result=await fn(readSync(name));await atomicWrite(name,result.data);return result.value});queues.set(name,current.catch(()=>undefined));return current};
-const read=async(name)=>{const q=queues.get(name);if(q)await q.catch(()=>undefined);return readSync(name)};
-const id=()=>crypto.randomUUID();
-const ids=(value)=>{if(!value||typeof value!=='object')return value;if(Array.isArray(value))return value.map(ids);return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,v!=null&&(k==='id'||k.endsWith('Id'))?String(v):typeof v==='object'?ids(v):v]))};
-const money=(v)=>{if(typeof v==='number')return Number.isFinite(v)?v:0;if(typeof v!=='string')return 0;const n=Number.parseFloat(v.replace(/\s|€/g,'').replace(/\./g,'').replace(',','.'));return Number.isFinite(n)?n:0};
-const typeOf=(x)=>['project','quote','invoice','order'].includes(x.type)?x.type:x.invoiceNumber||x.dueDate?'invoice':x.quoteNumber||x.validityDays?'quote':x.deadline||x.name||x.budget?'project':'order';
-const findLegacy=(name,candidate,type)=>{if(candidate==null||candidate==='')return null;const key=String(candidate),items=readSync(name);const exact=items.find(x=>String(x.id)===key&&(!type||typeOf(x)===type));if(exact)return String(exact.id);const partial=items.filter(x=>String(x.id).startsWith(key)&&(!type||typeOf(x)===type));return partial.length===1?String(partial[0].id):key};
-const material=(raw)=>{const x=ids(raw),unitPrice=Number(x.unitPrice??x.price??0)||0,stockQuantity=Number(x.stockQuantity??x.quantity??x.stock??0)||0,minStockLevel=Number(x.minStockLevel??x.minQuantity??10)||0;return{...x,id:String(x.id||id()),unitPrice,price:unitPrice,stockQuantity,quantity:stockQuantity,stock:stockQuantity,minStockLevel,minQuantity:minStockLevel}};
-const order=(raw,forcedType)=>{const x=ids(raw),type=forcedType||typeOf(x),clientId=findLegacy('clients',x.clientId??x.customerId),client=readSync('clients').find(c=>String(c.id)===String(clientId)),projectId=findLegacy('orders',x.projectId,'project'),quoteId=findLegacy('orders',x.quoteId,'quote'),title=x.title||x.name||'',name=x.name||x.title||'',clientName=client?.name||x.clientName||x.client||'Cliente non specificato',deadline=x.deadline||x.endDate||x.estimatedDelivery||'',amount=Number(x.amount??x.total??money(x.budget))||0;return{...x,id:String(x.id||id()),type,clientId,customerId:x.customerId!==undefined?clientId:x.customerId,projectId,quoteId,title,name,clientName,client:clientName,deadline,endDate:x.endDate||deadline,amount,budget:x.budget??amount,items:Array.isArray(x.items)?x.items.map(line=>({...ids(line),materialId:findLegacy('materials',line.materialId),quantity:Number(line.quantity||0),unitPrice:Number(line.unitPrice||0),taxRate:Number(line.taxRate||0)})):x.items}};
-const fail=(res,e,msg)=>{console.error(msg,e);res.status(500).json({error:msg})};
-
-const migrate=async()=>{const original=readSync('orders'),orders=original.map(x=>order(x)),known=new Set(orders.map(x=>x.id));let changed=orders.some((x,i)=>JSON.stringify(x)!==JSON.stringify(original[i]));for(const [name,type] of [['projects','project'],['quotes','quote'],['invoices','invoice']]){const p=path.join(DATA_DIR,`${name}.json`);if(!fs.existsSync(p))continue;try{const legacy=JSON.parse(fs.readFileSync(p,'utf8'));if(Array.isArray(legacy))for(const x of legacy){const normalized=order(x,type);if(!known.has(normalized.id)){orders.push(normalized);known.add(normalized.id);changed=true}}}catch(e){console.error(`Errore migrazione ${name}:`,e)}}if(changed)await atomicWrite('orders',orders);const materials=readSync('materials').map(material);if(materials.length)await atomicWrite('materials',materials)};
-
-app.get('/api/health',(req,res)=>res.json({status:'ok',timestamp:new Date().toISOString(),version:'1.1.0'}));
-app.head('/api/health',(req,res)=>res.sendStatus(200));
-app.post('/api/auth/login',async(req,res)=>{try{const{username,password}=req.body;if(!username||!password)return res.status(400).json({error:'Username e password richiesti'});const user=findUserByCredentials(username);if(!user||!(await verifyPassword(password,user.password)))return res.status(401).json({error:'Credenziali non valide'});const safe={id:String(user.id),username:user.username,email:user.email,firstName:user.firstName,lastName:user.lastName,role:user.role,permissions:user.permissions};res.json({token:generateToken(user),user:safe})}catch(e){fail(res,e,'Errore interno del server')}});
-app.post('/api/auth/logout',authenticateToken,(req,res)=>res.json({message:'Logout effettuato'}));
-app.get('/api/auth/me',authenticateToken,(req,res)=>{const u=req.user;res.json({user:{id:String(u.id),username:u.username,email:u.email,firstName:u.firstName,lastName:u.lastName,role:u.role,permissions:u.permissions}})});
-app.put('/api/auth/profile',authenticateToken,(req,res)=>{try{const users=readUsers(),index=users.findIndex(u=>String(u.id)===String(req.user.id));if(index<0)return res.status(404).json({error:'Utente non trovato'});const updates=Object.fromEntries(['username','email','firstName','lastName'].filter(k=>req.body[k]!==undefined).map(k=>[k,req.body[k]]));if(users.some((u,i)=>i!==index&&((updates.username&&u.username===updates.username)||(updates.email&&u.email===updates.email))))return res.status(400).json({error:'Username o email già utilizzati'});users[index]={...users[index],...updates,updatedAt:new Date().toISOString()};if(!writeUsers(users))throw new Error('Salvataggio fallito');const{password,...safe}=users[index];res.json({user:{...safe,id:String(safe.id)}})}catch(e){fail(res,e,'Errore durante l’aggiornamento del profilo')}});
-
-app.get('/api/users',authenticateToken,requireRole('admin'),(req,res)=>res.json(readUsers().map(({password,...u})=>({...u,id:String(u.id)}))));
-app.post('/api/users',authenticateToken,requireRole('admin'),async(req,res)=>{try{const{username,email,password,firstName,lastName,role,permissions}=req.body;if(!username||!email||!password||!firstName||!lastName||!role)return res.status(400).json({error:'Tutti i campi sono richiesti'});const users=readUsers();if(users.some(u=>u.username===username||u.email===email))return res.status(400).json({error:'Username o email già esistenti'});const u={id:id(),username,email,password:await hashPassword(password),firstName,lastName,role,permissions:Array.isArray(permissions)?permissions:[],isActive:true,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};users.push(u);if(!writeUsers(users))throw new Error('Salvataggio fallito');const{password:ignored,...safe}=u;res.status(201).json(safe)}catch(e){fail(res,e,'Errore nella creazione utente')}});
-app.put('/api/users/:id',authenticateToken,requireRole('admin'),async(req,res)=>{try{const users=readUsers(),index=users.findIndex(u=>String(u.id)===String(req.params.id));if(index<0)return res.status(404).json({error:'Utente non trovato'});const updates={...req.body,id:users[index].id,updatedAt:new Date().toISOString(),password:req.body.password?await hashPassword(req.body.password):users[index].password};users[index]={...users[index],...updates};if(!writeUsers(users))throw new Error('Salvataggio fallito');const{password,...safe}=users[index];res.json(safe)}catch(e){fail(res,e,'Errore nell’aggiornamento utente')}});
-
-const crud=({route,collection,permission,normalize=ids,forcedType,filter})=>{
-  app.get(`/api/${route}`,authenticateToken,requirePermission(`${permission}.view`),async(req,res)=>{const list=(await read(collection)).map(x=>normalize(x));res.json(filter?list.filter(filter):list)});
-  app.get(`/api/${route}/:id`,authenticateToken,requirePermission(`${permission}.view`),async(req,res)=>{const list=(await read(collection)).map(x=>normalize(x)),item=list.find(x=>String(x.id)===String(req.params.id)&&(!filter||filter(x)));item?res.json(item):res.status(404).json({error:'Elemento non trovato'})});
-  app.post(`/api/${route}`,authenticateToken,requirePermission(`${permission}.create`),async(req,res)=>{try{const value=await mutate(collection,async list=>{const now=new Date().toISOString(),created=normalize({...req.body,id:req.body.id||id(),createdAt:now,updatedAt:now},forcedType);return{data:[...list,created],value:created}});res.status(201).json(value)}catch(e){fail(res,e,'Errore nella creazione')}});
-  const update=async(req,res)=>{try{const value=await mutate(collection,async list=>{const index=list.findIndex(x=>String(x.id)===String(req.params.id)&&(!filter||filter(normalize(x))));if(index<0)return{data:list,value:null};const updated=normalize({...list[index],...req.body,id:list[index].id,updatedAt:new Date().toISOString()},forcedType),data=[...list];data[index]=updated;return{data,value:updated}});value?res.json(value):res.status(404).json({error:'Elemento non trovato'})}catch(e){fail(res,e,'Errore nell’aggiornamento')}};
-  app.put(`/api/${route}/:id`,authenticateToken,requirePermission(`${permission}.edit`),update);
-  app.patch(`/api/${route}/:id`,authenticateToken,requirePermission(`${permission}.edit`),update);
-  app.delete(`/api/${route}/:id`,authenticateToken,requirePermission(`${permission}.delete`),async(req,res)=>{try{const deleted=await mutate(collection,async list=>{const data=list.filter(x=>!(String(x.id)===String(req.params.id)&&(!filter||filter(normalize(x)))));return{data,value:data.length!==list.length}});deleted?res.json({message:'Elemento eliminato'}):res.status(404).json({error:'Elemento non trovato'})}catch(e){fail(res,e,'Errore nell’eliminazione')}})
+const start = async () => {
+  instance = await createCrmServer({
+    port: Number(process.env.PORT || 3001),
+    host: process.env.HOST || '0.0.0.0',
+    dataDir: process.env.CRM_DATA_DIR || path.join(__dirname, 'data'),
+    backupDir: process.env.CRM_BACKUP_DIR || undefined,
+    serverName: process.env.CRM_SERVER_NAME || 'crm-marmeria',
+  });
+  console.log(`CRM Marmeria centrale attivo su ${instance.host}:${instance.port}`);
 };
 
-app.get('/api/clients/stats',authenticateToken,requirePermission('clients.view'),async(req,res)=>{const list=await read('clients');res.json({total:list.length,recentlyAdded:list.filter(x=>new Date(x.createdAt).getTime()>Date.now()-604800000).length})});
-app.get('/api/clients/search',authenticateToken,requirePermission('clients.view'),async(req,res)=>{const q=String(req.query.q||'').toLowerCase();res.json((await read('clients')).filter(x=>String(x.name||'').toLowerCase().includes(q)||String(x.email||'').toLowerCase().includes(q)||String(x.phone||'').includes(q)))});
-crud({route:'clients',collection:'clients',permission:'clients'});
+const shutdown = async () => {
+  try {
+    if (instance) await instance.close();
+  } finally {
+    process.exit(0);
+  }
+};
 
-app.get('/api/orders/stats',authenticateToken,requirePermission('orders.view'),async(req,res)=>{const list=(await read('orders')).map(x=>order(x)).filter(x=>x.type==='order'),totalRevenue=list.reduce((s,x)=>s+Number(x.amount||x.total||0),0);res.json({total:list.length,totalRevenue,averageOrderValue:list.length?totalRevenue/list.length:0,pendingOrders:list.filter(x=>['pending','In Attesa'].includes(x.status)).length,completedOrders:list.filter(x=>['completed','Completato'].includes(x.status)).length})});
-app.get('/api/orders/search',authenticateToken,requirePermission('orders.view'),async(req,res)=>{const q=String(req.query.q||'').toLowerCase(),list=(await read('orders')).map(x=>order(x)).filter(x=>x.type==='order');res.json(list.filter(x=>String(x.title||x.name||'').toLowerCase().includes(q)||String(x.clientName||'').toLowerCase().includes(q)))});
-app.get('/api/orders/by-status/:status',authenticateToken,requirePermission('orders.view'),async(req,res)=>res.json((await read('orders')).map(x=>order(x)).filter(x=>x.type==='order'&&x.status===req.params.status)));
-const statusUpdate=async(req,res)=>{try{const value=await mutate('orders',async list=>{const index=list.findIndex(x=>String(x.id)===String(req.params.id)&&typeOf(x)==='order');if(index<0)return{data:list,value:null};const updated=order({...list[index],status:req.body.status,updatedAt:new Date().toISOString()}),data=[...list];data[index]=updated;return{data,value:updated}});value?res.json(value):res.status(404).json({error:'Ordine non trovato'})}catch(e){fail(res,e,'Errore nell’aggiornamento dello stato')}};
-app.patch('/api/orders/:id/status',authenticateToken,requirePermission('orders.edit'),statusUpdate);
-app.put('/api/orders/:id/status',authenticateToken,requirePermission('orders.edit'),statusUpdate);
-crud({route:'orders',collection:'orders',permission:'orders',normalize:order,forcedType:'order',filter:x=>typeOf(x)==='order'});
-crud({route:'projects',collection:'orders',permission:'projects',normalize:order,forcedType:'project',filter:x=>typeOf(x)==='project'});
-crud({route:'quotes',collection:'orders',permission:'quotes',normalize:order,forcedType:'quote',filter:x=>typeOf(x)==='quote'});
-crud({route:'invoices',collection:'orders',permission:'invoices',normalize:order,forcedType:'invoice',filter:x=>typeOf(x)==='invoice'});
-
-app.get('/api/materials/stats',authenticateToken,requirePermission('materials.view'),async(req,res)=>{const list=(await read('materials')).map(material),low=list.filter(x=>x.stockQuantity<x.minStockLevel);res.json({total:list.length,lowStock:low.length,lowStockItems:low.length,totalValue:list.reduce((s,x)=>s+x.unitPrice*x.stockQuantity,0)})});
-app.get('/api/materials/categories',authenticateToken,requirePermission('materials.view'),async(req,res)=>res.json([...new Set((await read('materials')).map(x=>x.category||'Altro'))]));
-app.get('/api/materials/suppliers',authenticateToken,requirePermission('materials.view'),async(req,res)=>res.json([...new Set((await read('materials')).map(x=>x.supplier||'Non specificato'))]));
-app.get('/api/materials/search',authenticateToken,requirePermission('materials.view'),async(req,res)=>{const q=String(req.query.q||'').toLowerCase();res.json((await read('materials')).map(material).filter(x=>String(x.name||'').toLowerCase().includes(q)||String(x.category||'').toLowerCase().includes(q)||String(x.supplier||'').toLowerCase().includes(q)))});
-crud({route:'materials',collection:'materials',permission:'materials',normalize:material});
-
-app.get('/api/backup',authenticateToken,requirePermission('settings.view'),async(req,res)=>res.json({version:'2.0',exportDate:new Date().toISOString(),data:{clients:await read('clients'),orders:(await read('orders')).map(x=>order(x)),materials:(await read('materials')).map(material),users:readUsers()}}));
-app.post('/api/backup/restore',authenticateToken,requirePermission('settings.edit'),async(req,res)=>{try{const backup=req.body;if(!backup?.version||!backup?.data)return res.status(400).json({error:'Backup non valido'});await Promise.all([mutate('clients',async()=>({data:Array.isArray(backup.data.clients)?backup.data.clients.map(ids):[],value:true})),mutate('orders',async()=>({data:Array.isArray(backup.data.orders)?backup.data.orders.map(x=>order(x)):[],value:true})),mutate('materials',async()=>({data:Array.isArray(backup.data.materials)?backup.data.materials.map(material):[],value:true}))]);if(Array.isArray(backup.data.users)&&!writeUsers(backup.data.users))throw new Error('Ripristino utenti fallito');res.json({message:'Backup ripristinato'})}catch(e){fail(res,e,'Errore durante il ripristino del backup')}});
-app.post('/api/backup/clear',authenticateToken,requirePermission('settings.edit'),async(req,res)=>{try{await Promise.all(COLLECTIONS.map(name=>mutate(name,async()=>({data:[],value:true}))));res.json({message:'Dati cancellati'})}catch(e){fail(res,e,'Errore durante la cancellazione')}});
-
-app.get('/api/analytics/dashboard',authenticateToken,requirePermission('dashboard.view'),async(req,res)=>{const orders=(await read('orders')).map(x=>order(x)),clients=await read('clients'),materials=(await read('materials')).map(material),projects=orders.filter(x=>x.type==='project'),invoices=orders.filter(x=>x.type==='invoice');res.json({totalOrders:orders.length,totalProjects:projects.length,totalClients:clients.length,totalRevenue:invoices.reduce((s,x)=>s+Number(x.total||x.amount||0),0),pendingOrders:projects.filter(x=>x.status==='In Attesa').length,inProgressOrders:projects.filter(x=>['In Corso','In Lavorazione'].includes(x.status)).length,completedOrders:projects.filter(x=>x.status==='Completato').length,lowStockMaterials:materials.filter(x=>x.stockQuantity<x.minStockLevel).length,recentClients:clients.filter(x=>new Date(x.createdAt).getTime()>Date.now()-604800000).length})});
-app.get('/api/analytics/daily/:date?',authenticateToken,requirePermission('dashboard.view'),async(req,res)=>{const date=req.params.date||new Date().toISOString().slice(0,10),orders=(await read('orders')).map(x=>order(x)).filter(x=>String(x.createdAt||'').slice(0,10)===date),clients=(await read('clients')).filter(x=>String(x.createdAt||'').slice(0,10)===date);res.json({date,totalOrders:orders.length,totalRevenue:orders.reduce((s,x)=>s+Number(x.amount||x.total||0),0),newClients:clients.length,pendingOrders:orders.filter(x=>['pending','In Attesa'].includes(x.status)).length,completedOrders:orders.filter(x=>['completed','Completato'].includes(x.status)).length})});
-app.get('/api/analytics/trends',authenticateToken,requirePermission('dashboard.view'),async(req,res)=>{const{metric='orders',startDate,endDate}=req.query,orders=(await read('orders')).map(x=>order(x)),clients=await read('clients'),start=new Date(startDate||Date.now()-2592000000),end=new Date(endDate||Date.now()),data=[];for(const d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const date=d.toISOString().slice(0,10);let value=metric==='clients'?clients.filter(x=>String(x.createdAt||'').slice(0,10)===date).length:metric==='revenue'?orders.filter(x=>x.type==='invoice'&&String(x.createdAt||'').slice(0,10)===date).reduce((s,x)=>s+Number(x.total||x.amount||0),0):orders.filter(x=>String(x.createdAt||'').slice(0,10)===date).length;data.push({date,value,label:date})}res.json(data)});
-
-app.use((err,req,res,next)=>{if(err instanceof SyntaxError&&err.status===400)return res.status(400).json({error:'JSON non valido'});console.error(err);res.status(500).json({error:'Errore interno del server'})});
-app.use('*',(req,res)=>res.status(404).json({error:'Endpoint non trovato'}));
-let server;
-const start=async()=>{await migrate();server=app.listen(PORT,'0.0.0.0',()=>console.log(`CRM Marmeria API Server avviato sulla porta ${PORT}`));server.keepAliveTimeout=65000;server.headersTimeout=66000;server.maxConnections=100};
-start().catch(e=>{console.error('Impossibile avviare il server:',e);process.exit(1)});
-const stop=()=>server?server.close(()=>process.exit(0)):process.exit(0);
-process.on('SIGTERM',stop);process.on('SIGINT',stop);
-module.exports=app;
+start().catch((error) => {
+  console.error('Avvio server fallito:', error);
+  process.exit(1);
+});
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
