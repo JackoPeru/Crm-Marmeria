@@ -1,27 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw, Trash2, WifiOff } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
-import { offlineQueue, QueuedRequest } from '../services/offlineQueue';
+import { offlineQueue } from '../services/offlineQueue';
+import type { QueuedRequest } from '../services/offlineQueue';
 
 const OfflineQueuePanel: React.FC = () => {
   const [items, setItems] = useState<QueuedRequest[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const load = async () => setItems(await offlineQueue.list());
+  const load = async () => {
+    try {
+      setItems(await offlineQueue.list());
+    } catch (error) {
+      console.error('Lettura coda offline fallita:', error);
+    }
+  };
 
   useEffect(() => {
     void load();
     const listener = () => void load();
     window.addEventListener('crm-offline-queue-changed', listener);
-    return () => window.removeEventListener('crm-offline-queue-changed', listener);
+    window.addEventListener('crm-auth-changed', listener);
+    window.addEventListener('crm-api-url-changed', listener);
+    return () => {
+      window.removeEventListener('crm-offline-queue-changed', listener);
+      window.removeEventListener('crm-auth-changed', listener);
+      window.removeEventListener('crm-api-url-changed', listener);
+    };
   }, []);
 
   const retry = async (item: QueuedRequest) => {
     setBusyId(item.id);
     try {
-      await offlineQueue.unblock(item.id);
+      await offlineQueue.unblock(item.id, true);
       await apiClient.replayOfflineQueue();
       await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Invio modifica non riuscito');
     } finally {
       setBusyId(null);
     }
@@ -29,23 +45,30 @@ const OfflineQueuePanel: React.FC = () => {
 
   const remove = async (item: QueuedRequest) => {
     if (!window.confirm('Eliminare questa modifica dalla coda senza inviarla al server?')) return;
-    await offlineQueue.remove(item.id);
-    await load();
+    try {
+      await offlineQueue.remove(item.id);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Eliminazione dalla coda non riuscita');
+    }
   };
 
   if (!items.length) return null;
 
   return (
-    <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
-      <h3 className="text-xl font-semibold text-gray-700 dark:text-gray-200 flex items-center mb-3">
-        <WifiOff size={23} className="mr-3 text-orange-500" /> Modifiche offline in attesa
+    <div className="mb-6 p-5 bg-white dark:bg-dark-card rounded-lg shadow-md">
+      <h3 className="text-lg font-semibold text-gray-700 dark:text-gray-200 flex items-center mb-2">
+        <WifiOff size={21} className="mr-3 text-orange-500" /> Modifiche offline in attesa
       </h3>
       <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-        Le operazioni normali vengono inviate automaticamente. Quelle con un conflitto restano bloccate finché non vengono controllate.
+        Le modifiche normali vengono inviate automaticamente. In caso di conflitto, “Riprova” applica la modifica sulla versione più recente del record.
       </p>
       <div className="space-y-3 max-h-72 overflow-y-auto">
         {items.map((item) => (
-          <div key={item.id} className={`p-3 border rounded-md ${item.blocked ? 'border-red-300 bg-red-50 dark:bg-red-900/10' : 'border-orange-200 bg-orange-50 dark:bg-orange-900/10'}`}>
+          <div
+            key={item.id}
+            className={`p-3 border rounded-md ${item.blocked ? 'border-red-300 bg-red-50 dark:bg-red-900/10' : 'border-orange-200 bg-orange-50 dark:bg-orange-900/10'}`}
+          >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="font-medium break-all">{item.method.toUpperCase()} {item.url}</p>
