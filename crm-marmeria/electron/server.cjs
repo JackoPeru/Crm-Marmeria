@@ -10,7 +10,7 @@ class CentralCrmServer {
     this.instance = null;
     this.discovery = null;
     this.port = null;
-    this.sharedDataPath = null;
+    this.backupPath = null;
     this.serverId = null;
   }
 
@@ -59,46 +59,81 @@ class CentralCrmServer {
     }
   }
 
-  async start(port = 3001, backupPath = null, options = {}) {
-    if (this.instance) return { success: true, message: 'Server già attivo', ...this.getStatus() };
+  resolveBackupPath(selectedPath, root) {
+    if (!selectedPath) return path.join(root, 'backups');
+    const resolvedSelection = path.resolve(String(selectedPath));
+    fs.mkdirSync(resolvedSelection, { recursive: true });
+    return path.basename(resolvedSelection) === 'CRM-Marmeria-Backups'
+      ? resolvedSelection
+      : path.join(resolvedSelection, 'CRM-Marmeria-Backups');
+  }
 
-    const discovered = await discoverMasters(1200);
-    const ownId = this.getServerId();
-    const otherMasters = discovered.filter((master) => master.serverId !== ownId);
-    if (otherMasters.length && !options.force) {
-      const error = new Error(`Esiste già un server principale sulla rete: ${otherMasters[0].name || otherMasters[0].hostname} (${otherMasters[0].apiUrl})`);
-      error.code = 'MASTER_ALREADY_EXISTS';
-      error.masters = otherMasters;
-      throw error;
+  async start(port = 3001, selectedBackupPath = null, options = {}) {
+    const numericPort = Number(port);
+    if (!Number.isInteger(numericPort) || numericPort < 1024 || numericPort > 65535) {
+      throw new Error('La porta del server deve essere compresa tra 1024 e 65535');
     }
 
     const root = path.join(app.getPath('userData'), 'crm-central-data');
     const dataDir = path.join(root, 'data');
     const attachmentsDir = path.join(root, 'attachments');
-    const backupDir = backupPath || path.join(root, 'backups');
+    const backupDir = this.resolveBackupPath(selectedBackupPath, root);
+
+    if (
+      this.instance
+      && this.port === numericPort
+      && path.resolve(this.backupPath) === path.resolve(backupDir)
+    ) {
+      return { success: true, message: 'Server già attivo', ...this.getStatus() };
+    }
+
+    if (this.instance) await this.stop();
+
+    const discovered = await discoverMasters(1200);
+    const ownId = this.getServerId();
+    const otherMasters = discovered.filter((master) => master.serverId !== ownId);
+    if (otherMasters.length && !options.force) {
+      const error = new Error(
+        `Esiste già un server principale sulla rete: ${otherMasters[0].name || otherMasters[0].hostname} (${otherMasters[0].apiUrl})`,
+      );
+      error.code = 'MASTER_ALREADY_EXISTS';
+      error.masters = otherMasters;
+      throw error;
+    }
+
     fs.mkdirSync(dataDir, { recursive: true });
     fs.mkdirSync(attachmentsDir, { recursive: true });
     fs.mkdirSync(backupDir, { recursive: true });
     this.migrateLegacyData(dataDir);
 
-    this.instance = await createCrmServer({
-      port: Number(port),
-      host: '0.0.0.0',
-      dataDir,
-      attachmentsDir,
-      backupDir,
-      serverName: 'CRM Marmeria',
-      serverId: ownId,
-    });
-    this.port = Number(port);
-    this.sharedDataPath = backupDir;
-    this.discovery = new DiscoveryAdvertiser({
-      port: this.port,
-      serverId: ownId,
-      name: 'CRM Marmeria',
-    });
-    this.discovery.start();
-    return { success: true, message: 'Server centrale avviato', ...this.getStatus() };
+    try {
+      this.instance = await createCrmServer({
+        port: numericPort,
+        host: '0.0.0.0',
+        dataDir,
+        attachmentsDir,
+        backupDir,
+        serverName: 'CRM Marmeria',
+        serverId: ownId,
+      });
+      this.port = this.instance.port;
+      this.backupPath = backupDir;
+      this.discovery = new DiscoveryAdvertiser({
+        port: this.port,
+        serverId: ownId,
+        name: 'CRM Marmeria',
+      });
+      this.discovery.start();
+      return { success: true, message: 'Server centrale avviato', ...this.getStatus() };
+    } catch (error) {
+      this.discovery?.stop();
+      this.discovery = null;
+      if (this.instance) await this.instance.close().catch(() => undefined);
+      this.instance = null;
+      this.port = null;
+      this.backupPath = null;
+      throw error;
+    }
   }
 
   async stop() {
@@ -107,6 +142,7 @@ class CentralCrmServer {
     if (this.instance) await this.instance.close();
     this.instance = null;
     this.port = null;
+    this.backupPath = null;
     return { success: true, message: 'Server centrale arrestato' };
   }
 
@@ -118,9 +154,11 @@ class CentralCrmServer {
       port: this.port,
       serverId: this.getServerId(),
       addresses,
-      apiUrls: this.port ? addresses.map((address) => `http://${address}:${this.port}/api`) : [],
+      apiUrls: this.port
+        ? addresses.map((address) => `http://${address}:${this.port}/api`)
+        : [],
       localApiUrl: this.port ? `http://127.0.0.1:${this.port}/api` : null,
-      backupPath: this.sharedDataPath,
+      backupPath: this.backupPath,
     };
   }
 }
