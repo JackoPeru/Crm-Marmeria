@@ -6,23 +6,22 @@ const crypto = require('crypto');
 
 let dataDirectory = path.join(__dirname, '../data');
 let jwtSecret = process.env.JWT_SECRET || null;
+let usersMutationQueue = Promise.resolve();
 const seedUsersPath = path.join(__dirname, '../data/users.json');
 const JWT_EXPIRES_IN = '24h';
 
 const usersFile = () => path.join(dataDirectory, 'users.json');
+
 const readUsers = () => {
-  try {
-    if (!fs.existsSync(usersFile())) return [];
-    const users = JSON.parse(fs.readFileSync(usersFile(), 'utf8'));
-    return Array.isArray(users) ? users : [];
-  } catch (error) {
-    console.error('Errore lettura utenti:', error);
-    return [];
-  }
+  if (!fs.existsSync(usersFile())) return [];
+  const users = JSON.parse(fs.readFileSync(usersFile(), 'utf8'));
+  if (!Array.isArray(users)) throw new Error('Il file utenti non contiene un elenco valido');
+  return users;
 };
+
 const writeUsers = (users) => {
   const filePath = usersFile();
-  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   try {
     fs.writeFileSync(temporary, JSON.stringify(users, null, 2));
     fs.renameSync(temporary, filePath);
@@ -33,8 +32,22 @@ const writeUsers = (users) => {
     return false;
   }
 };
+
+const mutateUsers = (mutator) => {
+  const task = usersMutationQueue.then(async () => {
+    const users = readUsers();
+    const result = await mutator(users);
+    if (result?.write !== false && !writeUsers(users)) {
+      throw new Error('Salvataggio utenti fallito');
+    }
+    return result?.value;
+  });
+  usersMutationQueue = task.catch(() => undefined);
+  return task;
+};
+
 const writeJsonAtomically = (filePath, value) => {
-  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2));
   fs.renameSync(temporary, filePath);
 };
@@ -50,9 +63,12 @@ const configureAuth = ({ dataDir }) => {
       fs.writeFileSync(usersPath, '[]');
     }
   }
+
   if (!jwtSecret) {
     const secretPath = path.join(dataDirectory, '.jwt-secret');
-    if (!fs.existsSync(secretPath)) fs.writeFileSync(secretPath, crypto.randomBytes(48).toString('hex'));
+    if (!fs.existsSync(secretPath)) {
+      fs.writeFileSync(secretPath, crypto.randomBytes(48).toString('hex'));
+    }
     jwtSecret = fs.readFileSync(secretPath, 'utf8').trim();
   }
 
@@ -72,10 +88,10 @@ const configureAuth = ({ dataDir }) => {
     if (permissions.size !== before) usersChanged = true;
     return { ...user, permissions: [...permissions] };
   });
-  if (usersChanged && !writeUsers(migratedUsers)) throw new Error('Migrazione permessi operai fallita');
+  if (usersChanged && !writeUsers(migratedUsers)) {
+    throw new Error('Migrazione permessi operai fallita');
+  }
 
-  // Conserva la classificazione commerciale dei clienti prima che la
-  // migrazione SQLite usi il campo tecnico entity_type.
   const clientsPath = path.join(dataDirectory, 'clients.json');
   if (fs.existsSync(clientsPath)) {
     try {
@@ -101,19 +117,24 @@ const verifyToken = (token) => {
   if (!token || !jwtSecret) return null;
   try {
     const payload = jwt.verify(token, jwtSecret);
-    return readUsers().find((user) => String(user.id) === String(payload.id) && user.isActive) || null;
+    return readUsers().find(
+      (user) => String(user.id) === String(payload.id) && user.isActive,
+    ) || null;
   } catch {
     return null;
   }
 };
+
 const authenticateToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Token di accesso richiesto' });
   const user = verifyToken(token);
-  if (!user) return res.status(403).json({ error: 'Token non valido o utente disattivato' });
+  if (!user) return res.status(401).json({ error: 'Sessione scaduta o utente disattivato' });
   req.user = user;
+  req.authToken = token;
   next();
 };
+
 const requirePermission = (permission) => (req, res, next) => {
   if (!req.user) return res.status(401).json({ error: 'Autenticazione richiesta' });
   if (!Array.isArray(req.user.permissions) || !req.user.permissions.includes(permission)) {
@@ -121,15 +142,23 @@ const requirePermission = (permission) => (req, res, next) => {
   }
   next();
 };
+
 const requireRole = (roles) => {
   const allowed = Array.isArray(roles) ? roles : [roles];
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Autenticazione richiesta' });
-    if (!allowed.includes(req.user.role)) return res.status(403).json({ error: 'Ruolo insufficiente' });
+    if (!allowed.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Ruolo insufficiente' });
+    }
     next();
   };
 };
-const generateToken = (user) => jwt.sign({ id: String(user.id) }, jwtSecret, { expiresIn: JWT_EXPIRES_IN });
+
+const generateToken = (user) => jwt.sign(
+  { id: String(user.id) },
+  jwtSecret,
+  { expiresIn: JWT_EXPIRES_IN },
+);
 const hashPassword = (password) => bcrypt.hash(password, 10);
 const verifyPassword = (password, hashedPassword) => bcrypt.compare(password, hashedPassword);
 const findUserByCredentials = (identifier) => readUsers().find((user) => (
@@ -137,7 +166,17 @@ const findUserByCredentials = (identifier) => readUsers().find((user) => (
 ));
 
 module.exports = {
-  configureAuth, authenticateToken, requirePermission, requireRole,
-  generateToken, hashPassword, verifyPassword, verifyToken,
-  findUserByCredentials, readUsers, writeUsers,
+  configureAuth,
+  authenticateToken,
+  requirePermission,
+  requireRole,
+  generateToken,
+  hashPassword,
+  verifyPassword,
+  verifyToken,
+  findUserByCredentials,
+  readUsers,
+  writeUsers,
+  mutateUsers,
+  usersFile,
 };
