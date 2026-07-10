@@ -32,26 +32,12 @@ const ROUTES = {
 
 const WORKER_FIELDS = {
   project: [
-    'status',
-    'phase',
-    'productionNotes',
-    'notes',
-    'measurements',
-    'completedAt',
-    'startedAt',
-    'assignedTo',
-    'progress',
+    'status', 'phase', 'productionNotes', 'notes', 'measurements',
+    'completedAt', 'startedAt', 'assignedTo', 'progress',
   ],
   order: [
-    'status',
-    'phase',
-    'productionNotes',
-    'notes',
-    'measurements',
-    'completedAt',
-    'startedAt',
-    'assignedTo',
-    'progress',
+    'status', 'phase', 'productionNotes', 'notes', 'measurements',
+    'completedAt', 'startedAt', 'assignedTo', 'progress',
   ],
   material: ['stockQuantity', 'quantity', 'stock', 'notes'],
 };
@@ -72,8 +58,12 @@ const publicActor = (user) => ({
   username: user.username,
 });
 
-const normalize = (type, raw = {}) => {
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+const hasAny = (object, keys) => keys.some((key) => hasOwn(object, key));
+
+const normalize = (type, raw = {}, { defaults = false } = {}) => {
   const data = { ...raw };
+
   for (const key of ['id', 'clientId', 'customerId', 'projectId', 'quoteId', 'materialId']) {
     if (data[key] != null && data[key] !== '') data[key] = String(data[key]);
   }
@@ -91,38 +81,57 @@ const normalize = (type, raw = {}) => {
   }
 
   if (type === 'client') {
-    const clientType = data.clientType
-      || (['Azienda', 'Privato'].includes(data.type) ? data.type : 'Privato');
-    data.type = clientType;
-    data.clientType = clientType;
+    if (defaults || hasAny(data, ['type', 'clientType'])) {
+      const clientType = data.clientType
+        || (['Azienda', 'Privato'].includes(data.type) ? data.type : 'Privato');
+      data.type = clientType;
+      data.clientType = clientType;
+    }
     data.entityType = 'client';
   }
 
   if (type === 'material') {
-    const unitPrice = Number(data.unitPrice ?? data.price ?? 0) || 0;
-    const stockQuantity = Number(data.stockQuantity ?? data.quantity ?? data.stock ?? 0) || 0;
-    const minStockLevel = Number(data.minStockLevel ?? data.minQuantity ?? 10) || 0;
-    Object.assign(data, {
-      type: 'material',
-      entityType: 'material',
-      unitPrice,
-      price: unitPrice,
-      stockQuantity,
-      quantity: stockQuantity,
-      stock: stockQuantity,
-      minStockLevel,
-      minQuantity: minStockLevel,
-    });
+    data.type = 'material';
+    data.entityType = 'material';
+
+    if (defaults || hasAny(data, ['unitPrice', 'price'])) {
+      const unitPrice = Number(data.unitPrice ?? data.price ?? 0) || 0;
+      data.unitPrice = unitPrice;
+      data.price = unitPrice;
+    }
+    if (defaults || hasAny(data, ['stockQuantity', 'quantity', 'stock'])) {
+      const stockQuantity = Number(
+        data.stockQuantity ?? data.quantity ?? data.stock ?? 0,
+      ) || 0;
+      data.stockQuantity = stockQuantity;
+      data.quantity = stockQuantity;
+      data.stock = stockQuantity;
+    }
+    if (defaults || hasAny(data, ['minStockLevel', 'minQuantity'])) {
+      const minStockLevel = Number(
+        data.minStockLevel ?? data.minQuantity ?? 10,
+      ) || 0;
+      data.minStockLevel = minStockLevel;
+      data.minQuantity = minStockLevel;
+    }
   }
 
   if (['order', 'project', 'quote', 'invoice'].includes(type)) {
     data.type = type;
     data.entityType = type;
-    data.title = data.title || data.name || '';
-    data.name = data.name || data.title || '';
-    data.deadline = data.deadline || data.endDate || data.estimatedDelivery || '';
-    data.endDate = data.endDate || data.deadline || '';
-    if (data.amount != null || data.total != null) {
+
+    if (defaults || hasAny(data, ['title', 'name'])) {
+      const title = data.title ?? data.name ?? '';
+      const name = data.name ?? data.title ?? '';
+      data.title = title;
+      data.name = name;
+    }
+    if (defaults || hasAny(data, ['deadline', 'endDate', 'estimatedDelivery'])) {
+      const deadline = data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '';
+      data.deadline = deadline;
+      data.endDate = data.endDate ?? deadline;
+    }
+    if (hasAny(data, ['amount', 'total'])) {
       data.amount = Number(data.amount ?? data.total) || 0;
     }
   }
@@ -133,24 +142,18 @@ const normalize = (type, raw = {}) => {
 const sanitizePatch = (user, type, input = {}) => {
   const patch = { ...input };
   for (const key of [
-    'id',
-    'type',
-    'entityType',
-    'createdAt',
-    'updatedAt',
-    'version',
-    'operationId',
-    'expectedVersion',
+    'id', 'type', 'entityType', 'createdAt', 'updatedAt',
+    'version', 'operationId', 'expectedVersion',
   ]) {
     delete patch[key];
   }
 
-  if (user.role === 'admin' || user.role === 'manager') return normalize(type, patch);
-  const allowed = WORKER_FIELDS[type] || [];
-  return normalize(
-    type,
-    Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.includes(key))),
-  );
+  const entries = user.role === 'admin' || user.role === 'manager'
+    ? Object.entries(patch)
+    : Object.entries(patch).filter(([key]) => (WORKER_FIELDS[type] || []).includes(key));
+
+  if (!entries.length) return null;
+  return normalize(type, Object.fromEntries(entries));
 };
 
 const expectedVersionFrom = (req) => {
@@ -408,13 +411,8 @@ async function createCrmServer(options = {}) {
         ? await hashPassword(String(req.body.password))
         : null;
       const allowed = [
-        'username',
-        'email',
-        'firstName',
-        'lastName',
-        'role',
-        'permissions',
-        'isActive',
+        'username', 'email', 'firstName', 'lastName',
+        'role', 'permissions', 'isActive',
       ];
       const updatedUser = await mutateUsers(async (users) => {
         const index = users.findIndex((user) => String(user.id) === String(req.params.id));
@@ -530,10 +528,12 @@ async function createCrmServer(options = {}) {
 
   const updateOrderStatus = (req, res) => {
     try {
+      const patch = sanitizePatch(req.user, 'order', { status: req.body.status });
+      if (!patch) return res.status(400).json({ error: 'Stato richiesto' });
       const result = db.update(
         'order',
         req.params.id,
-        sanitizePatch(req.user, 'order', { status: req.body.status }),
+        patch,
         expectedVersionFrom(req),
         req.user,
         operationIdFrom(req, `order:status:${req.params.id}`),
@@ -544,9 +544,9 @@ async function createCrmServer(options = {}) {
         item: result.item,
         actor: publicActor(req.user),
       }, 'orders.view');
-      res.json(result.item);
+      return res.json(result.item);
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   };
 
@@ -570,8 +570,8 @@ async function createCrmServer(options = {}) {
       try {
         const payload = req.user.role === 'worker'
           ? sanitizePatch(req.user, config.type, req.body)
-          : normalize(config.type, req.body);
-        if (req.user.role === 'worker' && Object.keys(payload).length === 0) {
+          : normalize(config.type, req.body, { defaults: true });
+        if (!payload) {
           return res.status(403).json({ error: 'Nessun campo modificabile per questo ruolo' });
         }
         const result = db.create(
@@ -595,8 +595,8 @@ async function createCrmServer(options = {}) {
     const update = (req, res) => {
       try {
         const patch = sanitizePatch(req.user, config.type, req.body);
-        if (req.user.role === 'worker' && Object.keys(patch).length === 0) {
-          return res.status(403).json({ error: 'Nessun campo modificabile per questo ruolo' });
+        if (!patch) {
+          return res.status(400).json({ error: 'Nessun campo valido da modificare' });
         }
         const result = db.update(
           config.type,
