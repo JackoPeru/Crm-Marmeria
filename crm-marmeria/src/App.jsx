@@ -19,6 +19,7 @@ import Sidebar from './components/layout/Sidebar';
 import Header from './components/layout/Header';
 import LoginForm from './components/auth/LoginForm.tsx';
 import ProtectedRoute from './components/auth/ProtectedRoute';
+import OfflineQueuePanel from './components/OfflineQueuePanel';
 import DashboardPage from './pages/DashboardPage';
 import CustomersPage from './pages/CustomersPage';
 import ProjectsPage from './pages/ProjectsPage';
@@ -104,6 +105,9 @@ const AppContent = () => {
         <div className="main-content">
           <Header />
           <main>
+            <div className="px-4 pt-4 md:px-6">
+              <OfflineQueuePanel />
+            </div>
             <ProtectedRoute permission={currentItem?.permission}>
               <CurrentPageComponent />
             </ProtectedRoute>
