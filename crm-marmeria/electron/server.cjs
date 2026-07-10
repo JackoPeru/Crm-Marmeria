@@ -1,9 +1,29 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const Module = require('module');
 const { app } = require('electron');
-const { createCrmServer } = require('../server/app');
 const { DiscoveryAdvertiser, discoverMasters, localAddresses } = require('./discovery.cjs');
+
+// Il progetto contiene due installazioni distinte: una ricompilata per Electron
+// e una per il server Node standalone. Durante l'esecuzione Electron i moduli
+// nativi devono sempre provenire dal node_modules principale.
+const rootRequire = Module.createRequire(path.join(__dirname, '../package.json'));
+const originalLoad = Module._load;
+let createCrmServer;
+try {
+  Module._load = function loadElectronNativeModule(request, parent, isMain) {
+    if (request === 'better-sqlite3' || request === 'bcrypt') {
+      return rootRequire(request);
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  ({ createCrmServer } = require('../server/app'));
+} finally {
+  Module._load = originalLoad;
+}
+
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 class CentralCrmServer {
   constructor() {
@@ -68,6 +88,11 @@ class CentralCrmServer {
       : path.join(resolvedSelection, 'CRM-Marmeria-Backups');
   }
 
+  async findOtherMasters(ownId) {
+    const discovered = await discoverMasters(1200);
+    return discovered.filter((master) => master.serverId !== ownId);
+  }
+
   async start(port = 3001, selectedBackupPath = null, options = {}) {
     const numericPort = Number(port);
     if (!Number.isInteger(numericPort) || numericPort < 1024 || numericPort > 65535) {
@@ -89,9 +114,16 @@ class CentralCrmServer {
 
     if (this.instance) await this.stop();
 
-    const discovered = await discoverMasters(1200);
     const ownId = this.getServerId();
-    const otherMasters = discovered.filter((master) => master.serverId !== ownId);
+    let otherMasters = await this.findOtherMasters(ownId);
+
+    // Un secondo controllo con jitter riduce la possibilità che due PC,
+    // avviati nello stesso istante, si promuovano entrambi a master.
+    if (!otherMasters.length && !options.force) {
+      await wait(250 + Math.floor(Math.random() * 500));
+      otherMasters = await this.findOtherMasters(ownId);
+    }
+
     if (otherMasters.length && !options.force) {
       const error = new Error(
         `Esiste già un server principale sulla rete: ${otherMasters[0].name || otherMasters[0].hostname} (${otherMasters[0].apiUrl})`,
