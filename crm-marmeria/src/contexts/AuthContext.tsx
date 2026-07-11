@@ -22,13 +22,17 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+let accountStateQueue: Promise<void> = Promise.resolve();
 
-const clearAccountScopedState = async () => {
-  store.dispatch(resetClientsState());
-  store.dispatch(resetMaterialsState());
-  store.dispatch(resetOrdersState());
-  store.dispatch(resetAnalyticsState());
-  await cacheService.clearAll();
+const clearAccountScopedState = (): Promise<void> => {
+  accountStateQueue = accountStateQueue.then(async () => {
+    store.dispatch(resetClientsState());
+    store.dispatch(resetMaterialsState());
+    store.dispatch(resetOrdersState());
+    store.dispatch(resetAnalyticsState());
+    await cacheService.clearAll();
+  });
+  return accountStateQueue;
 };
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -61,21 +65,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
     };
 
-    const resetSession = (showExpiredMessage: boolean) => {
+    const resetSession = async (showExpiredMessage: boolean) => {
       authService.clearAuth();
       realtimeService.disconnect();
       setUser(null);
-      void clearAccountScopedState();
+      setIsLoading(true);
+      await clearAccountScopedState();
+      if (!mounted) return;
+      setIsLoading(false);
       window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
       if (showExpiredMessage) {
         toast.error('Sessione scaduta. Accedi nuovamente.', { id: 'session-expired' });
       }
     };
 
-    const handleExpiredSession = () => resetSession(true);
+    const handleExpiredSession = () => void resetSession(true);
     const handleServerChanged = () => {
-      resetSession(false);
-      toast('Server centrale cambiato. Accedi al nuovo server.', { id: 'server-changed' });
+      void resetSession(false).then(() => {
+        if (mounted) {
+          toast('Server o dati centrali cambiati. Accedi nuovamente.', { id: 'server-changed' });
+        }
+      });
     };
 
     window.addEventListener('crm-auth-expired', handleExpiredSession);
