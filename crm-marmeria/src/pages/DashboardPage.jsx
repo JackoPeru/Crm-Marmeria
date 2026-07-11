@@ -1,301 +1,296 @@
-import React, { useState, useEffect } from 'react';
-import { Edit2, Trash2, CheckSquare, Eye } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CheckSquare, Edit2, Eye, Trash2, X } from 'lucide-react';
+import { Pie } from 'react-chartjs-2';
+import { ArcElement, Chart as ChartJS, Legend, Tooltip } from 'chart.js';
 import WelcomeHeader from '../components/dashboard/WelcomeHeader';
 import DashboardStats from '../components/DashboardStats';
-import { Pie } from 'react-chartjs-2';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
+import AttachmentsPanel from '../components/AttachmentsPanel';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
+import { useAuth } from '../contexts/AuthContext';
+import { apiClient } from '../services/api';
+import { formatEuro, parseLocaleNumber } from '../utils/numbers';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
+const hashScope = (value) => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const parseDate = (value) => {
+  if (!value) return null;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(value))
+    ? new Date(`${value}T00:00:00`)
+    : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatDate = (value) => parseDate(value)?.toLocaleDateString('it-IT') || '-';
+
 const DashboardPage = () => {
   const { setBreadcrumbs } = useUI();
-  const { customers, projects, updateProject, deleteProject } = useData();
+  const {
+    customers = [],
+    projects = [],
+    materials = [],
+    invoices = [],
+    updateProject,
+  } = useData();
+  const { user, hasPermission } = useAuth();
+  const [viewProjectId, setViewProjectId] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [notesReady, setNotesReady] = useState(false);
+  const [newNote, setNewNote] = useState('');
+  const [editingNote, setEditingNote] = useState(null);
+  const [editText, setEditText] = useState('');
+  const [completingId, setCompletingId] = useState(null);
+
+  const canViewProjects = hasPermission('projects.view');
+  const canEditProjects = hasPermission('projects.edit');
+  const canViewCustomers = hasPermission('clients.view');
+  const canViewMaterials = hasPermission('materials.view');
+  const canViewInvoices = hasPermission('invoices.view');
+  const canViewFinancials = ['admin', 'manager'].includes(user?.role || '') && canViewInvoices;
+  const selectedProject = projects.find((project) => String(project.id) === String(viewProjectId));
+  const notesKey = `dashboardNotes:${String(user?.id || 'anonymous')}:${hashScope(apiClient.getBaseURL())}`;
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Dashboard' }]);
   }, [setBreadcrumbs]);
 
-  const [isViewProjectModalOpen, setIsViewProjectModalOpen] = useState(false);
-  const [projectToView, setProjectToView] = useState(null);
-  const [notes, setNotes] = useState([]);
-  const [newNote, setNewNote] = useState('');
-  const [editingNote, setEditingNote] = useState(null); // Contiene l'ID della nota in modifica o null
-  const [editText, setEditText] = useState(''); // Testo della nota in modifica
-
-  // Carica le note da localStorage all'avvio
   useEffect(() => {
-    const storedNotes = localStorage.getItem('dashboardNotes');
-    if (storedNotes) {
-      setNotes(JSON.parse(storedNotes));
+    setNotesReady(false);
+    try {
+      const stored = JSON.parse(localStorage.getItem(notesKey) || '[]');
+      setNotes(Array.isArray(stored) ? stored : []);
+    } catch {
+      setNotes([]);
+    } finally {
+      setNotesReady(true);
     }
-  }, []);
+  }, [notesKey]);
 
-  // Salva le note su localStorage ogni volta che cambiano
   useEffect(() => {
-    localStorage.setItem('dashboardNotes', JSON.stringify(notes));
-  }, [notes]);
+    if (notesReady) localStorage.setItem(notesKey, JSON.stringify(notes));
+  }, [notes, notesKey, notesReady]);
 
-  const handleAddNote = () => {
-    if (newNote.trim() === '') return;
-    setNotes([...notes, { id: Date.now(), text: newNote }]);
+  const monthRevenue = useMemo(() => {
+    const now = new Date();
+    return invoices
+      .filter((invoice) => {
+        const date = parseDate(invoice.date || invoice.createdAt);
+        return date
+          && date.getFullYear() === now.getFullYear()
+          && date.getMonth() === now.getMonth();
+      })
+      .reduce((sum, invoice) => sum + parseLocaleNumber(invoice.total ?? invoice.amount), 0);
+  }, [invoices]);
+
+  const stats = {
+    customers: customers.length,
+    projects: projects.length,
+    projectsInProgress: projects.filter(
+      (project) => ['In Corso', 'In Lavorazione'].includes(project.status),
+    ).length,
+    materials: materials.length,
+    revenue: formatEuro(monthRevenue),
+    customersVisible: canViewCustomers,
+    projectsVisible: canViewProjects,
+    materialsVisible: canViewMaterials,
+    revenueVisible: canViewFinancials,
+  };
+
+  const expiringProjects = useMemo(() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7);
+    end.setHours(23, 59, 59, 999);
+    return projects
+      .filter((project) => {
+        if (['Completato', 'Annullato'].includes(project.status)) return false;
+        const deadline = parseDate(project.deadline || project.endDate);
+        return deadline && deadline >= start && deadline <= end;
+      })
+      .sort((a, b) => (
+        parseDate(a.deadline || a.endDate).getTime()
+        - parseDate(b.deadline || b.endDate).getTime()
+      ));
+  }, [projects]);
+
+  const statusCounts = useMemo(() => projects.reduce((result, project) => {
+    const status = project.status || 'Non specificato';
+    result[status] = (result[status] || 0) + 1;
+    return result;
+  }, {}), [projects]);
+
+  const pieData = {
+    labels: Object.keys(statusCounts),
+    datasets: [{
+      label: 'Progetti',
+      data: Object.values(statusCounts),
+      backgroundColor: [
+        'rgba(255, 99, 132, 0.7)',
+        'rgba(54, 162, 235, 0.7)',
+        'rgba(255, 206, 86, 0.7)',
+        'rgba(75, 192, 192, 0.7)',
+        'rgba(153, 102, 255, 0.7)',
+        'rgba(255, 159, 64, 0.7)',
+      ],
+      borderWidth: 1,
+    }],
+  };
+
+  const addNote = () => {
+    const text = newNote.trim();
+    if (!text) return;
+    setNotes((current) => [
+      ...current,
+      { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() },
+    ]);
     setNewNote('');
   };
 
-  const handleDeleteNote = (id) => {
-    setNotes(notes.filter(note => note.id !== id));
-  };
-
-  const handleEditNote = (note) => {
-    setEditingNote(note.id);
-    setEditText(note.text);
-  };
-
-  const handleSaveEdit = (id) => {
-    setNotes(notes.map(note => note.id === id ? { ...note, text: editText } : note));
+  const saveNote = (id) => {
+    const text = editText.trim();
+    if (!text) return;
+    setNotes((current) => current.map((note) => (
+      note.id === id ? { ...note, text } : note
+    )));
     setEditingNote(null);
     setEditText('');
   };
 
-  const stats = {
-    customers: customers?.length || 0,
-    projects: projects?.length || 0,
-    projectsInProgress: projects?.filter(p => p.status === 'In Corso').length || 0,
-    materials: 0, // Placeholder
-    revenue: '€ 0.00', // Placeholder
-  };
-
-  const handleViewProject = (project) => {
-    setProjectToView(project);
-    setIsViewProjectModalOpen(true);
-  };
-
-  const handleCompleteProject = (projectId) => {
-    updateProject(projectId, { status: 'Completato' });
-  };
-
-  const expiringProjects = projects?.filter(p => p.status !== 'Completato') || [];
-
-  // Prepara i dati per il grafico a torta dagli stati dei progetti reali
-  const projectStatusCounts = projects?.reduce((acc, project) => {
-    acc[project.status] = (acc[project.status] || 0) + 1;
-    return acc;
-  }, {}) || {};
-
-  const pieChartData = {
-    labels: Object.keys(projectStatusCounts),
-    datasets: [
-      {
-        label: 'Stato Lavori',
-        data: Object.values(projectStatusCounts),
-        backgroundColor: [
-          'rgba(255, 99, 132, 0.7)', // Rosso
-          'rgba(54, 162, 235, 0.7)', // Blu
-          'rgba(255, 206, 86, 0.7)', // Giallo
-          'rgba(75, 192, 192, 0.7)', // Verde Acqua
-          'rgba(153, 102, 255, 0.7)', // Viola
-          'rgba(255, 159, 64, 0.7)', // Arancione
-        ],
-        borderColor: [
-          'rgba(255, 99, 132, 1)',
-          'rgba(54, 162, 235, 1)',
-          'rgba(255, 206, 86, 1)',
-          'rgba(75, 192, 192, 1)',
-          'rgba(153, 102, 255, 1)',
-          'rgba(255, 159, 64, 1)',
-        ],
-        borderWidth: 1,
-      },
-    ],
-  };
-
-  const pieChartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: {
-        position: 'right',
-        labels: {
-          color: function(context) {
-            // Determina il colore del testo della legenda in base al tema
-            // Questo approccio è più robusto della manipolazione diretta del DOM
-            const isDarkMode = document.documentElement.classList.contains('dark');
-            return isDarkMode ? 'rgba(255, 255, 255, 0.8)' : 'rgba(0, 0, 0, 0.7)';
-          }
-        },
-        onClick: (e, legendItem, legend) => {
-          const index = legendItem.datasetIndex;
-          const ci = legend.chart;
-          const meta = ci.getDatasetMeta(index);
-
-          // Nasconde o mostra l'intero dataset (se ce n'è solo uno, nasconde/mostra la fetta)
-          // Per grafici a torta con un solo dataset, si agisce sulla visibilità dei dati specifici
-          // Per i grafici a torta, di solito si interagisce con gli indici dei dati (fette)
-          const dataIndex = legendItem.index;
-          if (ci.isDatasetVisible(legendItem.datasetIndex)) { // Controlla se il dataset è visibile
-            if (ci.getDataVisibility(dataIndex)) {
-              ci.hide(dataIndex); // Nasconde la fetta specifica
-              legendItem.hidden = true;
-            } else {
-              ci.show(dataIndex); // Mostra la fetta specifica
-              legendItem.hidden = false;
-            }
-          } else { // Se il dataset intero è nascosto, questo clic non dovrebbe fare nulla sulla singola fetta
-            // O, alternativamente, si potrebbe voler mostrare l'intero dataset e poi la fetta specifica
-            // Per ora, manteniamo semplice: se il dataset è nascosto, non fare nulla con le singole fette.
-          }
-          ci.update();
-        }
-      },
-      tooltip: {
-        callbacks: {
-          label: function(context) {
-            let label = context.label || '';
-            if (label) {
-              label += ': ';
-            }
-            if (context.parsed !== null) {
-              label += context.parsed;
-            }
-            return label;
-          }
-        }
-      }
+  const completeProject = async (project) => {
+    if (!canEditProjects || completingId) return;
+    setCompletingId(String(project.id));
+    try {
+      await updateProject(String(project.id), {
+        status: 'Completato',
+        completedAt: new Date().toISOString(),
+        version: project.version,
+      });
+    } finally {
+      setCompletingId(null);
     }
+  };
+
+  const customerName = (project) => {
+    if (project.client || project.clientName) return project.client || project.clientName;
+    return customers.find((customer) => String(customer.id) === String(project.clientId))?.name || '-';
   };
 
   return (
     <div className="p-4 md:p-6 lg:p-8 space-y-6 bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text">
-      <WelcomeHeader userName={'Utente'} />
-
-      {/* Sezione Statistiche Interattive */}
+      <WelcomeHeader userName={user?.firstName || user?.username || 'Utente'} />
       <DashboardStats stats={stats} />
 
-      {/* Colonna Appunti Rapidi - Spostata in alto e a larghezza piena */}
-      <div className="bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm col-span-1 lg:col-span-3">
-        <h2 className="text-xl font-semibold mb-4 text-light-text dark:text-dark-text">Appunti Rapidi</h2>
-        <div className="mb-4">
-          <textarea
-            className="w-full h-24 p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input text-light-text dark:text-dark-text focus:ring-light-primary dark:focus:ring-dark-primary focus:border-light-primary dark:focus:border-dark-primary"
-            placeholder="Scrivi un nuovo appunto..."
-            value={newNote}
-            onChange={(e) => setNewNote(e.target.value)}
-          ></textarea>
-          <button 
-            onClick={handleAddNote}
-            className="mt-2 px-4 py-2 bg-light-primary hover:bg-light-primary/90 dark:bg-dark-primary dark:hover:bg-dark-primary/90 text-white rounded-md w-full"
-          >
-            Aggiungi Appunto
-          </button>
-        </div>
-        <div className="space-y-3 max-h-60 overflow-y-auto">
-          {notes.length === 0 && <p className="text-sm text-gray-500 dark:text-gray-400">Nessun appunto salvato.</p>}
+      <section className="bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
+        <h2 className="text-xl font-semibold mb-4">Appunti rapidi personali</h2>
+        <textarea
+          className="w-full h-24 p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+          placeholder="Scrivi un nuovo appunto..."
+          value={newNote}
+          onChange={(event) => setNewNote(event.target.value)}
+        />
+        <button onClick={addNote} className="mt-2 px-4 py-2 bg-light-primary text-white rounded-md w-full">
+          Aggiungi appunto
+        </button>
+        <div className="space-y-3 max-h-60 overflow-y-auto mt-4">
+          {!notes.length && <p className="text-sm text-gray-500">Nessun appunto salvato.</p>}
           {notes.map((note) => (
-            <div key={note.id} className="p-3 border border-light-border dark:border-dark-border rounded-md bg-light-bg/50 dark:bg-dark-input/50">
+            <div key={note.id} className="p-3 border rounded-md bg-light-bg/50 dark:bg-dark-input/50">
               {editingNote === note.id ? (
                 <div>
-                  <textarea 
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input text-light-text dark:text-dark-text mb-2"
-                  />
-                  <button onClick={() => handleSaveEdit(note.id)} className="px-3 py-1 bg-green-500 hover:bg-green-600 text-white rounded-md text-xs mr-2">Salva</button>
-                  <button onClick={() => setEditingNote(null)} className="px-3 py-1 bg-gray-300 hover:bg-gray-400 text-gray-700 rounded-md text-xs">Annulla</button>
+                  <textarea value={editText} onChange={(event) => setEditText(event.target.value)} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input mb-2" />
+                  <button onClick={() => saveNote(note.id)} className="px-3 py-1 bg-green-600 text-white rounded-md text-xs mr-2">Salva</button>
+                  <button onClick={() => setEditingNote(null)} className="px-3 py-1 border rounded-md text-xs">Annulla</button>
                 </div>
               ) : (
-                <div className="flex justify-between items-start">
-                  <p className="text-sm text-light-text dark:text-dark-text whitespace-pre-wrap break-words flex-grow mr-2">{note.text}</p>
-                  <div className="flex-shrink-0 flex gap-2">
-                    <button onClick={() => handleEditNote(note)} className="p-1 text-yellow-600 hover:text-yellow-700 dark:text-yellow-400 dark:hover:text-yellow-500">
-                      <Edit2 size={16} />
-                    </button>
-                    <button onClick={() => handleDeleteNote(note.id)} className="p-1 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-500">
-                      <Trash2 size={16} />
-                    </button>
+                <div className="flex justify-between items-start gap-2">
+                  <p className="text-sm whitespace-pre-wrap break-words flex-1">{note.text}</p>
+                  <div className="flex gap-2">
+                    <button onClick={() => { setEditingNote(note.id); setEditText(note.text); }} className="p-1 text-yellow-600" title="Modifica"><Edit2 size={16} /></button>
+                    <button onClick={() => setNotes((current) => current.filter((item) => item.id !== note.id))} className="p-1 text-red-600" title="Elimina"><Trash2 size={16} /></button>
                   </div>
                 </div>
               )}
             </div>
           ))}
         </div>
-      </div>
+      </section>
 
-      {/* Sezione Grafico a Torta e Progetti in Scadenza */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Colonna Grafico a Torta (placeholder) */}
-        <div className="lg:col-span-1 bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
-          <h2 className="text-xl font-semibold mb-4 text-light-text dark:text-dark-text">Stato Lavori</h2>
-          <div className="flex items-center justify-center h-48 bg-gray-100 dark:bg-gray-700 rounded-md">
-            {/* Grafico a Torta Effettivo */}
-            {expiringProjects.length > 0 ? (
-              <div style={{ height: '200px', width: '100%' }}> {/* Aggiunto contenitore con altezza definita */} 
-                <Pie data={pieChartData} options={pieChartOptions} />
-              </div>
+        <section className="lg:col-span-1 bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
+          <h2 className="text-xl font-semibold mb-4">Stato progetti</h2>
+          <div className="h-56">
+            {projects.length ? (
+              <Pie data={pieData} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }} />
             ) : (
-              <p className="text-gray-500 dark:text-gray-400">Nessun dato disponibile per il grafico.</p>
+              <p className="text-gray-500">Nessun progetto disponibile.</p>
             )}
           </div>
-        </div>
+        </section>
 
-        {/* Colonna Progetti in Scadenza */}
-        <div className="lg:col-span-2 bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
-          <h2 className="text-xl font-semibold mb-4 text-light-text dark:text-dark-text">Progetti in Scadenza (7 giorni)</h2>
-          {expiringProjects.length > 0 ? (
+        <section className="lg:col-span-2 bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
+          <h2 className="text-xl font-semibold mb-4">Progetti in scadenza nei prossimi 7 giorni</h2>
+          {expiringProjects.length ? (
             <ul className="space-y-4">
               {expiringProjects.map((project) => (
-                <li key={project.id} className="p-4 border border-gray-200 dark:border-gray-700 rounded-md hover:shadow-md transition-shadow">
-                  <div className="flex justify-between items-center">
+                <li key={project.id} className="p-4 border rounded-md hover:shadow-md transition-shadow">
+                  <div className="flex flex-wrap justify-between items-center gap-3">
                     <div>
-                      <p className="font-medium text-gray-700 dark:text-gray-300">Cliente: {project.client}</p>
-                      <p className="text-sm text-gray-500 dark:text-gray-400">Data: {project.date}</p>
-                      <p className="text-sm text-gray-500 dark:text-gray-400">Stato: {project.status}</p>
+                      <p className="font-medium">{project.name || 'Progetto senza nome'}</p>
+                      <p className="text-sm text-gray-500">Cliente: {customerName(project)}</p>
+                      <p className="text-sm text-gray-500">Scadenza: {formatDate(project.deadline || project.endDate)}</p>
+                      <p className="text-sm text-gray-500">Stato: {project.status || '-'}</p>
                     </div>
-                    <div className="flex space-x-2">
-                      <button onClick={() => handleViewProject(project)} className="p-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md text-xs flex items-center gap-1"><Eye size={14}/> Vedi</button>
-                      <button onClick={() => handleCompleteProject(project.id)} className="p-2 bg-green-500 hover:bg-green-600 text-white rounded-md text-xs flex items-center gap-1"><CheckSquare size={14}/> Completa</button>
+                    <div className="flex gap-2">
+                      <button onClick={() => setViewProjectId(String(project.id))} className="p-2 bg-blue-600 text-white rounded-md text-xs flex items-center gap-1"><Eye size={14} /> Vedi</button>
+                      {canEditProjects && (
+                        <button
+                          onClick={() => void completeProject(project)}
+                          disabled={completingId === String(project.id)}
+                          className="p-2 bg-green-600 disabled:bg-gray-400 text-white rounded-md text-xs flex items-center gap-1"
+                        >
+                          <CheckSquare size={14} /> {completingId === String(project.id) ? 'Salvataggio...' : 'Completa'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="text-gray-500 dark:text-gray-400">Nessun progetto in scadenza.</p>
+            <p className="text-gray-500">Nessun progetto in scadenza nei prossimi 7 giorni.</p>
           )}
-        </div>
+        </section>
       </div>
 
-      {/* Modal Visualizzazione Progetto */}
-      {isViewProjectModalOpen && projectToView && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      {selectedProject && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-semibold text-light-text dark:text-dark-text">Dettagli Progetto</h3>
-              <button 
-                onClick={() => setIsViewProjectModalOpen(false)}
-                className="text-light-text dark:text-dark-text hover:text-gray-700 dark:hover:text-gray-300"
-              >
-                &times;
-              </button>
+              <h3 className="text-xl font-semibold">Dettagli progetto</h3>
+              <button onClick={() => setViewProjectId(null)} className="p-1 text-gray-500"><X size={22} /></button>
             </div>
-            <div className="space-y-3 text-sm text-light-text dark:text-dark-text">
-              <p><strong>ID:</strong> {projectToView.id}</p>
-              <p><strong>Cliente:</strong> {projectToView.client}</p>
-              <p><strong>Data Inizio:</strong> {projectToView.date}</p>
-              <p><strong>Descrizione:</strong> {projectToView.description || 'N/D'}</p>
-              <p><strong>Stato:</strong> {projectToView.status}</p>
-              <p><strong>Materiali:</strong> {projectToView.materials?.join(', ') || 'N/D'}</p>
-              <p><strong>Prezzo:</strong> {projectToView.price ? `€ ${projectToView.price.toFixed(2)}` : 'N/D'}</p>
-              {/* Aggiungere altri dettagli del progetto se necessario */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div><span className="text-gray-500">Nome</span><p className="font-medium">{selectedProject.name || '-'}</p></div>
+              <div><span className="text-gray-500">Cliente</span><p>{customerName(selectedProject)}</p></div>
+              <div><span className="text-gray-500">Scadenza</span><p>{formatDate(selectedProject.deadline || selectedProject.endDate)}</p></div>
+              <div><span className="text-gray-500">Stato / fase</span><p>{selectedProject.status || '-'} {selectedProject.phase ? `· ${selectedProject.phase}` : ''}</p></div>
+              {canViewFinancials && selectedProject.budget != null && (
+                <div><span className="text-gray-500">Budget</span><p>{formatEuro(selectedProject.budget)}</p></div>
+              )}
+              <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selectedProject.productionNotes || '-'}</p></div>
             </div>
-            <div className="mt-6 flex justify-end">
-              <button 
-                onClick={() => setIsViewProjectModalOpen(false)} 
-                className="px-4 py-2 bg-gray-200 dark:bg-gray-600 text-light-text dark:text-dark-text rounded-md hover:bg-gray-300 dark:hover:bg-gray-500"
-              >
-                Chiudi
-              </button>
-            </div>
+            <AttachmentsPanel entityType="project" entityId={String(selectedProject.id)} />
+            <div className="mt-6 flex justify-end"><button onClick={() => setViewProjectId(null)} className="px-4 py-2 border rounded-md">Chiudi</button></div>
           </div>
         </div>
       )}
