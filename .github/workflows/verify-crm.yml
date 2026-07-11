@@ -1,14 +1,14 @@
-name: Diagnose production dependency upgrade
+name: Upgrade production dependencies
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  upgrade:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
@@ -21,21 +21,47 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Upgrade direct production dependencies
+      - name: Upgrade direct and transitive production dependencies
         working-directory: crm-marmeria
         run: |
           npm uninstall react-router-dom
           npm install axios@latest bcrypt@6.0.0 express@4.22.2 ws@latest
+          npm pkg set overrides.lodash=4.17.24 overrides.path-to-regexp=0.1.13
+          npm install
           npm install --prefix server bcrypt@6.0.0 express@4.22.2 ws@latest
+          npm pkg set --prefix server overrides.path-to-regexp=0.1.13
+          npm install --prefix server
 
-      - name: Produce production audit
+      - name: Enforce zero production vulnerabilities
         working-directory: crm-marmeria
-        run: npm audit --omit=dev --json > upgraded-production-audit.json || true
+        run: |
+          npm audit --omit=dev --json > production-audit.json || true
+          node - <<'NODE'
+          const audit = require('./production-audit.json');
+          const counts = audit.metadata?.vulnerabilities || {};
+          console.log(counts);
+          if ((counts.total || 0) !== 0) process.exit(1);
+          NODE
 
-      - name: Upload upgraded audit
-        uses: actions/upload-artifact@v4
-        with:
-          name: upgraded-production-audit
-          path: crm-marmeria/upgraded-production-audit.json
-          if-no-files-found: error
-          retention-days: 3
+      - name: Verify application and native runtime
+        working-directory: crm-marmeria
+        env:
+          TZ: Europe/Rome
+        run: |
+          node server/setup-test.js
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm run typecheck
+          npm test -- --run
+          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+          npm run build
+          timeout 180s npx electron-builder --linux dir --publish never
+
+      - name: Commit verified dependency upgrades
+        run: |
+          git checkout -- .github/workflows/verify-crm.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crm-marmeria/package.json crm-marmeria/package-lock.json crm-marmeria/server/package.json crm-marmeria/server/package-lock.json
+          git commit -m "security: remove production dependency vulnerabilities"
+          git push origin HEAD:fix/core-reliability-2026-07
