@@ -13,6 +13,9 @@ export interface User {
 export interface LoginCredentials {
   username: string;
   password: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
 }
 
 export interface ProfileUpdate {
