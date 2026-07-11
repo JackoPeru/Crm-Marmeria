@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const bcrypt = require('bcrypt');
 const Database = require('better-sqlite3');
 
 const REQUIRED_TABLES = new Set([
@@ -15,10 +16,23 @@ const COMPROMISED_DEFAULT_HASHES = new Set([
   '$2b$10$xgjipj3RtM9D8nyR2J8RnOPAtJ.aAyxrVpPmAXDbFnJmbfrdQVTsG',
   '$2b$10$1rfGdxxl/DQDLqJn6lE0HuYAiBNC4f/KVSCUCQ1Gc6hgeOWTKrnJG',
 ]);
+const PUBLIC_DEFAULT_PASSWORDS = ['admin123', 'operaio123'];
 
 const removePath = (target) => {
   if (!target || !fs.existsSync(target)) return;
   fs.rmSync(target, { recursive: true, force: true });
+};
+
+const isCompromisedLegacyAccount = (user) => {
+  if (!user?.password) return false;
+  if (COMPROMISED_DEFAULT_HASHES.has(user.password)) return true;
+  try {
+    return PUBLIC_DEFAULT_PASSWORDS.some((password) => (
+      bcrypt.compareSync(password, user.password)
+    ));
+  } catch {
+    return false;
+  }
 };
 
 const syncFile = (filePath) => {
@@ -108,7 +122,7 @@ const validateUsers = (usersPath) => {
       error.status = 400;
       throw error;
     }
-    if (COMPROMISED_DEFAULT_HASHES.has(user.password)) {
+    if (isCompromisedLegacyAccount(user)) {
       const error = new Error('Il backup contiene un vecchio account con password pubblica e non sicura');
       error.status = 400;
       throw error;
