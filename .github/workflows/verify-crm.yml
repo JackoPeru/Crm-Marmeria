@@ -1,4 +1,4 @@
-name: Diagnose SQLite lockfile refresh
+name: Inspect SQLite registry versions
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  inspect:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
@@ -21,33 +21,18 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Diagnose root lockfile refresh
-        id: root_lock
-        continue-on-error: true
-        working-directory: crm-marmeria
-        run: npm install --ignore-scripts > root-lock-report.txt 2>&1
-
-      - name: Diagnose server lockfile refresh
-        id: server_lock
-        continue-on-error: true
-        working-directory: crm-marmeria
-        run: npm install --prefix server --ignore-scripts > server-lock-report.txt 2>&1
-
-      - name: Upload lockfile reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lockfile-refresh-reports
-          path: |
-            crm-marmeria/root-lock-report.txt
-            crm-marmeria/server-lock-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce resolution result
-        if: steps.root_lock.outcome == 'failure' || steps.server_lock.outcome == 'failure'
+      - name: Query npm registry
         working-directory: crm-marmeria
         run: |
-          cat root-lock-report.txt
-          cat server-lock-report.txt
-          exit 1
+          npm view better-sqlite3 versions --json > better-sqlite3-versions.json
+          npm view electron versions --json > electron-versions.json
+
+      - name: Upload registry versions
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-versions
+          path: |
+            crm-marmeria/better-sqlite3-versions.json
+            crm-marmeria/electron-versions.json
+          if-no-files-found: error
+          retention-days: 3
