@@ -1,41 +1,89 @@
-name: Upgrade production dependencies
+name: Verify CRM Marmeria
 
 on:
   pull_request:
     branches: [master]
+  push:
+    branches:
+      - fix/core-reliability-2026-07
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  upgrade:
+  verify:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
     steps:
-      - name: Checkout review branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: fix/core-reliability-2026-07
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            crm-marmeria/package-lock.json
+            crm-marmeria/server/package-lock.json
 
-      - name: Upgrade direct and transitive production dependencies
-        working-directory: crm-marmeria
+      - name: Install Electron app dependencies
+        run: npm ci
+
+      - name: Install standalone server dependencies
+        run: npm ci --prefix server
+
+      - name: Check Node and Electron syntax
         run: |
-          npm uninstall react-router-dom
-          npm install axios@latest bcrypt@6.0.0 express@4.22.2 ws@latest
-          npm pkg set overrides.lodash=4.18.1 overrides.path-to-regexp=0.1.13
-          npm install
-          npm install --prefix server bcrypt@6.0.0 express@4.22.2 ws@latest
-          npm pkg set --prefix server overrides.path-to-regexp=0.1.13
-          npm install --prefix server
+          node --check server/index.js
+          node --check server/app.js
+          node --check server/database.js
+          node --check server/restore-safety.js
+          node --check server/middleware/auth.js
+          node --check server/snapshot-compat.js
+          node --check server/smoke-test.js
+          node --check server/setup-test.js
+          node --check electron/main.cjs
+          node --check electron/server.cjs
+          node --check electron/discovery.cjs
+          node --check electron/preload.cjs
+          node --check electron/native-smoke.cjs
+
+      - name: Typecheck TypeScript
+        id: typecheck
+        continue-on-error: true
+        run: npm run typecheck > typecheck-report.txt 2>&1
+
+      - name: Upload TypeScript report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-report
+          path: crm-marmeria/typecheck-report.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce TypeScript result
+        if: steps.typecheck.outcome == 'failure'
+        run: |
+          cat typecheck-report.txt
+          exit 1
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --json > production-audit.json || true
+
+      - name: Upload production audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-audit
+          path: crm-marmeria/production-audit.json
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Enforce zero production vulnerabilities
-        working-directory: crm-marmeria
         run: |
-          npm audit --omit=dev --json > production-audit.json || true
           node - <<'NODE'
           const audit = require('./production-audit.json');
           const counts = audit.metadata?.vulnerabilities || {};
@@ -43,25 +91,54 @@ jobs:
           if ((counts.total || 0) !== 0) process.exit(1);
           NODE
 
-      - name: Verify application and native runtime
-        working-directory: crm-marmeria
+      - name: Test frontend utilities
+        run: npm test -- --run
+
+      - name: Test secure first-run setup
+        run: node server/setup-test.js
+
+      - name: Test SQLite create
+        run: node server/smoke-test.js create
+
+      - name: Test SQLite update
+        run: node server/smoke-test.js update
+
+      - name: Test SQLite conflict detection
+        run: node server/smoke-test.js conflict
+
+      - name: Test data integrity and attachments
+        run: node server/smoke-test.js integrity
+
+      - name: Test validated snapshot restore and power-loss recovery
+        run: node server/smoke-test.js snapshot
+
+      - name: Test central server permissions, CORS, dates and realtime
         env:
           TZ: Europe/Rome
-        run: |
-          node server/setup-test.js
-          node server/smoke-test.js snapshot
-          node server/smoke-test.js server
-          npm run typecheck
-          npm test -- --run
-          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
-          npm run build
-          timeout 180s npx electron-builder --linux dir --publish never
+        run: node server/smoke-test.js server
 
-      - name: Commit verified dependency upgrades
+      - name: Test Electron native modules
+        id: electron_native
+        continue-on-error: true
+        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox > electron-native-report.txt 2>&1
+
+      - name: Upload Electron native report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-native-report
+          path: crm-marmeria/electron-native-report.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce Electron native result
+        if: steps.electron_native.outcome == 'failure'
         run: |
-          git checkout -- .github/workflows/verify-crm.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crm-marmeria/package.json crm-marmeria/package-lock.json crm-marmeria/server/package.json crm-marmeria/server/package-lock.json
-          git commit -m "security: remove production dependency vulnerabilities"
-          git push origin HEAD:fix/core-reliability-2026-07
+          cat electron-native-report.txt
+          exit 1
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Package Electron directory
+        run: timeout 180s npx electron-builder --linux dir --publish never
