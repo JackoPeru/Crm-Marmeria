@@ -11,8 +11,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getServerStatus: () => ipcRenderer.invoke('server-status'),
     discoverMasters: () => ipcRenderer.invoke('network-discover-masters'),
     pickBackupFolder: () => ipcRenderer.invoke('network-pick-backup-folder'),
-    testApi: (apiUrl) => ipcRenderer.invoke('network-test-api', apiUrl),
-    testMasterConnection: (apiUrl) => ipcRenderer.invoke('network-test-api', apiUrl),
+    testApi: (apiUrl, expectedServerId) => ipcRenderer.invoke(
+      'network-test-api',
+      apiUrl,
+      expectedServerId,
+    ),
+    testMasterConnection: (apiUrl, expectedServerId) => ipcRenderer.invoke(
+      'network-test-api',
+      apiUrl,
+      expectedServerId,
+    ),
     syncWithMaster: (...args) => ipcRenderer.invoke('sync-with-master', ...args),
     pushToMaster: (...args) => ipcRenderer.invoke('push-to-master', ...args),
   },
