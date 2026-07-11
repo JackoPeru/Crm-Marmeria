@@ -178,18 +178,25 @@ class ApiClient {
       if (serverId) {
         const previousId = localStorage.getItem(SERVER_ID_KEY);
         const previousIdentityUrl = localStorage.getItem(SERVER_URL_KEY) || '';
-        if (!previousId || previousId === serverId) {
-          await offlineQueue.adoptServerIdentity(
-            serverId,
-            currentUrl,
-            [previousIdentityUrl, currentUrl],
-          );
-        }
+        const identityChanged = Boolean(previousId && previousId !== serverId);
+
         localStorage.setItem(SERVER_ID_KEY, serverId);
         localStorage.setItem(SERVER_URL_KEY, currentUrl);
         window.dispatchEvent(new CustomEvent('crm-server-identity-changed', {
           detail: { serverId, apiUrl: currentUrl, previousId },
         }));
+
+        if (identityChanged) {
+          window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
+          window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
+          return true;
+        }
+
+        await offlineQueue.adoptServerIdentity(
+          serverId,
+          currentUrl,
+          [previousIdentityUrl, currentUrl],
+        );
       }
       await this.replayOfflineQueue();
       return true;
