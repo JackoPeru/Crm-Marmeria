@@ -144,13 +144,12 @@ const ServerConnectionSettings: React.FC = () => {
             }))}
             className="mt-1 w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
           >
-            {window.electronAPI && <option value="auto">Automatico al primo avvio</option>}
             <option value="client">Postazione client / operaio</option>
             {window.electronAPI && <option value="master">PC principale / server</option>}
           </select>
         </label>
 
-        {prefs.mode === 'master' || prefs.mode === 'auto' ? (
+        {prefs.mode === 'master' ? (
           <label className="block">
             <span className="text-sm font-medium">Porta del server</span>
             <input
@@ -182,7 +181,7 @@ const ServerConnectionSettings: React.FC = () => {
         )}
       </div>
 
-      {(prefs.mode === 'master' || prefs.mode === 'auto') && window.electronAPI && (
+      {prefs.mode === 'master' && window.electronAPI && (
         <div className="mt-4">
           <label className="block text-sm font-medium mb-1">Cartella dei backup automatici</label>
           <div className="flex gap-2">

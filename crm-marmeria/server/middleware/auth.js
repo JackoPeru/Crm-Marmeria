@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { ensureRolePermissions } = require('../access-policy');
 
 let dataDirectory = path.join(__dirname, '../data');
 const configuredJwtSecret = process.env.JWT_SECRET || null;
@@ -154,10 +155,16 @@ const configureAuth = ({ dataDir }) => {
   if (!authEpoch) rotateAuthEpoch();
 
   const users = readUsersRaw();
-  const safeUsers = users.filter((user) => !isCompromisedLegacyAccount(user));
-  if (safeUsers.length !== users.length) {
-    if (!writeUsers(safeUsers)) throw new Error('Rimozione account predefiniti non sicuri fallita');
-    console.warn('Account con password predefinite pubbliche rimossi: completare la configurazione iniziale sul PC principale.');
+  const filteredUsers = users.filter((user) => !isCompromisedLegacyAccount(user));
+  const safeUsers = filteredUsers.map((user) => ({
+    ...user,
+    permissions: ensureRolePermissions(user.role, user.permissions || []),
+  }));
+  if (JSON.stringify(safeUsers) !== JSON.stringify(users)) {
+    if (!writeUsers(safeUsers)) throw new Error('Aggiornamento account sicuri fallito');
+    if (filteredUsers.length !== users.length) {
+      console.warn('Account con password predefinite pubbliche rimossi: completare la configurazione iniziale sul PC principale.');
+    }
   }
 
   const clientsPath = path.join(dataDirectory, 'clients.json');

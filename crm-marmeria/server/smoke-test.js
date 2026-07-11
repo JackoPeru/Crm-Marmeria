@@ -462,6 +462,38 @@ async function runServerTest() {
       })
     )));
     assert.ok(createUsers.every((result) => result.response.status === 201));
+    const dashboardOnlyToken = await login('utente-a');
+    const dashboardOnly = await requestJson(baseUrl, '/analytics/dashboard', {
+      headers: authHeaders(dashboardOnlyToken),
+    });
+    assert.equal(dashboardOnly.response.status, 200);
+    assert.equal(dashboardOnly.body.totalProjects, 0);
+    assert.equal(dashboardOnly.body.totalClients, 0);
+    assert.equal(dashboardOnly.body.totalMaterials, 0);
+    assert.equal(dashboardOnly.body.totalRevenue, null);
+    const deniedOrderTrend = await requestJson(
+      baseUrl,
+      '/analytics/trends?metric=orders&startDate=2030-01-01&endDate=2030-01-03',
+      { headers: authHeaders(dashboardOnlyToken) },
+    );
+    assert.equal(deniedOrderTrend.response.status, 403);
+
+    const constrainedAdmin = await requestJson(baseUrl, '/users', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({
+        username: 'admin-minimo',
+        email: 'admin-minimo@example.test',
+        password,
+        firstName: 'Admin',
+        lastName: 'Minimo',
+        role: 'admin',
+        permissions: [],
+      }),
+    });
+    assert.equal(constrainedAdmin.response.status, 201);
+    assert.ok(constrainedAdmin.body.permissions.includes('settings.view'));
+
     const auditViewerCreated = await requestJson(baseUrl, '/users', {
       method: 'POST',
       headers: authHeaders(adminToken),
@@ -671,7 +703,7 @@ async function run(mode) {
           id: 'utente-backup',
           username: 'backup',
           email: 'backup@example.test',
-          password: '$2b$10$hash-di-test-non-pubblico',
+          password: bcrypt.hashSync('Backup-credential-123', 10),
           role: 'admin',
           isActive: true,
           permissions: ['settings.view', 'settings.edit'],
@@ -707,7 +739,7 @@ async function run(mode) {
           id: 'utente-corrente',
           username: 'corrente',
           email: 'corrente@example.test',
-          password: '$2b$10$hash-corrente-non-pubblico',
+          password: bcrypt.hashSync('Current-credential-123', 10),
           role: 'admin',
           isActive: true,
           permissions: ['settings.view', 'settings.edit'],
@@ -747,7 +779,7 @@ async function run(mode) {
         id: 'solo-operaio',
         username: 'solo-operaio',
         email: 'operaio@example.test',
-        password: '$2b$10$hash-operaio-non-pubblico',
+        password: bcrypt.hashSync('Worker-credential-123', 10),
         role: 'worker',
         isActive: true,
       }]));

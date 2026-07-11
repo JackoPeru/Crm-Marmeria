@@ -24,6 +24,13 @@ const {
   getAuthEpoch,
 } = require('./middleware/auth');
 const { MutationBarrier } = require('./mutation-barrier');
+const { gracefulShutdown } = require('./shutdown-runtime');
+const {
+  canViewFinancials,
+  ensureRolePermissions,
+  hasEntityPermission,
+  permissionForType,
+} = require('./access-policy');
 
 const ROUTES = {
   clients: { type: 'client', permission: 'clients' },
@@ -164,7 +171,6 @@ const addDays = (date, days) => {
   copy.setDate(copy.getDate() + days);
   return copy;
 };
-const canViewFinancials = (user) => ['admin', 'manager'].includes(user?.role);
 
 const redactFinancials = (value) => {
   if (Array.isArray(value)) return value.map(redactFinancials);
@@ -338,15 +344,6 @@ const expectedVersionFrom = (req, required = false) => {
 const operationIdFrom = (req, scope) => {
   const operationId = req.get('X-Operation-Id') || req.body?.operationId || null;
   return operationId ? `${scope}:${operationId}` : null;
-};
-const routeForType = (type) => Object.entries(ROUTES).find(([, config]) => config.type === type);
-const permissionForType = (type, action = 'view') => {
-  const entry = routeForType(type);
-  return entry ? `${entry[1].permission}.${action}` : null;
-};
-const hasEntityPermission = (user, type, action) => {
-  const permission = permissionForType(type, action);
-  return Boolean(permission && user?.permissions?.includes(permission));
 };
 const canViewAuditEntry = (user, item) => item.entityType === 'database'
   ? user?.role === 'admin' || user?.permissions?.includes('settings.edit')
@@ -711,7 +708,7 @@ async function createCrmServer(options = {}) {
       if (!['admin', 'manager', 'worker'].includes(role)) {
         return res.status(400).json({ error: 'Ruolo non valido' });
       }
-      const permissions = normalizePermissions(req.body?.permissions || []);
+      const permissions = ensureRolePermissions(role, normalizePermissions(req.body?.permissions || []));
       const passwordHash = await hashPassword(password);
       const createdUser = await mutateUsers(async (users) => {
         if (users.some((user) => (
@@ -779,7 +776,14 @@ async function createCrmServer(options = {}) {
           throw error;
         }
         if (req.body.role !== undefined) updates.role = String(req.body.role);
-        if (req.body.permissions !== undefined) updates.permissions = normalizePermissions(req.body.permissions);
+        if (req.body.permissions !== undefined) {
+          updates.permissions = ensureRolePermissions(
+            String(req.body.role ?? previous.role),
+            normalizePermissions(req.body.permissions),
+          );
+        } else if (req.body.role !== undefined) {
+          updates.permissions = ensureRolePermissions(String(req.body.role), previous.permissions || []);
+        }
         if (req.body.isActive !== undefined) updates.isActive = req.body.isActive;
         if (users.some((user, userIndex) => (
           userIndex !== index
@@ -1006,15 +1010,25 @@ async function createCrmServer(options = {}) {
     });
   }
 
-  const allWork = () => [...db.list('project'), ...db.list('order')];
-  const invoiceRevenue = (start, end) => db.list('invoice')
-    .filter((item) => betweenDates(item.date || item.createdAt, start, end))
-    .reduce((sum, item) => sum + numeric(item.total ?? item.amount), 0);
+  const visibleList = (user, type) => (
+    hasEntityPermission(user, type, 'view') ? db.list(type) : []
+  );
+  const allWork = (user) => [
+    ...visibleList(user, 'project'),
+    ...visibleList(user, 'order'),
+  ];
+  const invoiceRevenue = (user, start, end) => (
+    canViewFinancials(user)
+      ? db.list('invoice')
+        .filter((item) => betweenDates(item.date || item.createdAt, start, end))
+        .reduce((sum, item) => sum + numeric(item.total ?? item.amount), 0)
+      : 0
+  );
 
   app.get('/api/analytics/dashboard', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
-    const projects = db.list('project');
-    const materials = db.list('material');
-    const clients = db.list('client');
+    const projects = visibleList(req.user, 'project');
+    const materials = visibleList(req.user, 'material');
+    const clients = visibleList(req.user, 'client');
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
@@ -1023,7 +1037,7 @@ async function createCrmServer(options = {}) {
       totalProjects: projects.length,
       totalClients: clients.length,
       totalMaterials: materials.length,
-      totalRevenue: canViewFinancials(req.user) ? invoiceRevenue(monthStart, current) : null,
+      totalRevenue: canViewFinancials(req.user) ? invoiceRevenue(req.user, monthStart, current) : null,
       financialsVisible: canViewFinancials(req.user),
       pendingOrders: projects.filter((item) => item.status === 'In Attesa').length,
       inProgressOrders: projects.filter((item) => ['In Corso', 'In Lavorazione'].includes(item.status)).length,
@@ -1039,8 +1053,8 @@ async function createCrmServer(options = {}) {
 
   app.get('/api/analytics/daily/:date?', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
     const date = req.params.date || localToday();
-    const work = allWork();
-    const materials = db.list('material');
+    const work = allWork(req.user);
+    const materials = visibleList(req.user, 'material');
     const dayStart = parseLocalDay(date);
     if (!dayStart) return res.status(400).json({ error: 'Data non valida' });
     const dayEnd = new Date(dayStart);
@@ -1058,7 +1072,7 @@ async function createCrmServer(options = {}) {
         return Number.isFinite(due.getTime()) && due < dayEnd && item.status !== 'Completato';
       }).length,
       newOrders: work.filter((item) => betweenDates(item.createdAt, dayStart, dayEnd)).length,
-      revenue: canViewFinancials(req.user) ? invoiceRevenue(dayStart, dayEnd) : 0,
+      revenue: canViewFinancials(req.user) ? invoiceRevenue(req.user, dayStart, dayEnd) : 0,
       activeProjects: work.filter((item) => ['In Corso', 'In Lavorazione'].includes(item.status)).length,
       urgentTasks: work.filter((item) => item.priority === 'Urgente').length,
       clientsContacted: 0,
@@ -1078,7 +1092,7 @@ async function createCrmServer(options = {}) {
     end.setHours(23, 59, 59, 999);
     const work = allWork().filter((item) => betweenDates(item.createdAt, start, end));
     const completed = work.filter((item) => item.status === 'Completato');
-    const revenue = canViewFinancials(req.user) ? invoiceRevenue(start, end) : 0;
+    const revenue = canViewFinancials(req.user) ? invoiceRevenue(req.user, start, end) : 0;
     res.json({
       weekStart: localDateKey(start),
       weekEnd: localDateKey(end),
@@ -1102,13 +1116,13 @@ async function createCrmServer(options = {}) {
     const end = new Date(year, month, 0, 23, 59, 59, 999);
     const work = allWork().filter((item) => betweenDates(item.createdAt, start, end));
     const completed = work.filter((item) => item.status === 'Completato');
-    const revenue = canViewFinancials(req.user) ? invoiceRevenue(start, end) : 0;
+    const revenue = canViewFinancials(req.user) ? invoiceRevenue(req.user, start, end) : 0;
     res.json({
       month: String(month).padStart(2, '0'),
       year,
       totalOrders: work.length,
       totalRevenue: revenue,
-      newClients: db.list('client').filter((item) => betweenDates(item.createdAt, start, end)).length,
+      newClients: visibleList(req.user, 'client').filter((item) => betweenDates(item.createdAt, start, end)).length,
       completionRate: work.length ? (completed.length / work.length) * 100 : 0,
       averageDeliveryTime: 0,
       topClients: [],
@@ -1142,8 +1156,15 @@ async function createCrmServer(options = {}) {
     if (!['orders', 'revenue', 'clients', 'satisfaction'].includes(metric)) {
       return res.status(400).json({ error: 'Metrica non valida' });
     }
-    if (metric === 'revenue' && !canViewFinancials(req.user)) {
-      return res.status(403).json({ error: 'Permessi insufficienti per i dati finanziari' });
+    const metricAllowed = metric === 'revenue'
+      ? canViewFinancials(req.user)
+      : metric === 'clients'
+        ? hasEntityPermission(req.user, 'client', 'view')
+        : metric === 'orders'
+          ? hasEntityPermission(req.user, 'project', 'view') || hasEntityPermission(req.user, 'order', 'view')
+          : true;
+    if (!metricAllowed) {
+      return res.status(403).json({ error: 'Permessi insufficienti per la metrica richiesta' });
     }
     const start = parseLocalDay(String(
       req.query.startDate || localDateKey(new Date(Date.now() - 30 * 86400000)),
@@ -1155,9 +1176,9 @@ async function createCrmServer(options = {}) {
     if ((end.getTime() - start.getTime()) / 86400000 > 366) {
       return res.status(400).json({ error: 'Intervallo massimo: 366 giorni' });
     }
-    const work = allWork();
-    const clients = db.list('client');
-    const invoices = db.list('invoice');
+    const work = allWork(req.user);
+    const clients = visibleList(req.user, 'client');
+    const invoices = visibleList(req.user, 'invoice');
     const data = [];
     for (const current = new Date(start); current <= end; current.setDate(current.getDate() + 1)) {
       const date = localDateKey(current);
@@ -1383,12 +1404,13 @@ async function createCrmServer(options = {}) {
     db,
     port: actualPort,
     host,
-    close: async () => {
-      clearInterval(backupTimer);
-      for (const client of realtime.wss.clients) client.terminate();
-      await new Promise((resolve) => server.close(resolve));
-      db.close();
-    },
+    close: async () => gracefulShutdown({
+      barrier: mutationBarrier,
+      server,
+      websocketServer: realtime.wss,
+      database: db,
+      timer: backupTimer,
+    }),
   };
 }
 

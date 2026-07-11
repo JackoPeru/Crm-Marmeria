@@ -40,6 +40,27 @@ const validatePrefs = (incoming) => {
   };
 };
 
+const resolveAutomaticMode = (incomingPrefs, masters) => {
+  const prefs = validatePrefs(incomingPrefs);
+  if (!Array.isArray(masters) || masters.length === 0) {
+    const error = new Error('Nessun server principale trovato. Avvia il PC principale o configura esplicitamente questa postazione come server.');
+    error.code = 'NO_MASTER_FOUND';
+    throw error;
+  }
+  if (masters.length > 1) {
+    const error = new Error('Sono stati trovati più server principali nella rete');
+    error.code = 'MULTIPLE_MASTERS';
+    error.masters = masters;
+    throw error;
+  }
+  return validatePrefs({
+    ...prefs,
+    mode: 'client',
+    apiUrl: masters[0].apiUrl,
+    discoveredServerId: masters[0].serverId,
+  });
+};
+
 const safeClientPrefs = (error) => ({
   ...defaultPrefs(),
   mode: 'client',
@@ -56,6 +77,7 @@ const selectSingleMaster = (masters, expectedServerId = null) => {
 module.exports = {
   defaultPrefs,
   normalizeApiUrl,
+  resolveAutomaticMode,
   safeClientPrefs,
   selectSingleMaster,
   validatePrefs,

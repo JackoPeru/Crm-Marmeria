@@ -143,6 +143,10 @@ const UserManagement: React.FC = () => {
   };
 
   const togglePermission = (permission: string) => {
+    if (form.role === 'admin' && permission === 'settings.view') {
+      toast.error('Un amministratore deve mantenere l’accesso alle impostazioni');
+      return;
+    }
     setForm((previous) => ({
       ...previous,
       permissions: previous.permissions.includes(permission)
@@ -175,7 +179,7 @@ const UserManagement: React.FC = () => {
         lastName: form.lastName.trim(),
         role: form.role,
         isActive: form.isActive,
-        permissions: [...new Set(form.permissions)],
+        permissions: [...new Set([...(form.role === 'admin' ? ['settings.view'] : []), ...form.permissions])],
         ...(form.password ? { password: form.password } : {}),
       };
       if (editingId) {
@@ -300,6 +304,7 @@ const UserManagement: React.FC = () => {
                       <input
                         type="checkbox"
                         checked={form.permissions.includes(permission)}
+                        disabled={form.role === 'admin' && permission === 'settings.view'}
                         onChange={() => togglePermission(permission)}
                       />
                       {permissionLabel(permission)}

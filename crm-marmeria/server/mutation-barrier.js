@@ -4,15 +4,11 @@ class MutationBarrier {
     this.activeRequests = 0;
     this.maintenance = false;
     this.idleWaiters = new Set();
+    this.maintenanceQueue = Promise.resolve();
   }
 
-  get isMaintenance() {
-    return this.maintenance;
-  }
-
-  get activeCount() {
-    return this.activeRequests;
-  }
+  get isMaintenance() { return this.maintenance; }
+  get activeCount() { return this.activeRequests; }
 
   enterRequest() {
     if (this.maintenance) return null;
@@ -50,19 +46,18 @@ class MutationBarrier {
     });
   }
 
-  async runMaintenance(action, timeoutMs = this.timeoutMs) {
-    if (this.maintenance) {
-      const error = new Error('È già in corso un’operazione di manutenzione');
-      error.status = 503;
-      throw error;
-    }
-    this.maintenance = true;
-    try {
-      await this.waitForIdle(timeoutMs);
-      return await action();
-    } finally {
-      this.maintenance = false;
-    }
+  runMaintenance(action, timeoutMs = this.timeoutMs) {
+    const task = this.maintenanceQueue.then(async () => {
+      this.maintenance = true;
+      try {
+        await this.waitForIdle(timeoutMs);
+        return await action();
+      } finally {
+        this.maintenance = false;
+      }
+    });
+    this.maintenanceQueue = task.catch(() => undefined);
+    return task;
   }
 }
 

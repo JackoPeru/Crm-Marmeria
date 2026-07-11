@@ -882,7 +882,7 @@ class CrmDatabase {
         fs.mkdirSync(stageAttachments, { recursive: true });
       }
 
-      validateDatabase(stageDb);
+      validateDatabase(stageDb, stageAttachments);
       validateUsers(stageUsers);
       syncTree(stageRoot);
 
@@ -906,7 +906,7 @@ class CrmDatabase {
       fs.renameSync(stageAttachments, this.attachmentsDir);
       syncDirectory(this.dataDir);
 
-      validateDatabase(this.dbPath);
+      validateDatabase(this.dbPath, this.attachmentsDir);
       validateUsers(this.usersPath);
       this.open();
       this.writeAudit({

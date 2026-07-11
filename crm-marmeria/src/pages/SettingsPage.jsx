@@ -11,6 +11,7 @@ import {
 import toast from 'react-hot-toast';
 import DataManager from '../components/DataManager';
 import UserManagement from '../components/UserManagement';
+import ServerConnectionSettings from '../components/ServerConnectionSettings';
 import useUI from '../hooks/useUI';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -156,6 +157,7 @@ const SettingsPage = () => {
         </button>
       </Section>
 
+      {user?.role === 'admin' && <ServerConnectionSettings />}
       {user?.role === 'admin' && <UserManagement />}
 
       <Section icon={Bell} title="Notifiche" iconClass="text-green-500">

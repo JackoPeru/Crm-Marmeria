@@ -8,6 +8,7 @@ const { discoverMasters } = require('./discovery.cjs');
 const {
   defaultPrefs,
   normalizeApiUrl,
+  resolveAutomaticMode,
   safeClientPrefs,
   selectSingleMaster,
   validatePrefs,
@@ -122,21 +123,7 @@ const applyNetworkMode = async (incomingPrefs) => {
   let prefs = validatePrefs(incomingPrefs);
 
   if (prefs.mode === 'auto') {
-    const masters = await discoverMasters(1600);
-    if (masters.length > 1) {
-      const error = new Error('Sono stati trovati più server principali nella rete');
-      error.code = 'MULTIPLE_MASTERS';
-      error.masters = masters;
-      throw error;
-    }
-    prefs = masters.length === 1
-      ? validatePrefs({
-        ...prefs,
-        mode: 'client',
-        apiUrl: masters[0].apiUrl,
-        discoveredServerId: masters[0].serverId,
-      })
-      : validatePrefs({ ...prefs, mode: 'master' });
+    prefs = resolveAutomaticMode(prefs, await discoverMasters(1600));
   }
 
   if (prefs.mode === 'master') {
@@ -303,10 +290,7 @@ app.on('before-quit', (event) => {
   if (quitAfterServerStop || !centralServer?.getStatus().isRunning) return;
   event.preventDefault();
   quitAfterServerStop = true;
-  Promise.race([
-    centralServer.stop(),
-    new Promise((resolve) => setTimeout(resolve, 5000)),
-  ])
+  centralServer.stop()
     .catch((error) => console.error('Arresto server fallito:', error))
     .finally(() => app.quit());
 });
