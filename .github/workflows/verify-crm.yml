@@ -28,7 +28,7 @@ jobs:
         working-directory: crm-marmeria
         run: |
           npm ci
-          npm ci --prefix server
+          npm install --prefix server
 
       - name: Enforce zero production vulnerabilities
         working-directory: crm-marmeria
