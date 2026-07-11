@@ -186,12 +186,25 @@ const createWindow = () => {
   }
 };
 
+const selectSingleMaster = (masters, expectedServerId = null) => {
+  if (expectedServerId) {
+    return masters.find((master) => String(master.serverId) === String(expectedServerId)) || null;
+  }
+  return masters.length === 1 ? masters[0] : null;
+};
+
 const applyNetworkMode = async (incomingPrefs) => {
   let prefs = validatePrefs(incomingPrefs);
 
   if (prefs.mode === 'auto') {
     const masters = await discoverMasters(1600);
-    prefs = masters.length
+    if (masters.length > 1) {
+      const error = new Error('Sono stati trovati più server principali nella rete');
+      error.code = 'MULTIPLE_MASTERS';
+      error.masters = masters;
+      throw error;
+    }
+    prefs = masters.length === 1
       ? validatePrefs({
         ...prefs,
         mode: 'client',
@@ -241,14 +254,83 @@ const applyNetworkMode = async (incomingPrefs) => {
   };
 };
 
+const recoverClientByIdentity = async (prefs) => {
+  if (prefs.mode !== 'client') return null;
+  const masters = await discoverMasters(2200);
+  const recovered = selectSingleMaster(masters, prefs.discoveredServerId || null);
+  if (!recovered) return null;
+  return applyNetworkMode({
+    ...prefs,
+    mode: 'client',
+    apiUrl: recovered.apiUrl,
+    discoveredServerId: recovered.serverId,
+  });
+};
+
+const configureFirstLaunch = async (prefs) => {
+  while (true) {
+    const masters = await discoverMasters(2000);
+    if (masters.length === 1) {
+      return applyNetworkMode({
+        ...prefs,
+        mode: 'client',
+        apiUrl: masters[0].apiUrl,
+        discoveredServerId: masters[0].serverId,
+      });
+    }
+
+    const detail = masters.length > 1
+      ? `Sono stati trovati ${masters.length} server principali. Arresta quelli duplicati prima di continuare.`
+      : 'Nessun server principale è stato trovato nella rete. Non scegliere “PC principale” su una normale postazione client.';
+    const choice = await dialog.showMessageBox({
+      type: masters.length > 1 ? 'error' : 'question',
+      title: 'Configurazione rete CRM Marmeria',
+      message: masters.length > 1
+        ? 'Rilevati più server principali'
+        : 'Questa è la prima configurazione dell’app',
+      detail,
+      buttons: ['Questo è il PC principale', 'Cerca di nuovo', 'Chiudi'],
+      defaultId: 1,
+      cancelId: 2,
+      noLink: true,
+    });
+
+    if (choice.response === 0) {
+      if (masters.length > 0) continue;
+      return applyNetworkMode({ ...prefs, mode: 'master' });
+    }
+    if (choice.response === 2) return null;
+  }
+};
+
 const initializeNetwork = async () => {
+  const firstLaunch = !fs.existsSync(prefsPath());
   const prefs = readPrefs();
+
+  if (firstLaunch && prefs.mode === 'auto') {
+    const result = await configureFirstLaunch(prefs);
+    if (result) savePrefs(result.prefs);
+    else app.quit();
+    return;
+  }
+
   try {
     const result = await applyNetworkMode(prefs);
     savePrefs(result.prefs);
   } catch (error) {
     console.error('Avvio automatico server centrale fallito:', error.message);
-    const fallbackMaster = error.masters?.[0];
+
+    try {
+      const recovered = await recoverClientByIdentity(prefs);
+      if (recovered) {
+        savePrefs(recovered.prefs);
+        return;
+      }
+    } catch (recoveryError) {
+      console.error('Recupero del server tramite identità fallito:', recoveryError.message);
+    }
+
+    const fallbackMaster = selectSingleMaster(error.masters || [], prefs.discoveredServerId || null);
     const fallback = validatePrefs({
       ...prefs,
       mode: 'client',
@@ -263,7 +345,7 @@ const initializeNetwork = async () => {
 app.whenReady().then(async () => {
   centralServer = new CentralCrmServer();
   await initializeNetwork();
-  createWindow();
+  if (!app.isQuiting) createWindow();
 });
 
 app.on('window-all-closed', () => {
@@ -271,6 +353,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', (event) => {
+  app.isQuiting = true;
   if (quitAfterServerStop || !centralServer?.getStatus().isRunning) return;
   event.preventDefault();
   quitAfterServerStop = true;
