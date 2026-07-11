@@ -1,4 +1,4 @@
-name: Apply fifth review follow-up
+name: Apply fifth offline review
 
 on:
   pull_request:
@@ -19,8 +19,8 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Apply follow-up patch
-        run: python3 crm-marmeria/scripts/apply-fifth-followup.py
+      - name: Apply offline consistency patch
+        run: python3 crm-marmeria/scripts/apply-fifth-offline.py
 
       - name: Install clean dependencies
         working-directory: crm-marmeria
@@ -28,19 +28,13 @@ jobs:
           npm ci
           npm ci --prefix server
 
-      - name: Verify standalone bootstrap and backup authorization
+      - name: Verify offline optimistic behavior
         working-directory: crm-marmeria
-        env:
-          TZ: Europe/Rome
         run: |
-          node --check server/index.js
-          node --check server/runtime-files.js
-          node server/runtime-files.check.js
-          node server/index-bootstrap.check.js
-          node server/setup-test.js
-          node server/smoke-test.js server
+          npm test -- --run src/services/optimisticMutation.test.ts src/services/requestScope.test.ts src/services/offlineQueue.test.ts
+          npm run typecheck
 
-      - name: Verify all previous invariants
+      - name: Verify complete runtime and server suite
         working-directory: crm-marmeria
         env:
           TZ: Europe/Rome
@@ -50,13 +44,16 @@ jobs:
           node electron/server-identity.check.cjs
           node electron/server-master.check.cjs
           node electron/network-config.check.cjs
+          node server/runtime-files.check.js
+          node server/index-bootstrap.check.js
           node server/mutation-barrier.check.js
+          node server/setup-test.js
           node server/smoke-test.js create
           node server/smoke-test.js update
           node server/smoke-test.js conflict
           node server/smoke-test.js integrity
           node server/smoke-test.js snapshot
-          npm run typecheck
+          node server/smoke-test.js server
           npm test -- --run
           npm audit --omit=dev --audit-level=low
           npm audit --prefix server --omit=dev --audit-level=low
@@ -64,11 +61,11 @@ jobs:
           npm run build
           timeout 180s npx electron-builder --linux dir --publish never
 
-      - name: Commit verified follow-up
+      - name: Commit verified offline patch
         run: |
-          git rm crm-marmeria/scripts/apply-fifth-followup.py
+          git rm crm-marmeria/scripts/apply-fifth-offline.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .
-          git commit -m "fix: restrict backup control and recover standalone setup"
+          git commit -m "fix: preserve complete entities during offline mutations"
           git push origin HEAD:fix/core-reliability-2026-07
