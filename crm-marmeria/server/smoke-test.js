@@ -124,6 +124,19 @@ async function runServerTest() {
     });
     assert.equal(invalidToken.response.status, 401, 'Un token non valido deve restituire 401');
 
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const failed = await requestJson(baseUrl, '/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username: 'utente-bloccato', password: 'errata' }),
+      });
+      assert.equal(failed.response.status, 401);
+    }
+    const rateLimited = await requestJson(baseUrl, '/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'utente-bloccato', password: 'errata' }),
+    });
+    assert.equal(rateLimited.response.status, 429, 'Il login deve limitare i tentativi ripetuti');
+
     const deniedInvoices = await requestJson(baseUrl, '/invoices', {
       headers: authHeaders(workerToken),
     });
@@ -144,27 +157,53 @@ async function runServerTest() {
       }),
     });
     assert.equal(createdProject.response.status, 201);
+    assert.equal(createdProject.body.budget, 1000, 'Il budget deve essere normalizzato a numero');
 
-    const workerUpdate = await requestJson(
-      baseUrl,
-      `/projects/${createdProject.body.id}`,
-      {
-        method: 'PUT',
-        headers: {
-          ...authHeaders(workerToken),
-          'If-Match': String(createdProject.body.version),
-          'X-Operation-Id': 'worker-update-ci',
-        },
-        body: JSON.stringify({
-          status: 'In Lavorazione',
-          phase: 'Taglio',
-        }),
+    const workerProject = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      headers: authHeaders(workerToken),
+    });
+    assert.equal(workerProject.response.status, 200);
+    assert.equal('budget' in workerProject.body, false, 'Il budget non deve essere inviato all’operaio');
+
+    const workerUpdate = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      method: 'PUT',
+      headers: {
+        ...authHeaders(workerToken),
+        'If-Match': String(createdProject.body.version),
+        'X-Operation-Id': 'worker-update-ci',
       },
-    );
+      body: JSON.stringify({ status: 'In Lavorazione', phase: 'Taglio' }),
+    });
     assert.equal(workerUpdate.response.status, 200, 'L’operaio deve aggiornare la produzione');
-    assert.equal(workerUpdate.body.name, 'Progetto da non cancellare', 'L’aggiornamento operaio non deve cancellare il nome');
-    assert.equal(workerUpdate.body.deadline, '2030-01-01', 'L’aggiornamento operaio non deve cancellare la scadenza');
-    assert.equal(workerUpdate.body.budget, '€ 1.000,00', 'L’aggiornamento operaio non deve cancellare il budget');
+    assert.equal(workerUpdate.body.name, 'Progetto da non cancellare');
+    assert.equal(workerUpdate.body.deadline, '2030-01-01');
+    assert.equal('budget' in workerUpdate.body, false, 'La risposta operaio deve restare redatta');
+
+    const adminProject = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(adminProject.body.budget, 1000, 'Il budget deve restare nel database');
+
+    const createdMaterial = await requestJson(baseUrl, '/materials', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({
+        name: 'Granito CI',
+        category: 'Granito',
+        unit: 'm²',
+        unitPrice: 12.34,
+        stockQuantity: 5,
+        minStockLevel: 2,
+      }),
+    });
+    assert.equal(createdMaterial.response.status, 201);
+    assert.equal(createdMaterial.body.unitPrice, 12.34);
+    const workerMaterials = await requestJson(baseUrl, '/materials', {
+      headers: authHeaders(workerToken),
+    });
+    assert.equal('unitPrice' in workerMaterials.body[0], false);
+    assert.equal('price' in workerMaterials.body[0], false);
+    assert.equal(workerMaterials.body[0].stockQuantity, 5);
 
     workerSocket = new WebSocket(
       `ws://127.0.0.1:${instance.port}/ws?token=${encodeURIComponent(workerToken)}`,
@@ -187,6 +226,31 @@ async function runServerTest() {
       }
     });
 
+    const adminUpdate = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      method: 'PUT',
+      headers: {
+        ...authHeaders(adminToken),
+        'If-Match': String(adminProject.body.version),
+        'X-Operation-Id': 'admin-financial-update-ci',
+      },
+      body: JSON.stringify({ budget: 2000, status: 'In Corso' }),
+    });
+    assert.equal(adminUpdate.response.status, 200);
+    await wait(150);
+    const projectEvent = workerEvents.find((event) => event.entityType === 'project');
+    assert.ok(projectEvent, 'L’operaio deve ricevere l’aggiornamento operativo realtime');
+    assert.equal('budget' in projectEvent.item, false, 'Il realtime operaio deve rimuovere il budget');
+
+    const workerAudit = await requestJson(
+      baseUrl,
+      `/audit/project/${createdProject.body.id}`,
+      { headers: authHeaders(workerToken) },
+    );
+    assert.equal(workerAudit.response.status, 200);
+    assert.equal(workerAudit.body.some((entry) => (
+      entry.previous?.budget != null || entry.next?.budget != null
+    )), false, 'Lo storico operaio non deve contenere il budget');
+
     const invoice = await requestJson(baseUrl, '/invoices', {
       method: 'POST',
       headers: {
@@ -197,18 +261,87 @@ async function runServerTest() {
         date: '2030-01-01',
         customerId: 'cliente-uuid',
         items: [{ description: 'Test', quantity: 1, unitPrice: 100, taxRate: 22 }],
-        total: 122,
+        total: 999999,
         status: 'Non Pagata',
       }),
     });
     assert.equal(invoice.response.status, 201);
     assert.match(invoice.body.invoiceNumber, /^FATT-2030-\d{3}$/);
-    await wait(250);
+    assert.equal(invoice.body.total, 122, 'Il server deve ignorare un totale client alterato');
+    await wait(150);
     assert.equal(
       workerEvents.some((event) => event.entityType === 'invoice'),
       false,
       'Il realtime non deve inviare fatture agli operai',
     );
+
+    const order = await requestJson(baseUrl, '/orders', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({
+        title: 'Ordine CI',
+        clientName: 'Cliente CI',
+        status: 'In Lavorazione',
+        priority: 'Alta',
+        endDate: '2030-01-10',
+        amount: 500,
+      }),
+    });
+    assert.equal(order.response.status, 201);
+    const orderStatus = await requestJson(baseUrl, `/orders/${order.body.id}/status`, {
+      headers: authHeaders(workerToken),
+    });
+    assert.equal(orderStatus.response.status, 200);
+    assert.equal(orderStatus.body.id, order.body.id);
+    assert.equal(typeof orderStatus.body.completionPercentage, 'number');
+
+    const workerDashboard = await requestJson(baseUrl, '/analytics/dashboard', {
+      headers: authHeaders(workerToken),
+    });
+    assert.equal(workerDashboard.response.status, 200);
+    assert.equal(workerDashboard.body.financialsVisible, false);
+    assert.equal(workerDashboard.body.totalRevenue, null);
+
+    const daily = await requestJson(baseUrl, '/analytics/daily/2030-01-01', {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(daily.response.status, 200);
+    assert.ok('ordersCompleted' in daily.body);
+    assert.ok('materials' in daily.body);
+
+    const weekly = await requestJson(baseUrl, '/analytics/weekly/2030-01-01', {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(weekly.response.status, 200);
+    assert.ok('averageOrderValue' in weekly.body);
+
+    const monthly = await requestJson(baseUrl, '/analytics/monthly/2030/1', {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(monthly.response.status, 200);
+    assert.ok('completionRate' in monthly.body);
+
+    const performance = await requestJson(baseUrl, '/analytics/performance/month', {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(performance.response.status, 200);
+    assert.ok('onTimeDelivery' in performance.body);
+
+    const trends = await requestJson(
+      baseUrl,
+      '/analytics/trends?metric=orders&startDate=2030-01-01&endDate=2030-01-03',
+      { headers: authHeaders(adminToken) },
+    );
+    assert.equal(trends.response.status, 200);
+    assert.equal(trends.body.length, 3);
+    assert.ok('period' in trends.body[0] && 'orders' in trends.body[0]);
+
+    const deniedRevenueTrend = await requestJson(
+      baseUrl,
+      '/analytics/trends?metric=revenue&startDate=2030-01-01&endDate=2030-01-03',
+      { headers: authHeaders(workerToken) },
+    );
+    assert.equal(deniedRevenueTrend.response.status, 403);
 
     const createUsers = await Promise.all(['utente-a', 'utente-b'].map((username) => (
       requestJson(baseUrl, '/users', {
@@ -302,7 +435,11 @@ async function run(mode) {
 
       const firstQuote = db.create(
         'quote',
-        { date: '2031-01-02', quoteNumber: 'PREV-2031-001' },
+        {
+          date: '2031-01-02',
+          quoteNumber: 'PREV-2031-001',
+          items: [{ description: 'Voce', quantity: 2, unitPrice: 12.34 }],
+        },
         user,
         'quote-one-ci',
       ).item;
@@ -312,14 +449,25 @@ async function run(mode) {
         user,
         'quote-two-ci',
       ).item;
-      assert.notEqual(firstQuote.quoteNumber, secondQuote.quoteNumber, 'I numeri preventivo devono essere univoci');
+      assert.notEqual(firstQuote.quoteNumber, secondQuote.quoteNumber);
+      assert.equal(firstQuote.total, 24.68, 'Il preventivo deve conservare i decimali');
+
+      const calculatedInvoice = db.create(
+        'invoice',
+        {
+          date: '2031-01-02',
+          total: 999,
+          items: [{ description: 'Voce', quantity: 2, unitPrice: 10, taxRate: 22 }],
+        },
+        user,
+        'invoice-total-ci',
+      ).item;
+      assert.equal(calculatedInvoice.subtotal, 20);
+      assert.equal(calculatedInvoice.taxTotal, 4.4);
+      assert.equal(calculatedInvoice.total, 24.4);
 
       const attachmentDirectory = db.attachmentDirectory('project', created.item.id);
-      assert.equal(
-        path.relative(attachmentsDir, attachmentDirectory).startsWith('..'),
-        false,
-        'La cartella allegati deve restare nella directory prevista',
-      );
+      assert.equal(path.relative(attachmentsDir, attachmentDirectory).startsWith('..'), false);
       fs.mkdirSync(attachmentDirectory, { recursive: true });
       const storedName = 'test.txt';
       fs.writeFileSync(path.join(attachmentDirectory, storedName), 'allegato');
@@ -333,7 +481,7 @@ async function run(mode) {
       }], user);
       db.delete('project', created.item.id, 1, user, 'project-delete-ci');
       assert.equal(db.listAttachments('project', created.item.id).length, 0);
-      assert.equal(fs.existsSync(attachmentDirectory), false, 'Gli allegati devono essere eliminati con il record');
+      assert.equal(fs.existsSync(attachmentDirectory), false);
     }
 
     if (mode === 'snapshot') {
@@ -346,7 +494,7 @@ async function run(mode) {
       const snapshot = await db.createSnapshot('ci');
       const snapshotPath = path.join(backupDir, snapshot.name);
       assert.ok(fs.existsSync(path.join(snapshotPath, 'crm-marmeria.db')));
-      assert.ok(fs.existsSync(path.join(snapshotPath, 'users.json')), 'Il backup deve includere gli account');
+      assert.ok(fs.existsSync(path.join(snapshotPath, 'users.json')));
       assert.ok(fs.existsSync(path.join(snapshotPath, 'attachments', 'manuale', 'file.txt')));
 
       db.update('project', created.item.id, { status: 'Modificato' }, 1, user, 'snapshot-update-ci');
@@ -356,9 +504,28 @@ async function run(mode) {
 
       db.restoreSnapshot(snapshot.name, user);
       assert.equal(db.get('project', created.item.id).status, 'In Attesa');
-      assert.ok(JSON.parse(fs.readFileSync(path.join(dataDir, 'users.json'), 'utf8')).length === 1);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'users.json'), 'utf8')).length, 1);
       assert.ok(fs.existsSync(path.join(attachmentsDir, 'manuale', 'file.txt')));
-      assert.ok(db.listSnapshots().some((item) => item.name === snapshot.name));
+
+      const legacyName = `${snapshot.name}-legacy`;
+      const legacyPath = path.join(backupDir, legacyName);
+      fs.cpSync(snapshotPath, legacyPath, { recursive: true });
+      fs.rmSync(path.join(legacyPath, 'users.json'), { force: true });
+      fs.rmSync(path.join(legacyPath, 'attachments'), { recursive: true, force: true });
+
+      fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([
+        { id: 'utente-corrente', username: 'corrente', isActive: true },
+      ]));
+      fs.mkdirSync(path.join(attachmentsDir, 'corrente'), { recursive: true });
+      fs.writeFileSync(path.join(attachmentsDir, 'corrente', 'file.txt'), 'corrente');
+
+      db.restoreSnapshot(legacyName, user);
+      const currentUsers = JSON.parse(fs.readFileSync(path.join(dataDir, 'users.json'), 'utf8'));
+      assert.equal(currentUsers[0].id, 'utente-corrente', 'Uno snapshot legacy non deve cancellare gli account');
+      assert.ok(
+        fs.existsSync(path.join(attachmentsDir, 'corrente', 'file.txt')),
+        'Uno snapshot legacy non deve cancellare gli allegati correnti',
+      );
     }
   } finally {
     db.close();
