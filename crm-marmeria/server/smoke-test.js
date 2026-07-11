@@ -1,3 +1,4 @@
+process.env.TZ = 'Europe/Rome';
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -105,6 +106,16 @@ async function runServerTest() {
     const health = await requestJson(baseUrl, '/health');
     assert.equal(health.response.ok, true, 'L’endpoint health deve rispondere');
     assert.equal(health.body.mode, 'central-server');
+
+
+    const hostileOrigin = await requestJson(baseUrl, '/health', {
+      headers: { Origin: 'https://evil.example' },
+    });
+    assert.equal(hostileOrigin.response.status, 403, 'Le origini web esterne devono essere bloccate');
+    const electronOrigin = await requestJson(baseUrl, '/health', {
+      headers: { Origin: 'null' },
+    });
+    assert.equal(electronOrigin.response.status, 200, 'Le pagine Electron file:// devono poter usare l’API');
 
     const login = async (username) => {
       const result = await requestJson(baseUrl, '/auth/login', {
@@ -302,6 +313,21 @@ async function runServerTest() {
     assert.equal(workerDashboard.body.financialsVisible, false);
     assert.equal(workerDashboard.body.totalRevenue, null);
 
+    instance.db.importEntity('order', {
+      id: 'ordine-mezzanotte-roma',
+      title: 'Ordine dopo mezzanotte locale',
+      status: 'In Attesa',
+      createdAt: '2030-01-01T23:30:00.000Z',
+      updatedAt: '2030-01-01T23:30:00.000Z',
+    });
+    const localMidnightDaily = await requestJson(baseUrl, '/analytics/daily/2030-01-02', {
+      headers: authHeaders(adminToken),
+    });
+    assert.ok(
+      localMidnightDaily.body.newOrders >= 1,
+      'Le 00:30 italiane devono appartenere al giorno locale, non al giorno UTC precedente',
+    );
+
     const daily = await requestJson(baseUrl, '/analytics/daily/2030-01-01', {
       headers: authHeaders(adminToken),
     });
@@ -486,7 +512,15 @@ async function run(mode) {
 
     if (mode === 'snapshot') {
       fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([
-        { id: 'utente-backup', username: 'backup', isActive: true },
+        {
+          id: 'utente-backup',
+          username: 'backup',
+          email: 'backup@example.test',
+          password: '$2b$10$hash-di-test-non-pubblico',
+          role: 'admin',
+          isActive: true,
+          permissions: ['settings.view', 'settings.edit'],
+        },
       ], null, 2));
       fs.mkdirSync(path.join(attachmentsDir, 'manuale'), { recursive: true });
       fs.writeFileSync(path.join(attachmentsDir, 'manuale', 'file.txt'), 'backup');
@@ -514,7 +548,15 @@ async function run(mode) {
       fs.rmSync(path.join(legacyPath, 'attachments'), { recursive: true, force: true });
 
       fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([
-        { id: 'utente-corrente', username: 'corrente', isActive: true },
+        {
+          id: 'utente-corrente',
+          username: 'corrente',
+          email: 'corrente@example.test',
+          password: '$2b$10$hash-corrente-non-pubblico',
+          role: 'admin',
+          isActive: true,
+          permissions: ['settings.view', 'settings.edit'],
+        },
       ]));
       fs.mkdirSync(path.join(attachmentsDir, 'corrente'), { recursive: true });
       fs.writeFileSync(path.join(attachmentsDir, 'corrente', 'file.txt'), 'corrente');
@@ -526,6 +568,57 @@ async function run(mode) {
         fs.existsSync(path.join(attachmentsDir, 'corrente', 'file.txt')),
         'Uno snapshot legacy non deve cancellare gli allegati correnti',
       );
+
+
+      const corruptName = `${snapshot.name}-corrotto`;
+      const corruptPath = path.join(backupDir, corruptName);
+      fs.cpSync(snapshotPath, corruptPath, { recursive: true });
+      fs.writeFileSync(path.join(corruptPath, 'crm-marmeria.db'), 'database non valido');
+      const beforeCorruptRestore = db.get('project', created.item.id);
+      assert.throws(
+        () => db.restoreSnapshot(corruptName, user),
+        /Database del backup non valido/,
+      );
+      assert.equal(
+        db.get('project', created.item.id).status,
+        beforeCorruptRestore.status,
+        'Un database corrotto non deve sostituire quello corrente',
+      );
+
+      const noAdminName = `${snapshot.name}-senza-admin`;
+      const noAdminPath = path.join(backupDir, noAdminName);
+      fs.cpSync(snapshotPath, noAdminPath, { recursive: true });
+      fs.writeFileSync(path.join(noAdminPath, 'users.json'), JSON.stringify([{
+        id: 'solo-operaio',
+        username: 'solo-operaio',
+        email: 'operaio@example.test',
+        password: '$2b$10$hash-operaio-non-pubblico',
+        role: 'worker',
+        isActive: true,
+      }]));
+      assert.throws(
+        () => db.restoreSnapshot(noAdminName, user),
+        /amministratore attivo/,
+      );
+
+      db.close();
+      const interruptedDb = `${db.dbPath}.previous`;
+      const interruptedUsers = `${db.usersPath}.previous`;
+      const interruptedAttachments = `${db.attachmentsDir}.previous`;
+      fs.renameSync(db.dbPath, interruptedDb);
+      fs.renameSync(db.usersPath, interruptedUsers);
+      fs.renameSync(db.attachmentsDir, interruptedAttachments);
+      fs.writeFileSync(path.join(dataDir, '.restore-journal.json'), JSON.stringify({
+        state: 'swapping',
+        previousDb: interruptedDb,
+        previousUsers: interruptedUsers,
+        previousAttachments: interruptedAttachments,
+      }));
+      const recovered = new CrmDatabase({ dataDir, backupDir, attachmentsDir });
+      assert.ok(recovered.get('project', created.item.id));
+      assert.equal(fs.existsSync(path.join(dataDir, '.restore-journal.json')), false);
+      recovered.close();
+      db.open();
     }
   } finally {
     db.close();

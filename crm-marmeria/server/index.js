@@ -14,6 +14,7 @@ const start = async () => {
     dataDir,
     backupDir,
     serverName: process.env.CRM_SERVER_NAME || 'crm-marmeria',
+    setupSecret: process.env.CRM_SETUP_SECRET || null,
   });
 
   const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });

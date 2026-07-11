@@ -38,6 +38,7 @@ class CentralCrmServer {
     this.port = null;
     this.backupPath = null;
     this.serverId = null;
+    this.setupSecret = crypto.randomBytes(32).toString('hex');
   }
 
   identityPath() {
@@ -153,6 +154,7 @@ class CentralCrmServer {
         backupDir,
         serverName: 'CRM Marmeria',
         serverId: ownId,
+        setupSecret: this.setupSecret,
       });
       const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
       if (upgradedSnapshots > 0) {
@@ -186,6 +188,10 @@ class CentralCrmServer {
     this.port = null;
     this.backupPath = null;
     return { success: true, message: 'Server centrale arrestato' };
+  }
+
+  getSetupSecret() {
+    return this.setupSecret;
   }
 
   getStatus() {

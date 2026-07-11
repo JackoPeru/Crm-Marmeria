@@ -41,6 +41,11 @@ declare global {
           error?: string;
           code?: string;
         }>;
+        setupFirstAdmin: (credentials: { username: string; password: string; email?: string; firstName?: string; lastName?: string }) => Promise<{
+          success: boolean;
+          data?: { token: string; user: any };
+          error?: string;
+        }>;
         syncWithMaster?: (...args: any[]) => Promise<any>;
         pushToMaster?: (...args: any[]) => Promise<any>;
       };

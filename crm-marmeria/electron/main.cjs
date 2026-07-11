@@ -375,6 +375,30 @@ ipcMain.handle('network-test-api', async (event, apiUrl, expectedServerId = null
   }
 });
 
+ipcMain.handle('setup-first-admin', async (event, credentials) => {
+  assertTrustedSender(event);
+  const status = centralServer.getStatus();
+  if (!status.isRunning || !status.localApiUrl) {
+    return { success: false, error: 'Il server principale locale non è attivo' };
+  }
+  try {
+    const response = await fetch(`${status.localApiUrl}/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CRM-Setup-Secret': centralServer.getSetupSecret(),
+      },
+      body: JSON.stringify(credentials || {}),
+    });
+    const data = await response.json();
+    return response.ok
+      ? { success: true, data }
+      : { success: false, error: data?.error || 'Configurazione iniziale non riuscita' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('sync-with-master', (event) => {
   assertTrustedSender(event);
   return {

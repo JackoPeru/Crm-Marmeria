@@ -82,6 +82,13 @@ const hasAny = (object, keys) => keys.some((key) => hasOwn(object, key));
 const isLoopback = (req) => [
   '127.0.0.1', '::1', '::ffff:127.0.0.1',
 ].includes(req.socket.remoteAddress);
+const secureEqual = (left, right) => {
+  const first = Buffer.from(String(left || ''));
+  const second = Buffer.from(String(right || ''));
+  return first.length > 0
+    && first.length === second.length
+    && crypto.timingSafeEqual(first, second);
+};
 
 const numeric = (value) => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -101,10 +108,24 @@ const numeric = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const dateKey = (value) => {
+const localDateKey = (value) => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return String(value);
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+  if (Number.isNaN(date.getTime())) return '';
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
 };
+const parseLocalDay = (value) => {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+  return localDateKey(date) === String(value) ? date : null;
+};
+const localToday = () => localDateKey(new Date());
+const dateKey = localDateKey;
 const betweenDates = (value, start, end) => {
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) && timestamp >= start.getTime() && timestamp <= end.getTime();
@@ -309,6 +330,7 @@ async function createCrmServer(options = {}) {
   const dataDir = options.dataDir || path.join(__dirname, 'data');
   const backupDir = options.backupDir || path.join(dataDir, 'backups');
   const attachmentsDir = options.attachmentsDir || path.join(dataDir, 'attachments');
+  const setupSecret = options.setupSecret || process.env.CRM_SETUP_SECRET || null;
 
   configureAuth({ dataDir });
   const db = new CrmDatabase({ dataDir, backupDir, attachmentsDir });
@@ -316,11 +338,25 @@ async function createCrmServer(options = {}) {
 
   const app = express();
   app.disable('x-powered-by');
-  app.use(cors({
-    origin: '*',
+  const corsOptions = {
+    origin(origin, callback) {
+      const allowed = !origin
+        || origin === 'null'
+        || /^file:\/\//i.test(origin)
+        || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin);
+      if (allowed) return callback(null, true);
+      const error = new Error('Origine web non autorizzata');
+      error.status = 403;
+      return callback(error);
+    },
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'If-Match', 'X-Operation-Id'],
-  }));
+    allowedHeaders: [
+      'Content-Type', 'Authorization', 'If-Match',
+      'X-Operation-Id', 'X-CRM-Setup-Secret',
+    ],
+    maxAge: 600,
+  };
+  app.use(cors(corsOptions));
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
@@ -407,6 +443,11 @@ async function createCrmServer(options = {}) {
         if (!isLoopback(req)) {
           return res.status(403).json({
             error: 'La configurazione iniziale deve essere completata sul PC principale',
+          });
+        }
+        if (!setupSecret || !secureEqual(req.get('X-CRM-Setup-Secret'), setupSecret)) {
+          return res.status(403).json({
+            error: 'Configurazione iniziale consentita soltanto dall’app desktop principale',
           });
         }
         if (password.length < 10) {
@@ -810,12 +851,13 @@ async function createCrmServer(options = {}) {
   });
 
   app.get('/api/analytics/daily/:date?', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
-    const date = req.params.date || new Date().toISOString().slice(0, 10);
+    const date = req.params.date || localToday();
     const work = allWork();
     const materials = db.list('material');
-    const dayStart = new Date(`${date}T00:00:00.000Z`);
-    const dayEnd = new Date(`${date}T23:59:59.999Z`);
-    if (Number.isNaN(dayStart.getTime())) return res.status(400).json({ error: 'Data non valida' });
+    const dayStart = parseLocalDay(date);
+    if (!dayStart) return res.status(400).json({ error: 'Data non valida' });
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(23, 59, 59, 999);
     res.json({
       date,
       ordersCompleted: work.filter(
@@ -843,16 +885,16 @@ async function createCrmServer(options = {}) {
   });
 
   app.get('/api/analytics/weekly/:weekStart?', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
-    const start = new Date(`${req.params.weekStart || new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
-    if (Number.isNaN(start.getTime())) return res.status(400).json({ error: 'Data non valida' });
+    const start = parseLocalDay(req.params.weekStart || localToday());
+    if (!start) return res.status(400).json({ error: 'Data non valida' });
     const end = addDays(start, 6);
-    end.setUTCHours(23, 59, 59, 999);
+    end.setHours(23, 59, 59, 999);
     const work = allWork().filter((item) => betweenDates(item.createdAt, start, end));
     const completed = work.filter((item) => item.status === 'Completato');
     const revenue = canViewFinancials(req.user) ? invoiceRevenue(start, end) : 0;
     res.json({
-      weekStart: start.toISOString().slice(0, 10),
-      weekEnd: end.toISOString().slice(0, 10),
+      weekStart: localDateKey(start),
+      weekEnd: localDateKey(end),
       totalOrders: work.length,
       completedOrders: completed.length,
       totalRevenue: revenue,
@@ -869,8 +911,8 @@ async function createCrmServer(options = {}) {
     if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
       return res.status(400).json({ error: 'Mese o anno non validi' });
     }
-    const start = new Date(Date.UTC(year, month - 1, 1));
-    const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+    const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const end = new Date(year, month, 0, 23, 59, 59, 999);
     const work = allWork().filter((item) => betweenDates(item.createdAt, start, end));
     const completed = work.filter((item) => item.status === 'Completato');
     const revenue = canViewFinancials(req.user) ? invoiceRevenue(start, end) : 0;
@@ -916,11 +958,11 @@ async function createCrmServer(options = {}) {
     if (metric === 'revenue' && !canViewFinancials(req.user)) {
       return res.status(403).json({ error: 'Permessi insufficienti per i dati finanziari' });
     }
-    const start = new Date(String(
-      req.query.startDate || new Date(Date.now() - 30 * 86400000).toISOString(),
+    const start = parseLocalDay(String(
+      req.query.startDate || localDateKey(new Date(Date.now() - 30 * 86400000)),
     ));
-    const end = new Date(String(req.query.endDate || new Date().toISOString()));
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    const end = parseLocalDay(String(req.query.endDate || localToday()));
+    if (!start || !end || start > end) {
       return res.status(400).json({ error: 'Intervallo date non valido' });
     }
     if ((end.getTime() - start.getTime()) / 86400000 > 366) {
@@ -930,8 +972,8 @@ async function createCrmServer(options = {}) {
     const clients = db.list('client');
     const invoices = db.list('invoice');
     const data = [];
-    for (const current = new Date(start); current <= end; current.setUTCDate(current.getUTCDate() + 1)) {
-      const date = current.toISOString().slice(0, 10);
+    for (const current = new Date(start); current <= end; current.setDate(current.getDate() + 1)) {
+      const date = localDateKey(current);
       const orders = work.filter((item) => dateKey(item.createdAt) === date).length;
       const clientCount = clients.filter((item) => dateKey(item.createdAt) === date).length;
       const revenue = canViewFinancials(req.user)
@@ -1135,9 +1177,9 @@ async function createCrmServer(options = {}) {
 
   const ensureDailyBackup = async () => {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localToday();
       const alreadyCreated = db.listSnapshots().some(
-        (item) => item.createdAt.startsWith(today) && item.label === 'automatico',
+        (item) => localDateKey(item.createdAt) === today && item.label === 'automatico',
       );
       if (!alreadyCreated) {
         await drainUserMutations();

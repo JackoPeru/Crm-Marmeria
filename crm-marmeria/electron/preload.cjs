@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       apiUrl,
       expectedServerId,
     ),
+    setupFirstAdmin: (credentials) => ipcRenderer.invoke('setup-first-admin', credentials),
     syncWithMaster: (...args) => ipcRenderer.invoke('sync-with-master', ...args),
     pushToMaster: (...args) => ipcRenderer.invoke('push-to-master', ...args),
   },

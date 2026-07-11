@@ -53,6 +53,7 @@ async function run() {
       backupDir,
       attachmentsDir,
       serverName: 'Setup CI',
+      setupSecret: 'segreto-setup-ci',
     });
     const baseUrl = `http://127.0.0.1:${instance.port}/api`;
 
@@ -64,14 +65,28 @@ async function run() {
       'Gli account predefiniti compromessi devono essere rimossi',
     );
 
+    const missingSecret = await requestJson(baseUrl, '/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: 'proprietario',
+        password: 'Password-forte-123',
+        email: 'proprietario@example.test',
+        firstName: 'Mario',
+        lastName: 'Bianchi',
+      }),
+    });
+    assert.equal(missingSecret.response.status, 403, 'Il setup HTTP senza segreto desktop deve essere rifiutato');
+
     const shortPassword = await requestJson(baseUrl, '/auth/login', {
       method: 'POST',
+      headers: { 'X-CRM-Setup-Secret': 'segreto-setup-ci' },
       body: JSON.stringify({ username: 'proprietario', password: 'corta' }),
     });
     assert.equal(shortPassword.response.status, 400);
 
     const setup = await requestJson(baseUrl, '/auth/login', {
       method: 'POST',
+      headers: { 'X-CRM-Setup-Secret': 'segreto-setup-ci' },
       body: JSON.stringify({
         username: 'proprietario',
         password: 'Password-forte-123',
