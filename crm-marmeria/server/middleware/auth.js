@@ -46,6 +46,12 @@ const mutateUsers = (mutator) => {
   const task = usersMutationQueue.then(async () => {
     const users = readUsers();
     const result = await mutator(users);
+    const activeAdmins = users.filter((user) => user.role === 'admin' && user.isActive);
+    if (users.length > 0 && activeAdmins.length === 0) {
+      const error = new Error('Deve rimanere almeno un amministratore attivo');
+      error.status = 400;
+      throw error;
+    }
     if (result?.write !== false && !writeUsers(users)) {
       throw new Error('Salvataggio utenti fallito');
     }
