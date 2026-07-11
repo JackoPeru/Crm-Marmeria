@@ -80,14 +80,7 @@ describe('optimistic offline mutations', () => {
 ''')
 
 api = ROOT / 'src/services/api.ts'
-replace_once(
-    api,
-    """import { bindRequestToScope, queueScopesEqual } from './requestScope';
-""",
-    """import { bindRequestToScope, queueScopesEqual } from './requestScope';
-import { buildOptimisticMutation } from './optimisticMutation';
-""",
-)
+replace_once(api, "import { bindRequestToScope, queueScopesEqual } from './requestScope';\n", "import { bindRequestToScope, queueScopesEqual } from './requestScope';\nimport { buildOptimisticMutation } from './optimisticMutation';\n")
 replace_once(
     api,
     """            const optimistic = {
@@ -129,14 +122,7 @@ replace_once(
 )
 
 orders = ROOT / 'src/services/orders.ts'
-replace_once(
-    orders,
-    """import toast from 'react-hot-toast';
-""",
-    """import toast from 'react-hot-toast';
-import { mergeOptimisticEntity } from './optimisticMutation';
-""",
-)
+replace_once(orders, "import toast from 'react-hot-toast';\n", "import toast from 'react-hot-toast';\nimport { mergeOptimisticEntity } from './optimisticMutation';\n")
 replace_once(
     orders,
     """  async updateOrder(id: string, orderData: Partial<CreateOrderRequest>): Promise<Order> {
