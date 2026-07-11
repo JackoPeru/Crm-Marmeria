@@ -57,6 +57,22 @@ const syncDirectory = (directoryPath) => {
   }
 };
 
+const syncTree = (target) => {
+  if (!target || !fs.existsSync(target)) return;
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink()) {
+    const error = new Error(`Collegamento simbolico non consentito nel backup: ${target}`);
+    error.status = 400;
+    throw error;
+  }
+  if (stat.isDirectory()) {
+    for (const entry of fs.readdirSync(target)) syncTree(path.join(target, entry));
+    syncDirectory(target);
+    return;
+  }
+  syncFile(target);
+};
+
 const atomicWriteJson = (filePath, value) => {
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   const descriptor = fs.openSync(temporary, 'w');
@@ -209,7 +225,9 @@ module.exports = {
   atomicWriteJson,
   recoverInterruptedRestore,
   restorePaths,
+  syncDirectory,
   syncFile,
+  syncTree,
   validateDatabase,
   validateUsers,
 };

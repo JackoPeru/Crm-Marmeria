@@ -157,7 +157,7 @@ const discoverMasters = (timeoutMs = 1500) => new Promise((resolve) => {
         return;
       }
       const address = remote.address;
-      masters.set(String(message.serverId), {
+      masters.set(`${String(message.serverId)}|${address}|${port}`, {
         ...message,
         serverId: String(message.serverId),
         port,

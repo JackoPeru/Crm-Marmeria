@@ -6,6 +6,9 @@ const {
   atomicWriteJson,
   recoverInterruptedRestore,
   restorePaths,
+  syncDirectory,
+  syncFile,
+  syncTree,
   validateDatabase,
   validateUsers,
 } = require('./restore-safety');
@@ -36,7 +39,7 @@ const numeric = (value) => {
   } else if (comma >= 0) {
     normalized = compact.replace(',', '.');
   }
-  const parsed = Number.parseFloat(normalized);
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
@@ -55,8 +58,9 @@ class CrmDatabase {
       attachmentsDir: this.attachmentsDir,
     });
 
-    if (isInside(this.attachmentsDir, this.backupDir)) {
-      throw new Error('La cartella dei backup non può trovarsi dentro la cartella allegati');
+    if (isInside(this.attachmentsDir, this.backupDir)
+      || isInside(this.backupDir, this.attachmentsDir)) {
+      throw new Error('Le cartelle backup e allegati non possono contenersi a vicenda');
     }
 
     fs.mkdirSync(this.dataDir, { recursive: true });
@@ -753,12 +757,15 @@ class CrmDatabase {
         version: 3,
         createdAt: now(),
       };
-      fs.writeFileSync(
-        path.join(temporary, 'metadata.json'),
-        JSON.stringify(metadata, null, 2),
-      );
+      atomicWriteJson(path.join(temporary, 'metadata.json'), metadata);
+      syncTree(temporary);
       fs.renameSync(temporary, destination);
-      this.pruneSnapshots(30);
+      syncDirectory(this.backupDir);
+      try {
+        this.pruneSnapshots(30);
+      } catch (error) {
+        console.error('Pulizia vecchi snapshot fallita:', error);
+      }
       return metadata;
     } catch (error) {
       fs.rmSync(temporary, { recursive: true, force: true });
@@ -846,35 +853,37 @@ class CrmDatabase {
       snapshot: String(name),
       startedAt: now(),
     };
+    let committed = false;
     fs.mkdirSync(stageRoot, { recursive: true });
 
     try {
       fs.copyFileSync(dbSource, stageDb);
-      if (fs.existsSync(usersSource)) {
-        fs.copyFileSync(usersSource, stageUsers);
-      } else if (fs.existsSync(this.usersPath)) {
-        fs.copyFileSync(this.usersPath, stageUsers);
-      } else {
+      if (fs.existsSync(usersSource)) fs.copyFileSync(usersSource, stageUsers);
+      else if (fs.existsSync(this.usersPath)) fs.copyFileSync(this.usersPath, stageUsers);
+      else {
         const error = new Error('Il backup non contiene account e non esistono account correnti da conservare');
         error.status = 400;
         throw error;
       }
 
       if (fs.existsSync(attachmentsSource)) {
-        fs.cpSync(attachmentsSource, stageAttachments, { recursive: true });
+        fs.cpSync(attachmentsSource, stageAttachments, { recursive: true, verbatimSymlinks: true });
       } else if (fs.existsSync(this.attachmentsDir)) {
-        fs.cpSync(this.attachmentsDir, stageAttachments, { recursive: true });
+        fs.cpSync(this.attachmentsDir, stageAttachments, { recursive: true, verbatimSymlinks: true });
       } else {
         fs.mkdirSync(stageAttachments, { recursive: true });
       }
 
       validateDatabase(stageDb);
       validateUsers(stageUsers);
+      syncTree(stageRoot);
 
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
       this.close();
-      for (const suffix of ['-wal', '-shm']) {
-        fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
-      }
+      if (fs.existsSync(this.dbPath)) syncFile(this.dbPath);
+      if (fs.existsSync(this.usersPath)) syncFile(this.usersPath);
+      if (fs.existsSync(this.attachmentsDir)) syncTree(this.attachmentsDir);
+      for (const suffix of ['-wal', '-shm']) fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
       fs.rmSync(previousDb, { force: true });
       fs.rmSync(previousUsers, { force: true });
       fs.rmSync(previousAttachments, { recursive: true, force: true });
@@ -882,52 +891,52 @@ class CrmDatabase {
       atomicWriteJson(journalPath, { ...journalBase, state: 'swapping' });
       if (fs.existsSync(this.dbPath)) fs.renameSync(this.dbPath, previousDb);
       if (fs.existsSync(this.usersPath)) fs.renameSync(this.usersPath, previousUsers);
-      if (fs.existsSync(this.attachmentsDir)) {
-        fs.renameSync(this.attachmentsDir, previousAttachments);
-      }
+      if (fs.existsSync(this.attachmentsDir)) fs.renameSync(this.attachmentsDir, previousAttachments);
 
       fs.renameSync(stageDb, this.dbPath);
       fs.renameSync(stageUsers, this.usersPath);
       fs.renameSync(stageAttachments, this.attachmentsDir);
-      atomicWriteJson(journalPath, { ...journalBase, state: 'committed' });
+      syncDirectory(this.dataDir);
 
       validateDatabase(this.dbPath);
       validateUsers(this.usersPath);
       this.open();
+      this.writeAudit({
+        user,
+        type: 'database',
+        id: 'all',
+        action: 'restore.snapshot',
+        previous: null,
+        next: { snapshot: String(name) },
+      });
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+      syncFile(this.dbPath);
+      syncFile(this.usersPath);
+      syncTree(this.attachmentsDir);
 
+      atomicWriteJson(journalPath, { ...journalBase, state: 'committed' });
+      committed = true;
       fs.rmSync(previousDb, { force: true });
       fs.rmSync(previousUsers, { force: true });
       fs.rmSync(previousAttachments, { recursive: true, force: true });
       fs.rmSync(journalPath, { force: true });
+      syncDirectory(this.dataDir);
     } catch (error) {
       if (this.db?.open) this.close();
-      if (fs.existsSync(journalPath)) {
-        try {
-          atomicWriteJson(journalPath, { ...journalBase, state: 'swapping' });
-        } catch {
-          // Il recupero usa comunque i percorsi .previous noti.
-        }
+      if (!committed) {
+        recoverInterruptedRestore({
+          dataDir: this.dataDir,
+          dbPath: this.dbPath,
+          usersPath: this.usersPath,
+          attachmentsDir: this.attachmentsDir,
+        });
       }
-      recoverInterruptedRestore({
-        dataDir: this.dataDir,
-        dbPath: this.dbPath,
-        usersPath: this.usersPath,
-        attachmentsDir: this.attachmentsDir,
-      });
       throw error;
     } finally {
       fs.rmSync(stageRoot, { recursive: true, force: true });
       if (!this.db?.open) this.open();
     }
 
-    this.writeAudit({
-      user,
-      type: 'database',
-      id: 'all',
-      action: 'restore.snapshot',
-      previous: null,
-      next: { snapshot: String(name) },
-    });
     return this.listSnapshots().find((snapshot) => snapshot.name === name) || { name };
   }
 

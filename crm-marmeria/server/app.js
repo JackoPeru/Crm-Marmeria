@@ -20,7 +20,10 @@ const {
   drainUserMutations,
   configureAuth,
   verifyToken,
+  rotateAuthEpoch,
+  getAuthEpoch,
 } = require('./middleware/auth');
+const { MutationBarrier } = require('./mutation-barrier');
 
 const ROUTES = {
   clients: { type: 'client', permission: 'clients' },
@@ -56,8 +59,9 @@ const WORKER_FIELDS = {
 };
 
 const FINANCIAL_FIELDS = new Set([
-  'amount', 'budget', 'cost', 'fiscalCode', 'minPrice', 'paymentDetails',
-  'price', 'purchasePrice', 'salePrice', 'subtotal', 'taxTotal', 'total',
+  'amount', 'bankAccount', 'budget', 'cost', 'discount', 'fiscalCode',
+  'iban', 'margin', 'minPrice', 'paymentDetails', 'price', 'profit',
+  'purchasePrice', 'salePrice', 'subtotal', 'taxRate', 'taxTotal', 'total',
   'totalPrice', 'unitPrice', 'vatNumber',
 ]);
 
@@ -89,9 +93,29 @@ const secureEqual = (left, right) => {
     && first.length === second.length
     && crypto.timingSafeEqual(first, second);
 };
+const canonicalIdentity = (value) => String(value || '').trim().toLowerCase();
+const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+const normalizePermissions = (value) => {
+  if (!Array.isArray(value)) {
+    const error = new Error('L’elenco permessi non è valido');
+    error.status = 400;
+    throw error;
+  }
+  const permissions = [...new Set(value.map((entry) => String(entry).trim()).filter(Boolean))];
+  const unknown = permissions.filter((permission) => !ADMIN_PERMISSIONS.includes(permission));
+  if (unknown.length) {
+    const error = new Error(`Permessi non riconosciuti: ${unknown.join(', ')}`);
+    error.status = 400;
+    throw error;
+  }
+  return permissions;
+};
 
-const numeric = (value) => {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+const numeric = (value, { strict = false, field = 'valore' } = {}) => {
+  if (typeof value === 'number') {
+    if (Number.isFinite(value)) return value;
+    if (!strict) return 0;
+  }
   const compact = String(value ?? '').trim().replace(/[\s€£$']/g, '');
   if (!compact) return 0;
   const comma = compact.lastIndexOf(',');
@@ -104,8 +128,12 @@ const numeric = (value) => {
   } else if (comma >= 0) {
     normalized = compact.replace(',', '.');
   }
-  const parsed = Number.parseFloat(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+  const parsed = Number(normalized);
+  if (Number.isFinite(parsed)) return parsed;
+  if (!strict) return 0;
+  const error = new Error(`${field} non è un numero valido`);
+  error.status = 400;
+  throw error;
 };
 
 const localDateKey = (value) => {
@@ -167,9 +195,9 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     data.items = data.items.map((item) => ({
       ...item,
       materialId: item.materialId == null || item.materialId === '' ? null : String(item.materialId),
-      quantity: numeric(item.quantity),
-      unitPrice: numeric(item.unitPrice),
-      taxRate: numeric(item.taxRate),
+      quantity: numeric(item.quantity, { strict: true, field: 'quantità' }),
+      unitPrice: numeric(item.unitPrice, { strict: true, field: 'prezzo unitario' }),
+      taxRate: numeric(item.taxRate, { strict: true, field: 'aliquota IVA' }),
     }));
   }
   if (type === 'client') {
@@ -185,18 +213,18 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     data.type = 'material';
     data.entityType = 'material';
     if (defaults || hasAny(data, ['unitPrice', 'price'])) {
-      const unitPrice = numeric(data.unitPrice ?? data.price);
+      const unitPrice = numeric(data.unitPrice ?? data.price, { strict: true, field: 'prezzo unitario' });
       data.unitPrice = unitPrice;
       data.price = unitPrice;
     }
     if (defaults || hasAny(data, ['stockQuantity', 'quantity', 'stock'])) {
-      const stockQuantity = numeric(data.stockQuantity ?? data.quantity ?? data.stock);
+      const stockQuantity = numeric(data.stockQuantity ?? data.quantity ?? data.stock, { strict: true, field: 'quantità disponibile' });
       data.stockQuantity = stockQuantity;
       data.quantity = stockQuantity;
       data.stock = stockQuantity;
     }
     if (defaults || hasAny(data, ['minStockLevel', 'minQuantity'])) {
-      const minStockLevel = numeric(data.minStockLevel ?? data.minQuantity ?? 10);
+      const minStockLevel = numeric(data.minStockLevel ?? data.minQuantity ?? 10, { strict: true, field: 'scorta minima' });
       data.minStockLevel = minStockLevel;
       data.minQuantity = minStockLevel;
     }
@@ -212,8 +240,8 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
       data.deadline = data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '';
       data.endDate = data.endDate ?? data.deadline;
     }
-    if (type === 'project' && hasOwn(data, 'budget')) data.budget = numeric(data.budget);
-    if (hasAny(data, ['amount', 'total'])) data.amount = numeric(data.amount ?? data.total);
+    if (type === 'project' && hasOwn(data, 'budget')) data.budget = numeric(data.budget, { strict: true, field: 'budget' });
+    if (hasAny(data, ['amount', 'total'])) data.amount = numeric(data.amount ?? data.total, { strict: true, field: 'importo' });
   }
   return data;
 };
@@ -250,6 +278,30 @@ const validateEntity = (type, payload) => {
     error.status = 400;
     throw error;
   }
+  if (['quote', 'invoice'].includes(type)) {
+    payload.items.forEach((item, index) => {
+      if (!String(item.description || '').trim()) {
+        const error = new Error(`Descrizione mancante nella voce ${index + 1}`);
+        error.status = 400;
+        throw error;
+      }
+      if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
+        const error = new Error(`Quantità non valida nella voce ${index + 1}`);
+        error.status = 400;
+        throw error;
+      }
+      if (!Number.isFinite(item.unitPrice) || item.unitPrice < 0) {
+        const error = new Error(`Prezzo non valido nella voce ${index + 1}`);
+        error.status = 400;
+        throw error;
+      }
+      if (type === 'invoice' && (!Number.isFinite(item.taxRate) || item.taxRate < 0 || item.taxRate > 100)) {
+        const error = new Error(`Aliquota IVA non valida nella voce ${index + 1}`);
+        error.status = 400;
+        throw error;
+      }
+    });
+  }
   if (type === 'material') {
     for (const key of ['unitPrice', 'stockQuantity', 'minStockLevel']) {
       if (payload[key] != null && numeric(payload[key]) < 0) {
@@ -266,11 +318,21 @@ const validateEntity = (type, payload) => {
   }
 };
 
-const expectedVersionFrom = (req) => {
+const expectedVersionFrom = (req, required = false) => {
   const raw = req.get('If-Match') || req.body?.expectedVersion || req.body?.version;
-  if (raw == null || raw === '') return null;
+  if (raw == null || raw === '') {
+    if (!required) return null;
+    const error = new Error('Versione del record richiesta');
+    error.status = 428;
+    throw error;
+  }
   const parsed = Number(String(raw).replace(/"/g, ''));
-  return Number.isFinite(parsed) ? parsed : null;
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    const error = new Error('Versione del record non valida');
+    error.status = 400;
+    throw error;
+  }
+  return parsed;
 };
 const operationIdFrom = (req, scope) => {
   const operationId = req.get('X-Operation-Id') || req.body?.operationId || null;
@@ -287,25 +349,47 @@ const hasEntityPermission = (user, type, action) => {
 };
 
 const createRealtime = (server) => {
-  const wss = new WebSocket.Server({ server, path: '/ws' });
-  wss.on('connection', (socket, request) => {
-    try {
-      const token = new URL(request.url, 'http://localhost').searchParams.get('token');
-      const user = verifyToken(token);
-      if (!user) return socket.close(4001, 'Token non valido');
-      socket.authToken = token;
-      socket.send(JSON.stringify({ event: 'connected', timestamp: new Date().toISOString() }));
-      socket.on('message', (message) => {
-        if (message.toString() === 'ping') socket.send('pong');
-      });
-    } catch {
-      socket.close(4001, 'Autenticazione richiesta');
+  const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 8192 });
+  wss.on('connection', (socket) => {
+    if (wss.clients.size > 100) {
+      socket.close(1013, 'Troppe connessioni');
+      return;
     }
-    return undefined;
+
+    const authenticationTimeout = setTimeout(() => {
+      if (!socket.authToken) socket.close(4001, 'Autenticazione richiesta');
+    }, 5000);
+
+    socket.on('message', (message) => {
+      const text = message.toString();
+      if (!socket.authToken) {
+        try {
+          const payload = JSON.parse(text);
+          if (payload?.type !== 'auth' || !payload?.token) {
+            socket.close(4001, 'Autenticazione richiesta');
+            return;
+          }
+          const user = verifyToken(payload.token);
+          if (!user) {
+            socket.close(4001, 'Token non valido');
+            return;
+          }
+          socket.authToken = payload.token;
+          clearTimeout(authenticationTimeout);
+          socket.send(JSON.stringify({ event: 'connected', timestamp: new Date().toISOString() }));
+        } catch {
+          socket.close(4001, 'Autenticazione richiesta');
+        }
+        return;
+      }
+      if (text === 'ping') socket.send('pong');
+    });
+    socket.on('close', () => clearTimeout(authenticationTimeout));
   });
+
   const broadcast = (payload, requiredPermission = null) => {
     for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
+      if (client.readyState !== WebSocket.OPEN || !client.authToken) continue;
       const user = verifyToken(client.authToken);
       if (!user) {
         client.close(4001, 'Sessione scaduta');
@@ -333,6 +417,7 @@ async function createCrmServer(options = {}) {
   const setupSecret = options.setupSecret || process.env.CRM_SETUP_SECRET || null;
 
   configureAuth({ dataDir });
+  const mutationBarrier = new MutationBarrier({ timeoutMs: 30000 });
   const db = new CrmDatabase({ dataDir, backupDir, attachmentsDir });
   db.migrateLegacy(dataDir);
 
@@ -360,11 +445,29 @@ async function createCrmServer(options = {}) {
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-  let maintenanceMode = false;
+  const isMaintenanceControlRequest = (req) => {
+    if (req.method !== 'POST') return false;
+    const route = String(req.originalUrl || '').split('?')[0];
+    return route === '/api/backups'
+      || route === '/api/backup/import'
+      || route === '/api/backup/restore'
+      || route === '/api/backup/clear'
+      || /^\/api\/backups\/[^/]+\/restore$/.test(route);
+  };
   app.use('/api', (req, res, next) => {
-    if (maintenanceMode && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const healthRequest = req.path === '/health';
+    const controlRequest = isMaintenanceControlRequest(req);
+    if (mutationBarrier.isMaintenance && !healthRequest && !controlRequest && req.method !== 'OPTIONS') {
       return res.status(503).json({ error: 'Server in manutenzione: riprovare tra pochi secondi' });
     }
+    if (healthRequest || controlRequest || req.method === 'OPTIONS') return next();
+
+    const release = mutationBarrier.enterRequest();
+    if (!release) {
+      return res.status(503).json({ error: 'Server in manutenzione: riprovare tra pochi secondi' });
+    }
+    res.once('finish', release);
+    res.once('close', release);
     return next();
   });
 
@@ -401,24 +504,14 @@ async function createCrmServer(options = {}) {
       current: error.current || undefined,
     });
   };
-  const runMaintenance = async (snapshotLabel, action) => {
-    if (maintenanceMode) {
-      const error = new Error('È già in corso un’operazione di manutenzione');
-      error.status = 503;
-      throw error;
-    }
-    maintenanceMode = true;
-    try {
-      await drainUserMutations();
-      if (snapshotLabel) await db.createSnapshot(snapshotLabel);
-      return await action();
-    } finally {
-      maintenanceMode = false;
-    }
-  };
+  const runMaintenance = (snapshotLabel, action) => mutationBarrier.runMaintenance(async () => {
+    await drainUserMutations();
+    if (snapshotLabel) await db.createSnapshot(snapshotLabel);
+    return action();
+  });
 
   app.get('/api/health', (req, res) => res.json({
-    status: maintenanceMode ? 'maintenance' : 'ok',
+    status: mutationBarrier.isMaintenance ? 'maintenance' : 'ok',
     version: '2.3.0',
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
@@ -426,7 +519,8 @@ async function createCrmServer(options = {}) {
     port: server.address()?.port || requestedPort,
     timestamp: new Date().toISOString(),
     websocket: true,
-    maintenance: maintenanceMode,
+    maintenance: mutationBarrier.isMaintenance,
+    dataEpoch: getAuthEpoch(),
     setupRequired: readUsers().length === 0,
   }));
   app.head('/api/health', (req, res) => res.sendStatus(200));
@@ -453,6 +547,12 @@ async function createCrmServer(options = {}) {
         if (password.length < 10) {
           return res.status(400).json({ error: 'La password iniziale deve contenere almeno 10 caratteri' });
         }
+        const email = String(req.body?.email || `${username}@crm.local`).trim();
+        const firstName = String(req.body?.firstName || 'Amministratore').trim();
+        const lastName = String(req.body?.lastName || 'Sistema').trim();
+        if (!validEmail(email) || !firstName || !lastName) {
+          return res.status(400).json({ error: 'Nome, cognome ed email validi sono richiesti' });
+        }
         const passwordHash = await hashPassword(password);
         const firstUser = await mutateUsers(async (users) => {
           if (users.length) {
@@ -463,13 +563,14 @@ async function createCrmServer(options = {}) {
           const user = {
             id: crypto.randomUUID(),
             username,
-            email: String(req.body?.email || `${username}@crm.local`).trim(),
+            email,
             password: passwordHash,
-            firstName: String(req.body?.firstName || 'Amministratore').trim(),
-            lastName: String(req.body?.lastName || 'Sistema').trim(),
+            firstName,
+            lastName,
             role: 'admin',
             permissions: ADMIN_PERMISSIONS,
             isActive: true,
+            sessionVersion: 1,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
@@ -513,14 +614,15 @@ async function createCrmServer(options = {}) {
 
   app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     try {
-      const allowed = ['username', 'email', 'firstName', 'lastName'];
-      const updates = Object.fromEntries(
-        allowed.filter((key) => req.body[key] !== undefined)
-          .map((key) => [key, String(req.body[key]).trim()]),
-      );
+      const updates = {};
+      for (const key of ['username', 'email', 'firstName', 'lastName']) {
+        if (req.body[key] !== undefined) updates[key] = String(req.body[key]).trim();
+      }
       if ((updates.username !== undefined && !updates.username)
-        || (updates.email !== undefined && !updates.email)) {
-        return res.status(400).json({ error: 'Username ed email non possono essere vuoti' });
+        || (updates.email !== undefined && !validEmail(updates.email))
+        || (updates.firstName !== undefined && !updates.firstName)
+        || (updates.lastName !== undefined && !updates.lastName)) {
+        return res.status(400).json({ error: 'Dati profilo non validi' });
       }
       const updatedUser = await mutateUsers(async (users) => {
         const index = users.findIndex((user) => String(user.id) === String(req.user.id));
@@ -531,8 +633,8 @@ async function createCrmServer(options = {}) {
         }
         if (users.some((user, userIndex) => (
           userIndex !== index
-          && ((updates.username && user.username === updates.username)
-            || (updates.email && user.email === updates.email))
+          && ((updates.username && canonicalIdentity(user.username) === canonicalIdentity(updates.username))
+            || (updates.email && canonicalIdentity(user.email) === canonicalIdentity(updates.email)))
         ))) {
           const error = new Error('Username o email già utilizzati');
           error.status = 400;
@@ -553,38 +655,49 @@ async function createCrmServer(options = {}) {
 
   app.post('/api/users', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
-      const { username, email, password, firstName, lastName, role, permissions } = req.body;
-      if (!username || !email || !password || !firstName || !lastName || !role) {
-        return res.status(400).json({ error: 'Tutti i campi sono richiesti' });
+      const username = String(req.body?.username || '').trim();
+      const email = String(req.body?.email || '').trim();
+      const password = String(req.body?.password || '');
+      const firstName = String(req.body?.firstName || '').trim();
+      const lastName = String(req.body?.lastName || '').trim();
+      const role = String(req.body?.role || '');
+      if (!username || !validEmail(email) || !password || !firstName || !lastName || !role) {
+        return res.status(400).json({ error: 'Tutti i campi devono essere validi' });
       }
-      if (String(password).length < 8) {
+      if (password.length < 8) {
         return res.status(400).json({ error: 'La password deve contenere almeno 8 caratteri' });
       }
-      if (!['admin', 'manager', 'worker'].includes(String(role))) {
+      if (!['admin', 'manager', 'worker'].includes(role)) {
         return res.status(400).json({ error: 'Ruolo non valido' });
       }
-      const passwordHash = await hashPassword(String(password));
+      const permissions = normalizePermissions(req.body?.permissions || []);
+      const passwordHash = await hashPassword(password);
       const createdUser = await mutateUsers(async (users) => {
-        if (users.some((user) => user.username === username || user.email === email)) {
+        if (users.some((user) => (
+          canonicalIdentity(user.username) === canonicalIdentity(username)
+          || canonicalIdentity(user.email) === canonicalIdentity(email)
+        ))) {
           const error = new Error('Username o email già esistenti');
           error.status = 400;
           throw error;
         }
-        const user = {
+        const createdAt = new Date().toISOString();
+        const created = {
           id: crypto.randomUUID(),
-          username: String(username).trim(),
-          email: String(email).trim(),
+          username,
+          email,
           password: passwordHash,
-          firstName: String(firstName).trim(),
-          lastName: String(lastName).trim(),
-          role: String(role),
-          permissions: Array.isArray(permissions) ? [...new Set(permissions.map(String))] : [],
+          firstName,
+          lastName,
+          role,
+          permissions,
           isActive: true,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          sessionVersion: 1,
+          createdAt,
+          updatedAt: createdAt,
         };
-        users.push(user);
-        return { value: user };
+        users.push(created);
+        return { value: created };
       });
       return res.status(201).json(publicUser(createdUser));
     } catch (error) {
@@ -597,14 +710,13 @@ async function createCrmServer(options = {}) {
       if (req.body.password && String(req.body.password).length < 8) {
         return res.status(400).json({ error: 'La password deve contenere almeno 8 caratteri' });
       }
-      if (req.body.role && !['admin', 'manager', 'worker'].includes(String(req.body.role))) {
+      if (req.body.role !== undefined && !['admin', 'manager', 'worker'].includes(String(req.body.role))) {
         return res.status(400).json({ error: 'Ruolo non valido' });
       }
+      if (req.body.isActive !== undefined && typeof req.body.isActive !== 'boolean') {
+        return res.status(400).json({ error: 'Stato account non valido' });
+      }
       const passwordHash = req.body.password ? await hashPassword(String(req.body.password)) : null;
-      const allowed = [
-        'username', 'email', 'firstName', 'lastName',
-        'role', 'permissions', 'isActive',
-      ];
       const updatedUser = await mutateUsers(async (users) => {
         const index = users.findIndex((user) => String(user.id) === String(req.params.id));
         if (index < 0) {
@@ -612,26 +724,44 @@ async function createCrmServer(options = {}) {
           error.status = 404;
           throw error;
         }
-        const updates = Object.fromEntries(
-          allowed.filter((key) => req.body[key] !== undefined).map((key) => [key, req.body[key]]),
-        );
-        if (Array.isArray(updates.permissions)) {
-          updates.permissions = [...new Set(updates.permissions.map(String))];
+        const previous = users[index];
+        const updates = {};
+        for (const key of ['username', 'email', 'firstName', 'lastName']) {
+          if (req.body[key] !== undefined) updates[key] = String(req.body[key]).trim();
         }
+        if ((updates.username !== undefined && !updates.username)
+          || (updates.email !== undefined && !validEmail(updates.email))
+          || (updates.firstName !== undefined && !updates.firstName)
+          || (updates.lastName !== undefined && !updates.lastName)) {
+          const error = new Error('Dati account non validi');
+          error.status = 400;
+          throw error;
+        }
+        if (req.body.role !== undefined) updates.role = String(req.body.role);
+        if (req.body.permissions !== undefined) updates.permissions = normalizePermissions(req.body.permissions);
+        if (req.body.isActive !== undefined) updates.isActive = req.body.isActive;
         if (users.some((user, userIndex) => (
           userIndex !== index
-          && ((updates.username && user.username === updates.username)
-            || (updates.email && user.email === updates.email))
+          && ((updates.username && canonicalIdentity(user.username) === canonicalIdentity(updates.username))
+            || (updates.email && canonicalIdentity(user.email) === canonicalIdentity(updates.email)))
         ))) {
           const error = new Error('Username o email già esistenti');
           error.status = 400;
           throw error;
         }
+        const securityChanged = Boolean(passwordHash)
+          || (updates.role !== undefined && updates.role !== previous.role)
+          || (updates.isActive !== undefined && updates.isActive !== previous.isActive)
+          || (updates.permissions !== undefined
+            && JSON.stringify(updates.permissions) !== JSON.stringify(previous.permissions || []));
         users[index] = {
-          ...users[index],
+          ...previous,
           ...updates,
-          id: users[index].id,
-          password: passwordHash || users[index].password,
+          id: previous.id,
+          password: passwordHash || previous.password,
+          sessionVersion: securityChanged
+            ? Number(previous.sessionVersion || 1) + 1
+            : Number(previous.sessionVersion || 1),
           updatedAt: new Date().toISOString(),
         };
         return { value: users[index] };
@@ -739,7 +869,7 @@ async function createCrmServer(options = {}) {
       const patch = sanitizePatch(req.user, 'order', { status: req.body.status });
       if (!patch) return res.status(400).json({ error: 'Stato richiesto' });
       const result = db.update(
-        'order', req.params.id, patch, expectedVersionFrom(req), req.user,
+        'order', req.params.id, patch, expectedVersionFrom(req, true), req.user,
         operationIdFrom(req, `order:status:${req.params.id}`),
       );
       realtime.broadcast({
@@ -790,7 +920,7 @@ async function createCrmServer(options = {}) {
         if (!current) return res.status(404).json({ error: 'Elemento non trovato' });
         validateEntity(config.type, { ...current, ...patch });
         const result = db.update(
-          config.type, req.params.id, patch, expectedVersionFrom(req), req.user,
+          config.type, req.params.id, patch, expectedVersionFrom(req, true), req.user,
           operationIdFrom(req, `${config.type}:update:${req.params.id}`),
         );
         realtime.broadcast({
@@ -806,7 +936,7 @@ async function createCrmServer(options = {}) {
     app.delete(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.delete`), (req, res) => {
       try {
         const result = db.delete(
-          config.type, req.params.id, expectedVersionFrom(req), req.user,
+          config.type, req.params.id, expectedVersionFrom(req, true), req.user,
           operationIdFrom(req, `${config.type}:delete:${req.params.id}`),
         );
         realtime.broadcast({
@@ -1035,6 +1165,10 @@ async function createCrmServer(options = {}) {
   app.post('/api/entity-attachments/:type/:id', authenticateToken, ensureAttachmentEntity('edit'), upload.array('files', 10), (req, res) => {
     try {
       if (!req.files?.length) return res.status(400).json({ error: 'Nessun file ricevuto' });
+      if (!db.get(req.params.type, req.params.id)) {
+        removeUploadedFiles(req.files);
+        return res.status(409).json({ error: 'L’elemento è stato eliminato durante il caricamento' });
+      }
       const items = db.addAttachments(req.files.map((file) => ({
         entityType: req.params.type,
         entityId: req.params.id,
@@ -1089,6 +1223,7 @@ async function createCrmServer(options = {}) {
   app.post('/api/backup/import', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
       await runMaintenance('pre-importazione', () => db.restoreJson(req.body, req.user));
+      rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored' });
       return res.json({ message: 'Backup importato' });
     } catch (error) {
@@ -1112,6 +1247,7 @@ async function createCrmServer(options = {}) {
         }
         : req.body;
       await runMaintenance('pre-ripristino', () => db.restoreJson(backup, req.user));
+      rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored' });
       return res.json({ message: 'Backup ripristinato' });
     } catch (error) {
@@ -1123,6 +1259,7 @@ async function createCrmServer(options = {}) {
       await runMaintenance('pre-cancellazione', () => db.restoreJson({
         data: Object.fromEntries(ENTITY_TYPES.map((type) => [type, []])),
       }, req.user));
+      rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored' });
       return res.json({ message: 'Dati cancellati' });
     } catch (error) {
@@ -1132,8 +1269,8 @@ async function createCrmServer(options = {}) {
   app.get('/api/backups', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.listSnapshots()));
   app.post('/api/backups', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      await drainUserMutations();
-      return res.status(201).json(await db.createSnapshot(req.body?.label || 'manuale'));
+      const snapshot = await runMaintenance(null, () => db.createSnapshot(req.body?.label || 'manuale'));
+      return res.status(201).json(snapshot);
     } catch (error) {
       return respondError(res, error);
     }
@@ -1144,6 +1281,7 @@ async function createCrmServer(options = {}) {
         'pre-ripristino',
         () => db.restoreSnapshot(req.params.name, req.user),
       );
+      rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored', snapshot });
       return res.json(snapshot);
     } catch (error) {
@@ -1177,13 +1315,13 @@ async function createCrmServer(options = {}) {
 
   const ensureDailyBackup = async () => {
     try {
+      if (!readUsers().some((user) => user.role === 'admin' && user.isActive)) return;
       const today = localToday();
       const alreadyCreated = db.listSnapshots().some(
         (item) => localDateKey(item.createdAt) === today && item.label === 'automatico',
       );
       if (!alreadyCreated) {
-        await drainUserMutations();
-        await db.createSnapshot('automatico');
+        await runMaintenance(null, () => db.createSnapshot('automatico'));
       }
     } catch (error) {
       console.error('Backup automatico fallito:', error);

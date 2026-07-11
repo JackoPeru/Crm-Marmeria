@@ -146,6 +146,28 @@ async function run() {
       'La gestione utenti non deve ricreare account con password pubbliche',
     );
 
+    const duplicateIdentity = await requestJson(baseUrl, '/users', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        username: ' PROPRIETARIO ',
+        email: 'altro@example.test',
+        password: 'Password-forte-789',
+        firstName: 'Duplicato',
+        lastName: 'CI',
+        role: 'worker',
+        permissions: ['dashboard.view'],
+      }),
+    });
+    assert.equal(duplicateIdentity.response.status, 400, 'Username duplicati con spazi o maiuscole devono essere rifiutati');
+
+    const invalidActive = await requestJson(baseUrl, `/users/${setup.body.user.id}`, {
+      method: 'PUT',
+      headers: authHeaders,
+      body: JSON.stringify({ isActive: 'false' }),
+    });
+    assert.equal(invalidActive.response.status, 400, 'isActive deve essere strettamente booleano');
+
     const demoteLastAdmin = await requestJson(baseUrl, `/users/${setup.body.user.id}`, {
       method: 'PUT',
       headers: authHeaders,

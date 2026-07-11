@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --check index.js && node --check app.js && node --check database.js && node --check restore-safety.js && node --check middleware/auth.js && node --check snapshot-compat.js && node --check smoke-test.js && node --check setup-test.js && node setup-test.js && node smoke-test.js create && node smoke-test.js update && node smoke-test.js conflict && node smoke-test.js integrity && node smoke-test.js snapshot && node smoke-test.js server"
+    "test": "node --check index.js && node --check app.js && node --check database.js && node --check restore-safety.js && node --check mutation-barrier.js && node --check middleware/auth.js && node --check snapshot-compat.js && node --check smoke-test.js && node --check setup-test.js && node mutation-barrier.check.js && node setup-test.js && node smoke-test.js create && node smoke-test.js update && node smoke-test.js conflict && node smoke-test.js integrity && node smoke-test.js snapshot && node smoke-test.js server"
   },
   "license": "MIT",
   "dependencies": {

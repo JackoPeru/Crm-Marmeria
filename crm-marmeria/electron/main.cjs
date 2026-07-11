@@ -5,6 +5,13 @@ const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const CentralCrmServer = require('./server.cjs');
 const { discoverMasters } = require('./discovery.cjs');
+const {
+  defaultPrefs,
+  normalizeApiUrl,
+  safeClientPrefs,
+  selectSingleMaster,
+  validatePrefs,
+} = require('./network-config.cjs');
 
 const isDev = process.env.NODE_ENV === 'development';
 let centralServer = null;
@@ -21,129 +28,38 @@ app.on('second-instance', () => {
   mainWindow.focus();
 });
 
-const defaultPrefs = () => ({
-  mode: 'auto',
-  masterPort: 3001,
-  apiUrl: 'http://127.0.0.1:3001/api',
-  backupPath: '',
-});
-
 const prefsPath = () => path.join(app.getPath('userData'), 'network-prefs.json');
 const productionEntryUrl = () => pathToFileURL(path.join(__dirname, '../dist/index.html')).toString();
-
-const isTrustedRendererUrl = (value) => {
-  const url = String(value || '');
-  if (isDev) {
-    return url.startsWith('http://localhost:5173/')
-      || url === 'http://localhost:5173'
-      || url.startsWith('http://127.0.0.1:5173/')
-      || url === 'http://127.0.0.1:5173';
-  }
-  const entry = productionEntryUrl();
-  return url === entry || url.startsWith(`${entry}#`) || url.startsWith(`${entry}?`);
-};
-
-const assertTrustedSender = (event) => {
-  const senderUrl = event.senderFrame?.url || event.sender?.getURL?.() || '';
-  if (!isTrustedRendererUrl(senderUrl)) {
-    const error = new Error('Richiesta IPC rifiutata da una pagina non autorizzata');
-    error.code = 'UNTRUSTED_RENDERER';
-    throw error;
-  }
-};
-
-const serializeNetworkOperation = (operation) => {
-  const task = networkOperationQueue.then(operation, operation);
-  networkOperationQueue = task.catch(() => undefined);
-  return task;
-};
-
-const normalizeApiUrl = (value) => {
-  const parsed = new URL(String(value).trim());
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('L’indirizzo API deve usare http o https');
-  }
-  parsed.hash = '';
-  parsed.search = '';
-  parsed.pathname = parsed.pathname.replace(/\/$/, '');
-  if (!parsed.pathname.endsWith('/api')) {
-    parsed.pathname = `${parsed.pathname}/api`.replace(/\/+/g, '/');
-  }
-  return parsed.toString().replace(/\/$/, '');
-};
-
-const probeApi = async (apiUrl, expectedServerId = null, timeoutMs = 5000) => {
-  const normalized = normalizeApiUrl(apiUrl);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${normalized}/health`, {
-      signal: controller.signal,
-      cache: 'no-store',
-    });
-    if (!response.ok) {
-      const error = new Error(`Il server ha risposto con stato ${response.status}`);
-      error.code = 'SERVER_UNREACHABLE';
-      throw error;
-    }
-    const data = await response.json();
-    if (data?.mode !== 'central-server' || !data?.serverId) {
-      const error = new Error('L’indirizzo non appartiene a un server CRM Marmeria valido');
-      error.code = 'INVALID_CRM_SERVER';
-      throw error;
-    }
-    if (expectedServerId && String(data.serverId) !== String(expectedServerId)) {
-      const error = new Error('L’identità del server non corrisponde a quella salvata');
-      error.code = 'SERVER_ID_MISMATCH';
-      throw error;
-    }
-    return { apiUrl: normalized, data };
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      const timeoutError = new Error('Il server non ha risposto entro il tempo previsto');
-      timeoutError.code = 'SERVER_TIMEOUT';
-      throw timeoutError;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-};
-
-const validatePrefs = (incoming) => {
-  const prefs = { ...defaultPrefs(), ...(incoming || {}) };
-  if (!['auto', 'master', 'client'].includes(prefs.mode)) {
-    throw new Error('Modalità rete non valida');
-  }
-  const masterPort = Number(prefs.masterPort || 3001);
-  if (!Number.isInteger(masterPort) || masterPort < 1024 || masterPort > 65535) {
-    throw new Error('La porta deve essere compresa tra 1024 e 65535');
-  }
-  return {
-    ...prefs,
-    masterPort,
-    backupPath: prefs.backupPath ? path.resolve(String(prefs.backupPath)) : '',
-    apiUrl: prefs.mode === 'client'
-      ? normalizeApiUrl(prefs.apiUrl)
-      : `http://127.0.0.1:${masterPort}/api`,
-  };
-};
 
 const readPrefs = () => {
   try {
     if (!fs.existsSync(prefsPath())) return defaultPrefs();
     return validatePrefs(JSON.parse(fs.readFileSync(prefsPath(), 'utf8')));
   } catch (error) {
-    console.error('Configurazione rete non valida, uso valori predefiniti:', error.message);
-    return defaultPrefs();
+    console.error('Configurazione rete non valida, avvio sicuro come client:', error.message);
+    try {
+      if (fs.existsSync(prefsPath())) {
+        fs.renameSync(prefsPath(), `${prefsPath()}.corrupt-${Date.now()}`);
+      }
+    } catch (renameError) {
+      console.error('Archiviazione configurazione corrotta fallita:', renameError.message);
+    }
+    return safeClientPrefs(error);
   }
 };
 
 const savePrefs = (prefs) => {
   const filePath = prefsPath();
   const temporary = `${filePath}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(prefs, null, 2));
+  const descriptor = fs.openSync(temporary, 'w', 0o600);
+  try {
+    fs.writeFileSync(descriptor, JSON.stringify(prefs, null, 2));
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
   fs.renameSync(temporary, filePath);
+  try { fs.chmodSync(filePath, 0o600); } catch { /* Windows */ }
 };
 
 const createWindow = () => {
@@ -184,13 +100,6 @@ const createWindow = () => {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
-};
-
-const selectSingleMaster = (masters, expectedServerId = null) => {
-  if (expectedServerId) {
-    return masters.find((master) => String(master.serverId) === String(expectedServerId)) || null;
-  }
-  return masters.length === 1 ? masters[0] : null;
 };
 
 const applyNetworkMode = async (incomingPrefs) => {
@@ -271,34 +180,55 @@ const configureFirstLaunch = async (prefs) => {
   while (true) {
     const masters = await discoverMasters(2000);
     if (masters.length === 1) {
-      return applyNetworkMode({
-        ...prefs,
-        mode: 'client',
-        apiUrl: masters[0].apiUrl,
-        discoveredServerId: masters[0].serverId,
+      const master = masters[0];
+      const choice = await dialog.showMessageBox({
+        type: 'question',
+        title: 'Configurazione rete CRM Marmeria',
+        message: 'Server principale trovato',
+        detail: `${master.name || master.hostname || 'CRM Marmeria'}\n${master.apiUrl}\nID installazione: ${master.serverId}\n\nConferma che questo sia il PC principale della marmeria.`,
+        buttons: ['Connetti', 'Cerca di nuovo', 'Chiudi'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
       });
+      if (choice.response === 0) {
+        return applyNetworkMode({
+          ...prefs,
+          mode: 'client',
+          apiUrl: master.apiUrl,
+          discoveredServerId: master.serverId,
+        });
+      }
+      if (choice.response === 2) return null;
+      continue;
     }
 
-    const detail = masters.length > 1
-      ? `Sono stati trovati ${masters.length} server principali. Arresta quelli duplicati prima di continuare.`
-      : 'Nessun server principale è stato trovato nella rete. Non scegliere “PC principale” su una normale postazione client.';
+    if (masters.length > 1) {
+      const choice = await dialog.showMessageBox({
+        type: 'error',
+        title: 'Configurazione rete CRM Marmeria',
+        message: 'Rilevati più server principali',
+        detail: `Sono stati trovati ${masters.length} server o indirizzi concorrenti. Arresta quelli duplicati prima di continuare.`,
+        buttons: ['Cerca di nuovo', 'Chiudi'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (choice.response === 1) return null;
+      continue;
+    }
+
     const choice = await dialog.showMessageBox({
-      type: masters.length > 1 ? 'error' : 'question',
+      type: 'question',
       title: 'Configurazione rete CRM Marmeria',
-      message: masters.length > 1
-        ? 'Rilevati più server principali'
-        : 'Questa è la prima configurazione dell’app',
-      detail,
+      message: 'Nessun server principale trovato',
+      detail: 'Scegli “PC principale” soltanto sul computer che deve conservare il database della marmeria.',
       buttons: ['Questo è il PC principale', 'Cerca di nuovo', 'Chiudi'],
       defaultId: 1,
       cancelId: 2,
       noLink: true,
     });
-
-    if (choice.response === 0) {
-      if (masters.length > 0) continue;
-      return applyNetworkMode({ ...prefs, mode: 'master' });
-    }
+    if (choice.response === 0) return applyNetworkMode({ ...prefs, mode: 'master' });
     if (choice.response === 2) return null;
   }
 };

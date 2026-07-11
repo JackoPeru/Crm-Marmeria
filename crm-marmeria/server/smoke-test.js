@@ -195,6 +195,25 @@ async function runServerTest() {
     });
     assert.equal(adminProject.body.budget, 1000, 'Il budget deve restare nel database');
 
+    const blindUpdate = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      method: 'PUT',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({ status: 'Completato' }),
+    });
+    assert.equal(blindUpdate.response.status, 428, 'Gli aggiornamenti senza versione devono essere rifiutati');
+
+    const malformedMaterial = await requestJson(baseUrl, '/materials', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({
+        name: 'Materiale non valido',
+        unitPrice: '12abc',
+        stockQuantity: 1,
+        minStockLevel: 0,
+      }),
+    });
+    assert.equal(malformedMaterial.response.status, 400, 'I numeri parzialmente validi non devono essere accettati');
+
     const createdMaterial = await requestJson(baseUrl, '/materials', {
       method: 'POST',
       headers: authHeaders(adminToken),
@@ -216,25 +235,27 @@ async function runServerTest() {
     assert.equal('price' in workerMaterials.body[0], false);
     assert.equal(workerMaterials.body[0].stockQuantity, 5);
 
-    workerSocket = new WebSocket(
-      `ws://127.0.0.1:${instance.port}/ws?token=${encodeURIComponent(workerToken)}`,
-    );
+    workerSocket = new WebSocket(`ws://127.0.0.1:${instance.port}/ws`);
     const workerEvents = [];
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Timeout connessione WebSocket')), 2000);
+      const timer = setTimeout(() => reject(new Error('Timeout autenticazione WebSocket')), 2000);
       workerSocket.once('open', () => {
-        clearTimeout(timer);
-        resolve();
+        workerSocket.send(JSON.stringify({ type: 'auth', token: workerToken }));
+      });
+      workerSocket.on('message', (message) => {
+        try {
+          const event = JSON.parse(message.toString());
+          if (event.event === 'connected') {
+            clearTimeout(timer);
+            resolve();
+          } else {
+            workerEvents.push(event);
+          }
+        } catch {
+          // Ignora ping/pong testuali.
+        }
       });
       workerSocket.once('error', reject);
-    });
-    workerSocket.on('message', (message) => {
-      try {
-        const event = JSON.parse(message.toString());
-        if (event.event !== 'connected') workerEvents.push(event);
-      } catch {
-        // Ignora ping/pong testuali.
-      }
     });
 
     const adminUpdate = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
@@ -390,6 +411,8 @@ async function runServerTest() {
     });
     assert.ok(users.body.some((entry) => entry.username === 'utente-a'));
     assert.ok(users.body.some((entry) => entry.username === 'utente-b'));
+    const limited = users.body.find((entry) => entry.username === 'utente-a');
+    assert.deepEqual(limited.permissions, ['dashboard.view'], 'Il riavvio non deve riaggiungere permessi rimossi');
   } finally {
     workerSocket?.terminate();
     if (instance) await instance.close();
@@ -410,6 +433,16 @@ async function run(mode) {
     attachmentsDir,
     db,
   } = makeDatabase(`crm-${mode}-`);
+
+  if (mode === 'integrity') {
+    const overlapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-overlap-'));
+    assert.throws(() => new CrmDatabase({
+      dataDir: path.join(overlapRoot, 'data'),
+      backupDir: path.join(overlapRoot, 'backups'),
+      attachmentsDir: path.join(overlapRoot, 'backups', 'attachments'),
+    }), /non possono contenersi/);
+    fs.rmSync(overlapRoot, { recursive: true, force: true });
+  }
 
   try {
     const created = db.create(
