@@ -1,0 +1,541 @@
+name: Apply third review fixes
+
+on:
+  push:
+    branches:
+      - fix/core-reliability-2026-07
+    paths:
+      - .github/workflows/apply-third-review-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/core-reliability-2026-07
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Patch restore safety, dates, CORS and tests
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          root = Path('crm-marmeria')
+
+          # database.js
+          path = root / 'server/database.js'
+          text = path.read_text()
+          old = "const Database = require('better-sqlite3');\n"
+          new = old + "const {\n  atomicWriteJson,\n  recoverInterruptedRestore,\n  restorePaths,\n  validateDatabase,\n  validateUsers,\n} = require('./restore-safety');\n"
+          assert old in text and "require('./restore-safety')" not in text
+          text = text.replace(old, new, 1)
+
+          old = """    this.usersPath = path.join(this.dataDir, 'users.json');
+    this.snapshotQueue = Promise.resolve();
+
+    if (isInside(this.attachmentsDir, this.backupDir)) {
+"""
+          new = """    this.usersPath = path.join(this.dataDir, 'users.json');
+    this.snapshotQueue = Promise.resolve();
+    this.restorePaths = restorePaths({
+      dataDir: this.dataDir,
+      dbPath: this.dbPath,
+      usersPath: this.usersPath,
+      attachmentsDir: this.attachmentsDir,
+    });
+
+    if (isInside(this.attachmentsDir, this.backupDir)) {
+"""
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = """    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.mkdirSync(this.backupDir, { recursive: true });
+    fs.mkdirSync(this.attachmentsDir, { recursive: true });
+    this.open();
+"""
+          new = """    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.mkdirSync(this.backupDir, { recursive: true });
+    fs.mkdirSync(this.attachmentsDir, { recursive: true });
+    recoverInterruptedRestore({
+      dataDir: this.dataDir,
+      dbPath: this.dbPath,
+      usersPath: this.usersPath,
+      attachmentsDir: this.attachmentsDir,
+    });
+    this.open();
+"""
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          start = text.index('  restoreSnapshot(name, user) {')
+          suffix_start = text.index('\n}\n\nmodule.exports = { CrmDatabase, ENTITY_TYPES };', start)
+          method = r'''  restoreSnapshot(name, user) {
+    if (!/^[a-zA-Z0-9_.-]+$/.test(String(name))) {
+      const error = new Error('Nome backup non valido');
+      error.status = 400;
+      throw error;
+    }
+
+    const source = path.join(this.backupDir, String(name));
+    const dbSource = path.join(source, 'crm-marmeria.db');
+    const usersSource = path.join(source, 'users.json');
+    const attachmentsSource = path.join(source, 'attachments');
+    if (!fs.existsSync(dbSource)) {
+      const error = new Error('Backup non trovato');
+      error.status = 404;
+      throw error;
+    }
+
+    const stageRoot = path.join(this.dataDir, `.restore-${crypto.randomUUID()}`);
+    const stageDb = path.join(stageRoot, 'crm-marmeria.db');
+    const stageUsers = path.join(stageRoot, 'users.json');
+    const stageAttachments = path.join(stageRoot, 'attachments');
+    const {
+      journalPath,
+      previousDb,
+      previousUsers,
+      previousAttachments,
+    } = this.restorePaths;
+    const journalBase = {
+      stageRoot,
+      previousDb,
+      previousUsers,
+      previousAttachments,
+      snapshot: String(name),
+      startedAt: now(),
+    };
+    fs.mkdirSync(stageRoot, { recursive: true });
+
+    try {
+      fs.copyFileSync(dbSource, stageDb);
+      if (fs.existsSync(usersSource)) {
+        fs.copyFileSync(usersSource, stageUsers);
+      } else if (fs.existsSync(this.usersPath)) {
+        fs.copyFileSync(this.usersPath, stageUsers);
+      } else {
+        const error = new Error('Il backup non contiene account e non esistono account correnti da conservare');
+        error.status = 400;
+        throw error;
+      }
+
+      if (fs.existsSync(attachmentsSource)) {
+        fs.cpSync(attachmentsSource, stageAttachments, { recursive: true });
+      } else if (fs.existsSync(this.attachmentsDir)) {
+        fs.cpSync(this.attachmentsDir, stageAttachments, { recursive: true });
+      } else {
+        fs.mkdirSync(stageAttachments, { recursive: true });
+      }
+
+      validateDatabase(stageDb);
+      validateUsers(stageUsers);
+
+      this.close();
+      for (const suffix of ['-wal', '-shm']) {
+        fs.rmSync(`${this.dbPath}${suffix}`, { force: true });
+      }
+      fs.rmSync(previousDb, { force: true });
+      fs.rmSync(previousUsers, { force: true });
+      fs.rmSync(previousAttachments, { recursive: true, force: true });
+
+      atomicWriteJson(journalPath, { ...journalBase, state: 'swapping' });
+      if (fs.existsSync(this.dbPath)) fs.renameSync(this.dbPath, previousDb);
+      if (fs.existsSync(this.usersPath)) fs.renameSync(this.usersPath, previousUsers);
+      if (fs.existsSync(this.attachmentsDir)) {
+        fs.renameSync(this.attachmentsDir, previousAttachments);
+      }
+
+      fs.renameSync(stageDb, this.dbPath);
+      fs.renameSync(stageUsers, this.usersPath);
+      fs.renameSync(stageAttachments, this.attachmentsDir);
+      atomicWriteJson(journalPath, { ...journalBase, state: 'committed' });
+
+      validateDatabase(this.dbPath);
+      validateUsers(this.usersPath);
+      this.open();
+
+      fs.rmSync(previousDb, { force: true });
+      fs.rmSync(previousUsers, { force: true });
+      fs.rmSync(previousAttachments, { recursive: true, force: true });
+      fs.rmSync(journalPath, { force: true });
+    } catch (error) {
+      if (this.db?.open) this.close();
+      if (fs.existsSync(journalPath)) {
+        try {
+          atomicWriteJson(journalPath, { ...journalBase, state: 'swapping' });
+        } catch {
+          // Il recupero usa comunque i nomi .previous noti.
+        }
+      }
+      recoverInterruptedRestore({
+        dataDir: this.dataDir,
+        dbPath: this.dbPath,
+        usersPath: this.usersPath,
+        attachmentsDir: this.attachmentsDir,
+      });
+      throw error;
+    } finally {
+      fs.rmSync(stageRoot, { recursive: true, force: true });
+      if (!this.db?.open) this.open();
+    }
+
+    this.writeAudit({
+      user,
+      type: 'database',
+      id: 'all',
+      action: 'restore.snapshot',
+      previous: null,
+      next: { snapshot: String(name) },
+    });
+    return this.listSnapshots().find((snapshot) => snapshot.name === name) || { name };
+  }
+'''
+          text = text[:start] + method + text[suffix_start:]
+          path.write_text(text)
+
+          # app.js
+          path = root / 'server/app.js'
+          text = path.read_text()
+          old = r'''const dateKey = (value) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+};
+const betweenDates = (value, start, end) => {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= start.getTime() && timestamp <= end.getTime();
+};
+const addDays = (date, days) => {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+};
+'''
+          new = r'''const localDateKey = (value) => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return String(value);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+};
+const parseLocalDay = (value) => {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+  return localDateKey(date) === String(value) ? date : null;
+};
+const localToday = () => localDateKey(new Date());
+const dateKey = localDateKey;
+const betweenDates = (value, start, end) => {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= start.getTime() && timestamp <= end.getTime();
+};
+const addDays = (date, days) => {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+};
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = r'''  app.use(cors({
+    origin: '*',
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'If-Match', 'X-Operation-Id'],
+  }));
+'''
+          new = r'''  const corsOptions = {
+    origin(origin, callback) {
+      const allowed = !origin
+        || origin === 'null'
+        || /^file:\/\//i.test(origin)
+        || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin);
+      if (allowed) return callback(null, true);
+      const error = new Error('Origine web non autorizzata');
+      error.status = 403;
+      return callback(error);
+    },
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'If-Match', 'X-Operation-Id'],
+    maxAge: 600,
+  };
+  app.use(cors(corsOptions));
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = r'''    const date = req.params.date || new Date().toISOString().slice(0, 10);
+    const work = allWork();
+    const materials = db.list('material');
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${date}T23:59:59.999Z`);
+    if (Number.isNaN(dayStart.getTime())) return res.status(400).json({ error: 'Data non valida' });
+'''
+          new = r'''    const date = req.params.date || localToday();
+    const work = allWork();
+    const materials = db.list('material');
+    const dayStart = parseLocalDay(date);
+    if (!dayStart) return res.status(400).json({ error: 'Data non valida' });
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(23, 59, 59, 999);
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = r'''    const start = new Date(`${req.params.weekStart || new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+    if (Number.isNaN(start.getTime())) return res.status(400).json({ error: 'Data non valida' });
+    const end = addDays(start, 6);
+    end.setUTCHours(23, 59, 59, 999);
+'''
+          new = r'''    const start = parseLocalDay(req.params.weekStart || localToday());
+    if (!start) return res.status(400).json({ error: 'Data non valida' });
+    const end = addDays(start, 6);
+    end.setHours(23, 59, 59, 999);
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+          text = text.replace("      weekStart: start.toISOString().slice(0, 10),\n      weekEnd: end.toISOString().slice(0, 10),", "      weekStart: localDateKey(start),\n      weekEnd: localDateKey(end),", 1)
+
+          old = """    const start = new Date(Date.UTC(year, month - 1, 1));
+    const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+"""
+          new = """    const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const end = new Date(year, month, 0, 23, 59, 59, 999);
+"""
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = r'''    const start = new Date(String(
+      req.query.startDate || new Date(Date.now() - 30 * 86400000).toISOString(),
+    ));
+    const end = new Date(String(req.query.endDate || new Date().toISOString()));
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+'''
+          new = r'''    const start = parseLocalDay(String(
+      req.query.startDate || localDateKey(new Date(Date.now() - 30 * 86400000)),
+    ));
+    const end = parseLocalDay(String(req.query.endDate || localToday()));
+    if (!start || !end || start > end) {
+'''
+          assert old in text
+          text = text.replace(old, new, 1)
+          old = """    for (const current = new Date(start); current <= end; current.setUTCDate(current.getUTCDate() + 1)) {
+      const date = current.toISOString().slice(0, 10);
+"""
+          new = """    for (const current = new Date(start); current <= end; current.setDate(current.getDate() + 1)) {
+      const date = localDateKey(current);
+"""
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = """      const today = new Date().toISOString().slice(0, 10);
+      const alreadyCreated = db.listSnapshots().some(
+        (item) => item.createdAt.startsWith(today) && item.label === 'automatico',
+      );
+"""
+          new = """      const today = localToday();
+      const alreadyCreated = db.listSnapshots().some(
+        (item) => localDateKey(item.createdAt) === today && item.label === 'automatico',
+      );
+"""
+          assert old in text
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+
+          # smoke-test.js
+          path = root / 'server/smoke-test.js'
+          text = path.read_text()
+          if not text.startswith("process.env.TZ = 'Europe/Rome';"):
+            text = "process.env.TZ = 'Europe/Rome';\n" + text
+
+          old = """      fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([
+        { id: 'utente-backup', username: 'backup', isActive: true },
+      ], null, 2));
+"""
+          new = """      fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([
+        {
+          id: 'utente-backup',
+          username: 'backup',
+          email: 'backup@example.test',
+          password: '$2b$10$hash-di-test-non-pubblico',
+          role: 'admin',
+          isActive: true,
+          permissions: ['settings.view', 'settings.edit'],
+        },
+      ], null, 2));
+"""
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = """      fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([
+        { id: 'utente-corrente', username: 'corrente', isActive: true },
+      ]));
+"""
+          new = """      fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([
+        {
+          id: 'utente-corrente',
+          username: 'corrente',
+          email: 'corrente@example.test',
+          password: '$2b$10$hash-corrente-non-pubblico',
+          role: 'admin',
+          isActive: true,
+          permissions: ['settings.view', 'settings.edit'],
+        },
+      ]));
+"""
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          marker = """      assert.ok(
+        fs.existsSync(path.join(attachmentsDir, 'corrente', 'file.txt')),
+        'Uno snapshot legacy non deve cancellare gli allegati correnti',
+      );
+"""
+          addition = marker + """
+
+      const corruptName = `${snapshot.name}-corrotto`;
+      const corruptPath = path.join(backupDir, corruptName);
+      fs.cpSync(snapshotPath, corruptPath, { recursive: true });
+      fs.writeFileSync(path.join(corruptPath, 'crm-marmeria.db'), 'database non valido');
+      const beforeCorruptRestore = db.get('project', created.item.id);
+      assert.throws(
+        () => db.restoreSnapshot(corruptName, user),
+        /Database del backup non valido/,
+      );
+      assert.equal(
+        db.get('project', created.item.id).status,
+        beforeCorruptRestore.status,
+        'Un database corrotto non deve sostituire quello corrente',
+      );
+
+      const noAdminName = `${snapshot.name}-senza-admin`;
+      const noAdminPath = path.join(backupDir, noAdminName);
+      fs.cpSync(snapshotPath, noAdminPath, { recursive: true });
+      fs.writeFileSync(path.join(noAdminPath, 'users.json'), JSON.stringify([{
+        id: 'solo-operaio',
+        username: 'solo-operaio',
+        email: 'operaio@example.test',
+        password: '$2b$10$hash-operaio-non-pubblico',
+        role: 'worker',
+        isActive: true,
+      }]));
+      assert.throws(
+        () => db.restoreSnapshot(noAdminName, user),
+        /amministratore attivo/,
+      );
+
+      db.close();
+      const interruptedDb = `${db.dbPath}.previous`;
+      const interruptedUsers = `${db.usersPath}.previous`;
+      const interruptedAttachments = `${db.attachmentsDir}.previous`;
+      fs.renameSync(db.dbPath, interruptedDb);
+      fs.renameSync(db.usersPath, interruptedUsers);
+      fs.renameSync(db.attachmentsDir, interruptedAttachments);
+      fs.writeFileSync(path.join(dataDir, '.restore-journal.json'), JSON.stringify({
+        state: 'swapping',
+        previousDb: interruptedDb,
+        previousUsers: interruptedUsers,
+        previousAttachments: interruptedAttachments,
+      }));
+      const recovered = new CrmDatabase({ dataDir, backupDir, attachmentsDir });
+      assert.ok(recovered.get('project', created.item.id));
+      assert.equal(fs.existsSync(path.join(dataDir, '.restore-journal.json')), false);
+      recovered.close();
+      db.open();
+"""
+          assert marker in text
+          text = text.replace(marker, addition, 1)
+
+          marker = """    const health = await requestJson(baseUrl, '/health');
+    assert.equal(health.response.ok, true, 'L’endpoint health deve rispondere');
+    assert.equal(health.body.mode, 'central-server');
+"""
+          addition = marker + """
+
+    const hostileOrigin = await requestJson(baseUrl, '/health', {
+      headers: { Origin: 'https://evil.example' },
+    });
+    assert.equal(hostileOrigin.response.status, 403, 'Le origini web esterne devono essere bloccate');
+    const electronOrigin = await requestJson(baseUrl, '/health', {
+      headers: { Origin: 'null' },
+    });
+    assert.equal(electronOrigin.response.status, 200, 'Le pagine Electron file:// devono poter usare l’API');
+"""
+          assert marker in text
+          text = text.replace(marker, addition, 1)
+
+          marker = """    const daily = await requestJson(baseUrl, '/analytics/daily/2030-01-01', {
+      headers: authHeaders(adminToken),
+    });
+"""
+          addition = """    instance.db.importEntity('order', {
+      id: 'ordine-mezzanotte-roma',
+      title: 'Ordine dopo mezzanotte locale',
+      status: 'In Attesa',
+      createdAt: '2030-01-01T23:30:00.000Z',
+      updatedAt: '2030-01-01T23:30:00.000Z',
+    });
+    const localMidnightDaily = await requestJson(baseUrl, '/analytics/daily/2030-01-02', {
+      headers: authHeaders(adminToken),
+    });
+    assert.ok(
+      localMidnightDaily.body.newOrders >= 1,
+      'Le 00:30 italiane devono appartenere al giorno locale, non al giorno UTC precedente',
+    );
+
+""" + marker
+          assert marker in text
+          text = text.replace(marker, addition, 1)
+          path.write_text(text)
+
+          # package and CI checks
+          path = root / 'server/package.json'
+          text = path.read_text().replace(
+            'node --check database.js && node --check middleware/auth.js',
+            'node --check database.js && node --check restore-safety.js && node --check middleware/auth.js',
+          )
+          path.write_text(text)
+
+          path = Path('.github/workflows/verify-crm.yml')
+          text = path.read_text().replace(
+            '          node --check server/database.js\n',
+            '          node --check server/database.js\n          node --check server/restore-safety.js\n',
+          )
+          path.write_text(text)
+          PY
+
+      - name: Upgrade Electron to a supported stable line
+        working-directory: crm-marmeria
+        run: npm install --save-dev electron@43.1.0
+
+      - name: Verify patch locally
+        working-directory: crm-marmeria
+        run: |
+          npm install --prefix server
+          node --check server/app.js
+          node --check server/database.js
+          node --check server/restore-safety.js
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm run typecheck
+          npm test -- --run
+          npm run build
+
+      - name: Commit generated fixes and remove temporary workflow
+        run: |
+          git rm .github/workflows/apply-third-review-fixes.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "fix: harden restore, LAN identity, dates and Electron runtime"
+          git push origin HEAD:fix/core-reliability-2026-07
