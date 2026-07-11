@@ -10,6 +10,10 @@ let jwtSecret = configuredJwtSecret;
 let usersMutationQueue = Promise.resolve();
 const seedUsersPath = path.join(__dirname, '../data/users.json');
 const JWT_EXPIRES_IN = '24h';
+const COMPROMISED_DEFAULT_HASHES = new Set([
+  '$2b$10$xgjipj3RtM9D8nyR2J8RnOPAtJ.aAyxrVpPmAXDbFnJmbfrdQVTsG',
+  '$2b$10$1rfGdxxl/DQDLqJn6lE0HuYAiBNC4f/KVSCUCQ1Gc6hgeOWTKrnJG',
+]);
 
 const usersFile = () => path.join(dataDirectory, 'users.json');
 
@@ -78,10 +82,16 @@ const configureAuth = ({ dataDir }) => {
     }
     jwtSecret = fs.readFileSync(secretPath, 'utf8').trim();
   }
-
   if (!jwtSecret) throw new Error('Segreto JWT non disponibile');
 
-  const users = readUsers();
+  let users = readUsers();
+  const safeUsers = users.filter((user) => !COMPROMISED_DEFAULT_HASHES.has(user.password));
+  if (safeUsers.length !== users.length) {
+    if (!writeUsers(safeUsers)) throw new Error('Rimozione account predefiniti non sicuri fallita');
+    users = safeUsers;
+    console.warn('Account predefiniti rimossi: completare la configurazione iniziale sul PC principale.');
+  }
+
   let usersChanged = false;
   const requiredWorkerPermissions = [
     'dashboard.view',
