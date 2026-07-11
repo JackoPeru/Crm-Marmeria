@@ -1,7 +1,7 @@
 class MutationBarrier {
   constructor({ timeoutMs = 30000 } = {}) {
     this.timeoutMs = timeoutMs;
-    this.activeMutations = 0;
+    this.activeRequests = 0;
     this.maintenance = false;
     this.idleWaiters = new Set();
   }
@@ -11,18 +11,18 @@ class MutationBarrier {
   }
 
   get activeCount() {
-    return this.activeMutations;
+    return this.activeRequests;
   }
 
-  enterMutation() {
+  enterRequest() {
     if (this.maintenance) return null;
-    this.activeMutations += 1;
+    this.activeRequests += 1;
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      this.activeMutations = Math.max(0, this.activeMutations - 1);
-      if (this.activeMutations === 0) {
+      this.activeRequests = Math.max(0, this.activeRequests - 1);
+      if (this.activeRequests === 0) {
         for (const resolve of this.idleWaiters) resolve();
         this.idleWaiters.clear();
       }
@@ -30,7 +30,7 @@ class MutationBarrier {
   }
 
   waitForIdle(timeoutMs = this.timeoutMs) {
-    if (this.activeMutations === 0) return Promise.resolve();
+    if (this.activeRequests === 0) return Promise.resolve();
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (callback) => {
@@ -42,7 +42,7 @@ class MutationBarrier {
       };
       const onIdle = () => finish(resolve);
       const timer = setTimeout(() => finish(() => {
-        const error = new Error('Operazioni ancora attive: manutenzione annullata');
+        const error = new Error('Richieste ancora attive: manutenzione annullata');
         error.status = 503;
         reject(error);
       }), timeoutMs);
