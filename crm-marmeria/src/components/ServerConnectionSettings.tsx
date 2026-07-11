@@ -55,7 +55,7 @@ const ServerConnectionSettings: React.FC = () => {
     try {
       const result = await window.electronAPI.network.discoverMasters();
       setMasters(result.masters || []);
-      if (!result.masters?.length) toast.error('Nessun server CRM trovato nella rete locale');
+      if (!result.masters?.length) toast.error('Nessun server CRM verificato nella rete locale');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Ricerca server non riuscita');
     } finally {
@@ -85,6 +85,9 @@ const ServerConnectionSettings: React.FC = () => {
         if (!result.success) {
           if (result.code === 'MASTER_ALREADY_EXISTS' && result.masters?.length) {
             throw new Error(`È già attivo un server principale: ${result.masters[0].apiUrl}`);
+          }
+          if (result.code === 'SERVER_ID_MISMATCH') {
+            throw new Error('Il server trovato ha un’identità diversa da quello precedentemente associato. Se il PC principale è stato sostituito, selezionalo di nuovo dalla ricerca LAN.');
           }
           throw new Error(result.error || 'Salvataggio configurazione fallito');
         }
@@ -124,7 +127,7 @@ const ServerConnectionSettings: React.FC = () => {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400 mb-5">
-        Deve esistere un solo PC principale. Tutte le altre postazioni leggono e modificano lo stesso database centrale.
+        Deve esistere un solo PC principale. Tutte le altre postazioni leggono e modificano lo stesso database centrale. Dopo il primo collegamento viene salvata anche l’identità del server, non soltanto il suo indirizzo IP.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -167,6 +170,7 @@ const ServerConnectionSettings: React.FC = () => {
               onChange={(event) => setPrefs((previous) => ({
                 ...previous,
                 apiUrl: event.target.value,
+                discoveredServerId: undefined,
               }))}
               placeholder="http://192.168.1.20:3001/api"
               className="mt-1 w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
@@ -215,11 +219,13 @@ const ServerConnectionSettings: React.FC = () => {
                   onClick={() => setPrefs((previous) => ({
                     ...previous,
                     apiUrl: master.apiUrl,
+                    discoveredServerId: master.serverId,
                   }))}
                   className="w-full text-left p-3 border rounded-md hover:bg-gray-50 dark:hover:bg-gray-800"
                 >
                   <strong>{master.name || master.hostname || 'CRM Marmeria'}</strong>
                   <span className="block text-sm text-gray-500">{master.apiUrl}</span>
+                  <span className="block text-xs text-gray-400 break-all">ID server: {master.serverId}</span>
                 </button>
               ))}
             </div>
@@ -248,6 +254,9 @@ const ServerConnectionSettings: React.FC = () => {
         <div className="p-3 rounded-md bg-gray-50 dark:bg-gray-800">
           <strong>API</strong>
           <span className="block break-all text-gray-500">{networkStatus.apiUrl}</span>
+          {prefs.discoveredServerId && (
+            <span className="block break-all text-xs text-gray-400 mt-1">ID: {prefs.discoveredServerId}</span>
+          )}
         </div>
         <div className="p-3 rounded-md bg-gray-50 dark:bg-gray-800">
           <strong>Tempo reale</strong>
