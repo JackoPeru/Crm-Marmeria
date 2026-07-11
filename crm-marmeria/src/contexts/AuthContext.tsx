@@ -3,6 +3,11 @@ import toast from 'react-hot-toast';
 import { authService, User, LoginCredentials, ProfileUpdate } from '../services/auth';
 import { cacheService } from '../services/cache';
 import { realtimeService } from '../services/realtime';
+import { store } from '../store';
+import { resetClientsState } from '../store/slices/clientsSlice';
+import { resetMaterialsState } from '../store/slices/materialsSlice';
+import { resetOrdersState } from '../store/slices/ordersSlice';
+import { resetAnalyticsState } from '../store/slices/analyticsSlice';
 
 interface AuthContextType {
   user: User | null;
@@ -18,11 +23,12 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const clearAccountScopedCaches = async () => {
-  await Promise.allSettled([
-    cacheService.clear('customers'),
-    cacheService.clear('materials'),
-  ]);
+const clearAccountScopedState = async () => {
+  store.dispatch(resetClientsState());
+  store.dispatch(resetMaterialsState());
+  store.dispatch(resetOrdersState());
+  store.dispatch(resetAnalyticsState());
+  await cacheService.clearAll();
 };
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -59,7 +65,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       authService.clearAuth();
       realtimeService.disconnect();
       setUser(null);
-      void clearAccountScopedCaches();
+      void clearAccountScopedState();
       window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
       toast.error('Sessione scaduta. Accedi nuovamente.', { id: 'session-expired' });
     };
@@ -75,7 +81,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const login = async (credentials: LoginCredentials): Promise<void> => {
     setIsLoading(true);
     try {
-      await clearAccountScopedCaches();
+      await clearAccountScopedState();
       const response = await authService.login(credentials);
       setUser(response.user);
       realtimeService.connectFromStorage();
@@ -95,7 +101,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       realtimeService.disconnect();
       await authService.logout();
-      await clearAccountScopedCaches();
+      await clearAccountScopedState();
       setUser(null);
       window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
       toast.success('Logout effettuato con successo');
