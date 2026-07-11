@@ -36,6 +36,12 @@ interface NetworkStatusContextType {
 
 const NetworkStatusContext = createContext<NetworkStatusContextType | undefined>(undefined);
 
+const clearStoredServerIdentity = () => {
+  localStorage.removeItem('crm_server_id');
+  localStorage.removeItem('crm_server_identity_url');
+  localStorage.removeItem('crm_data_epoch');
+};
+
 export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [isForceOffline, setIsForceOffline] = useState(
     () => localStorage.getItem('forceOfflineMode') === 'true',
@@ -100,26 +106,29 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
     const previousServerId = apiClient.getServerId();
     const normalizedExpectedId = String(expectedServerId || '').trim() || null;
     const sameVerifiedServer = Boolean(
-      normalizedExpectedId
-      && (!previousServerId || previousServerId === normalizedExpectedId),
+      previousServerId
+      && normalizedExpectedId
+      && previousServerId === normalizedExpectedId,
     );
 
     apiClient.setBaseURL(url);
     const nextUrl = apiClient.getBaseURL();
-    if (normalizedExpectedId) {
-      localStorage.setItem('crm_server_id', normalizedExpectedId);
-    } else if (previousUrl !== nextUrl) {
-      localStorage.removeItem('crm_server_id');
-      localStorage.removeItem('crm_server_identity_url');
-    }
+    const addressChanged = previousUrl !== nextUrl;
+    const identityChanged = Boolean(
+      normalizedExpectedId
+      && previousServerId
+      && previousServerId !== normalizedExpectedId,
+    );
+    const unknownIdentityChange = addressChanged && !sameVerifiedServer;
 
-    if (previousUrl !== nextUrl) {
-      realtimeService.disconnect();
-      if (!sameVerifiedServer) {
-        await cacheService.clearAll();
-        window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
-        window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
-      }
+    if (identityChanged || unknownIdentityChange) clearStoredServerIdentity();
+    if (normalizedExpectedId) localStorage.setItem('crm_server_id', normalizedExpectedId);
+
+    if (addressChanged) realtimeService.disconnect();
+    if (identityChanged || unknownIdentityChange) {
+      await cacheService.clearAll();
+      window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
+      window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
     }
 
     setNetworkStatus((previous) => ({
@@ -206,6 +215,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       else realtimeService.disconnect();
     };
     const queueChanged = () => void refreshQueueCount();
+    const identityChanged = () => void refreshQueueCount();
 
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
@@ -213,6 +223,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
     window.addEventListener('crm-api-url-changed', apiChanged);
     window.addEventListener('crm-auth-changed', authChanged);
     window.addEventListener('crm-offline-queue-changed', queueChanged);
+    window.addEventListener('crm-server-identity-changed', identityChanged);
     void initialize();
     const interval = window.setInterval(checkConnection, 10000);
 
@@ -225,6 +236,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       window.removeEventListener('crm-api-url-changed', apiChanged);
       window.removeEventListener('crm-auth-changed', authChanged);
       window.removeEventListener('crm-offline-queue-changed', queueChanged);
+      window.removeEventListener('crm-server-identity-changed', identityChanged);
     };
   }, [checkConnection, refreshQueueCount, setApiUrl]);
 
