@@ -56,6 +56,7 @@ jobs:
           node --check server/middleware/auth.js
           node --check server/snapshot-compat.js
           node --check server/smoke-test.js
+          node --check server/setup-test.js
           node --check electron/main.cjs
           node --check electron/server.cjs
           node --check electron/discovery.cjs
@@ -84,6 +85,9 @@ jobs:
 
       - name: Test frontend utilities
         run: npm test -- --run
+
+      - name: Test secure first-run setup
+        run: node server/setup-test.js
 
       - name: Test SQLite create
         run: node server/smoke-test.js create
