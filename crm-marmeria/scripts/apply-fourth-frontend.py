@@ -26,10 +26,10 @@ replace_once(
 )
 replace_once(
     api,
-    """const operationId = () => crypto.randomUUID();
+    r"""const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 """,
-    """const operationId = () => crypto.randomUUID();
+    r"""const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 const currentUserId = () => {
   try {
@@ -84,11 +84,13 @@ replace_once(
     "import { formatEuro, parseLocaleNumber } from '../utils/numbers';\n",
     "import { formatEuro, parseLocaleNumber } from '../utils/numbers';\nimport { observeServerScope, stableServerKey } from '../utils/serverScope';\n",
 )
-start = dashboard.read_text().find('const hashScope = (value) => {')
+text = dashboard.read_text()
+start = text.find('const hashScope = (value) => {')
 if start < 0:
     raise RuntimeError('Dashboard hashScope start not found')
-end = dashboard.read_text().find('\n\nconst parseDate', start)
-text = dashboard.read_text()
+end = text.find('\n\nconst parseDate', start)
+if end < 0:
+    raise RuntimeError('Dashboard hashScope end not found')
 dashboard.write_text(text[:start] + text[end + 2:])
 replace_once(
     dashboard,
@@ -106,22 +108,14 @@ replace_once(
 
   useEffect(() => {
 """,
-    """  const notesKey = `dashboardNotes:${String(user?.id || 'anonymous')}:${stableServerKey(false)}`;
-
-  useEffect(() => observeServerScope(() => setNotesScopeRevision((value) => value + 1)), []);
-
-  useEffect(() => {
-""",
-)
-# Ensure React recomputes the key when an identity event occurs.
-replace_once(
-    dashboard,
-    """  const notesKey = `dashboardNotes:${String(user?.id || 'anonymous')}:${stableServerKey(false)}`;
-""",
     """  const notesKey = useMemo(
     () => `dashboardNotes:${String(user?.id || 'anonymous')}:${stableServerKey(false)}`,
     [user?.id, notesScopeRevision],
   );
+
+  useEffect(() => observeServerScope(() => setNotesScopeRevision((value) => value + 1)), []);
+
+  useEffect(() => {
 """,
 )
 
@@ -142,12 +136,8 @@ replace_once(
 )
 replace_once(
     materials,
-    """       toast.success('Materiale creato con successo');
-       return response.data;
-""",
-    """       if (response.status !== 202) toast.success('Materiale creato con successo');
-       return response.data;
-""",
+    "toast.success('Materiale creato con successo');",
+    "if (response.status !== 202) toast.success('Materiale creato con successo');",
 )
 replace_once(
     materials,
@@ -178,12 +168,8 @@ replace_once(
 )
 replace_once(
     materials,
-    """       toast.success('Materiale aggiornato con successo');
-       return response.data;
-""",
-    """       if (response.status !== 202) toast.success('Materiale aggiornato con successo');
-       return response.data;
-""",
+    "toast.success('Materiale aggiornato con successo');",
+    "if (response.status !== 202) toast.success('Materiale aggiornato con successo');",
 )
 replace_once(
     materials,
@@ -214,13 +200,10 @@ replace_once(
 replace_once(materials, "await cacheService.delete('materials', materialId);", "await cacheService.delete('materials', id);")
 replace_once(
     materials,
-    """       toast.success('Materiale eliminato con successo');
-       return materialId;
-""",
-    """       if (response.status !== 202) toast.success('Materiale eliminato con successo');
-       return id;
-""",
+    "toast.success('Materiale eliminato con successo');",
+    "if (response.status !== 202) toast.success('Materiale eliminato con successo');",
 )
+replace_once(materials, 'return materialId;', 'return id;')
 replace_once(
     materials,
     """              material.name.toLowerCase().includes(query.toLowerCase()) ||
