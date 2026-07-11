@@ -7,6 +7,7 @@ const crypto = require('crypto');
 let dataDirectory = path.join(__dirname, '../data');
 const configuredJwtSecret = process.env.JWT_SECRET || null;
 let jwtSecret = configuredJwtSecret;
+let authEpoch = null;
 let usersMutationQueue = Promise.resolve();
 const seedUsersPath = path.join(__dirname, '../data/users.json');
 const JWT_EXPIRES_IN = '24h';
@@ -15,19 +16,51 @@ const COMPROMISED_DEFAULT_HASHES = new Set([
   '$2b$10$1rfGdxxl/DQDLqJn6lE0HuYAiBNC4f/KVSCUCQ1Gc6hgeOWTKrnJG',
 ]);
 const PUBLIC_DEFAULT_PASSWORDS = ['admin123', 'operaio123'];
+const compromisedHashCache = new Map();
 
 const usersFile = () => path.join(dataDirectory, 'users.json');
+const authEpochFile = () => path.join(dataDirectory, '.auth-epoch');
+
+const setPrivatePermissions = (filePath) => {
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // Alcuni filesystem Windows non applicano i permessi POSIX.
+  }
+};
+
+const writePrivateFile = (filePath, value) => {
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, 'w', 0o600);
+    fs.writeFileSync(descriptor, value);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    fs.renameSync(temporary, filePath);
+    setPrivatePermissions(filePath);
+  } catch (error) {
+    if (descriptor != null) fs.closeSync(descriptor);
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+    throw error;
+  }
+};
 
 const isCompromisedLegacyAccount = (user) => {
-  if (!user?.password) return false;
-  if (COMPROMISED_DEFAULT_HASHES.has(user.password)) return true;
+  const hash = String(user?.password || '');
+  if (!hash) return false;
+  if (COMPROMISED_DEFAULT_HASHES.has(hash)) return true;
+  if (compromisedHashCache.has(hash)) return compromisedHashCache.get(hash);
+  let compromised = false;
   try {
-    return PUBLIC_DEFAULT_PASSWORDS.some((password) => (
-      bcrypt.compareSync(password, user.password)
-    ));
+    compromised = PUBLIC_DEFAULT_PASSWORDS.some((password) => bcrypt.compareSync(password, hash));
   } catch {
-    return false;
+    compromised = false;
   }
+  if (compromisedHashCache.size > 500) compromisedHashCache.clear();
+  compromisedHashCache.set(hash, compromised);
+  return compromised;
 };
 
 const readUsersRaw = () => {
@@ -37,25 +70,13 @@ const readUsersRaw = () => {
   return users;
 };
 
-const readUsers = () => readUsersRaw().filter(
-  (user) => !COMPROMISED_DEFAULT_HASHES.has(user.password),
-);
+const readUsers = () => readUsersRaw().filter((user) => !isCompromisedLegacyAccount(user));
 
 const writeUsers = (users) => {
-  const filePath = usersFile();
-  const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
-  let descriptor;
   try {
-    descriptor = fs.openSync(temporary, 'w');
-    fs.writeFileSync(descriptor, JSON.stringify(users, null, 2));
-    fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);
-    descriptor = null;
-    fs.renameSync(temporary, filePath);
+    writePrivateFile(usersFile(), JSON.stringify(users, null, 2));
     return true;
   } catch (error) {
-    if (descriptor != null) fs.closeSync(descriptor);
-    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
     console.error('Errore scrittura utenti:', error);
     return false;
   }
@@ -85,59 +106,58 @@ const drainUserMutations = async () => {
 };
 
 const writeJsonAtomically = (filePath, value) => {
-  const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2));
-  fs.renameSync(temporary, filePath);
+  writePrivateFile(filePath, JSON.stringify(value, null, 2));
 };
+
+const rotateAuthEpoch = () => {
+  authEpoch = crypto.randomBytes(32).toString('hex');
+  writePrivateFile(authEpochFile(), authEpoch);
+  return authEpoch;
+};
+
+const getAuthEpoch = () => authEpoch;
 
 const configureAuth = ({ dataDir }) => {
   dataDirectory = dataDir || dataDirectory;
   usersMutationQueue = Promise.resolve();
+  compromisedHashCache.clear();
   fs.mkdirSync(dataDirectory, { recursive: true });
   const usersPath = usersFile();
   if (!fs.existsSync(usersPath)) {
     if (fs.existsSync(seedUsersPath) && path.resolve(seedUsersPath) !== path.resolve(usersPath)) {
       fs.copyFileSync(seedUsersPath, usersPath);
+      setPrivatePermissions(usersPath);
     } else {
-      fs.writeFileSync(usersPath, '[]');
+      writePrivateFile(usersPath, '[]');
     }
+  } else {
+    setPrivatePermissions(usersPath);
   }
 
   jwtSecret = configuredJwtSecret;
   if (!jwtSecret) {
     const secretPath = path.join(dataDirectory, '.jwt-secret');
     if (!fs.existsSync(secretPath)) {
-      fs.writeFileSync(secretPath, crypto.randomBytes(48).toString('hex'));
+      writePrivateFile(secretPath, crypto.randomBytes(48).toString('hex'));
+    } else {
+      setPrivatePermissions(secretPath);
     }
     jwtSecret = fs.readFileSync(secretPath, 'utf8').trim();
   }
   if (!jwtSecret) throw new Error('Segreto JWT non disponibile');
 
-  let users = readUsersRaw();
+  if (!fs.existsSync(authEpochFile())) rotateAuthEpoch();
+  else {
+    setPrivatePermissions(authEpochFile());
+    authEpoch = fs.readFileSync(authEpochFile(), 'utf8').trim();
+  }
+  if (!authEpoch) rotateAuthEpoch();
+
+  const users = readUsersRaw();
   const safeUsers = users.filter((user) => !isCompromisedLegacyAccount(user));
   if (safeUsers.length !== users.length) {
     if (!writeUsers(safeUsers)) throw new Error('Rimozione account predefiniti non sicuri fallita');
-    users = safeUsers;
     console.warn('Account con password predefinite pubbliche rimossi: completare la configurazione iniziale sul PC principale.');
-  }
-
-  let usersChanged = false;
-  const requiredWorkerPermissions = [
-    'dashboard.view',
-    'projects.view', 'projects.edit',
-    'materials.view', 'materials.edit',
-    'orders.view', 'orders.edit',
-  ];
-  const migratedUsers = users.map((user) => {
-    if (user.role !== 'worker') return user;
-    const permissions = new Set(Array.isArray(user.permissions) ? user.permissions : []);
-    const before = permissions.size;
-    requiredWorkerPermissions.forEach((permission) => permissions.add(permission));
-    if (permissions.size !== before) usersChanged = true;
-    return { ...user, permissions: [...permissions] };
-  });
-  if (usersChanged && !writeUsers(migratedUsers)) {
-    throw new Error('Migrazione permessi operai fallita');
   }
 
   const clientsPath = path.join(dataDirectory, 'clients.json');
@@ -162,19 +182,25 @@ const configureAuth = ({ dataDir }) => {
 };
 
 const verifyToken = (token) => {
-  if (!token || !jwtSecret) return null;
+  if (!token || !jwtSecret || !authEpoch) return null;
   try {
     const payload = jwt.verify(token, jwtSecret);
-    return readUsers().find(
-      (user) => String(user.id) === String(payload.id) && user.isActive,
-    ) || null;
+    if (payload.epoch !== authEpoch) return null;
+    const user = readUsers().find(
+      (entry) => String(entry.id) === String(payload.id) && entry.isActive,
+    );
+    if (!user) return null;
+    if (Number(payload.sessionVersion || 1) !== Number(user.sessionVersion || 1)) return null;
+    return user;
   } catch {
     return null;
   }
 };
 
 const authenticateToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
+  const authorization = String(req.headers.authorization || '');
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1];
   if (!token) return res.status(401).json({ error: 'Token di accesso richiesto' });
   const user = verifyToken(token);
   if (!user) return res.status(401).json({ error: 'Sessione scaduta o utente disattivato' });
@@ -203,10 +229,15 @@ const requireRole = (roles) => {
 };
 
 const generateToken = (user) => jwt.sign(
-  { id: String(user.id) },
+  {
+    id: String(user.id),
+    epoch: authEpoch,
+    sessionVersion: Number(user.sessionVersion || 1),
+  },
   jwtSecret,
   { expiresIn: JWT_EXPIRES_IN },
 );
+
 const hashPassword = (password) => {
   const normalized = String(password || '');
   if (PUBLIC_DEFAULT_PASSWORDS.includes(normalized)) {
@@ -216,10 +247,16 @@ const hashPassword = (password) => {
   }
   return bcrypt.hash(normalized, 10);
 };
+
 const verifyPassword = (password, hashedPassword) => bcrypt.compare(password, hashedPassword);
-const findUserByCredentials = (identifier) => readUsers().find((user) => (
-  (user.username === identifier || user.email === identifier) && user.isActive
-));
+const findUserByCredentials = (identifier) => {
+  const normalized = String(identifier || '').trim().toLowerCase();
+  return readUsers().find((user) => (
+    (String(user.username || '').toLowerCase() === normalized
+      || String(user.email || '').toLowerCase() === normalized)
+    && user.isActive
+  ));
+};
 
 module.exports = {
   configureAuth,
@@ -236,4 +273,6 @@ module.exports = {
   mutateUsers,
   drainUserMutations,
   usersFile,
+  rotateAuthEpoch,
+  getAuthEpoch,
 };
