@@ -27,17 +27,19 @@ declare global {
           masters: DiscoveredMaster[];
         }>;
         pickBackupFolder: () => Promise<{ success: boolean; path?: string }>;
-        testApi: (apiUrl: string) => Promise<{
+        testApi: (apiUrl: string, expectedServerId?: string) => Promise<{
           success: boolean;
           data?: any;
           apiUrl?: string;
           error?: string;
+          code?: string;
         }>;
-        testMasterConnection?: (apiUrl: string) => Promise<{
+        testMasterConnection?: (apiUrl: string, expectedServerId?: string) => Promise<{
           success: boolean;
           data?: any;
           apiUrl?: string;
           error?: string;
+          code?: string;
         }>;
         syncWithMaster?: (...args: any[]) => Promise<any>;
         pushToMaster?: (...args: any[]) => Promise<any>;
@@ -62,5 +64,11 @@ declare global {
     address: string;
     port: number;
     apiUrl: string;
+    health?: {
+      mode?: string;
+      serverId?: string;
+      hostname?: string;
+      version?: string;
+    };
   }
 }
