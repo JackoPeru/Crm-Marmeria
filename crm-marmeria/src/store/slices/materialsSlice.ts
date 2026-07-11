@@ -21,6 +21,8 @@ export interface Material {
   stock?: number; // Campo legacy per compatibilità
   description?: string;
   specifications?: Record<string, any>;
+  version?: number;
+  _queued?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -190,7 +192,7 @@ export const createMaterial = createAsyncThunk<
       // Invalida la cache
       await cacheService.delete('materials', 'all');
       
-      toast.success('Materiale creato con successo');
+      if (response.status !== 202) toast.success('Materiale creato con successo');
       return response.data;
     } catch (error: any) {
       const message = error.response?.data?.message || error.message || 'Errore nella creazione materiale';
@@ -205,19 +207,26 @@ export const createMaterial = createAsyncThunk<
  */
 export const updateMaterial = createAsyncThunk<
   Material,
-  { id: string; data: Partial<CreateMaterialRequest> },
+  { id: string; data: Partial<CreateMaterialRequest> & { version?: number } },
   { rejectValue: string }
 >(
   'materials/updateMaterial',
   async ({ id, data }, { rejectWithValue }) => {
     try {
-      const response = await apiClient.getInstance().put(`/materials/${id}`, data);
+      const version = Number(data.version);
+      if (!Number.isInteger(version) || version < 1) {
+        throw new Error('Versione materiale non disponibile. Ricarica i dati.');
+      }
+      const response = await apiClient.getInstance().put(`/materials/${id}`, {
+        ...data,
+        expectedVersion: version,
+      });
       
       // Invalida la cache
       await cacheService.delete('materials', 'all');
       await cacheService.delete('materials', id);
       
-      toast.success('Materiale aggiornato con successo');
+      if (response.status !== 202) toast.success('Materiale aggiornato con successo');
       return response.data;
     } catch (error: any) {
       const message = error.response?.data?.message || error.message || 'Errore nell\'aggiornamento materiale';
@@ -232,20 +241,25 @@ export const updateMaterial = createAsyncThunk<
  */
 export const deleteMaterial = createAsyncThunk<
   string,
-  string,
+  { id: string; version: number },
   { rejectValue: string }
 >(
   'materials/deleteMaterial',
-  async (materialId, { rejectWithValue }) => {
+  async ({ id, version }, { rejectWithValue }) => {
     try {
-      await apiClient.getInstance().delete(`/materials/${materialId}`);
+      if (!Number.isInteger(Number(version)) || Number(version) < 1) {
+        throw new Error('Versione materiale non disponibile. Ricarica i dati.');
+      }
+      const response = await apiClient.getInstance().delete(`/materials/${id}`, {
+        headers: { 'If-Match': String(version) },
+      });
       
       // Invalida la cache
       await cacheService.delete('materials', 'all');
-      await cacheService.delete('materials', materialId);
+      await cacheService.delete('materials', id);
       
-      toast.success('Materiale eliminato con successo');
-      return materialId;
+      if (response.status !== 202) toast.success('Materiale eliminato con successo');
+      return id;
     } catch (error: any) {
       const message = error.response?.data?.message || error.message || 'Errore nell\'eliminazione materiale';
       toast.error(message);
@@ -275,9 +289,9 @@ export const searchMaterials = createAsyncThunk<
           if (cachedData && Array.isArray(cachedData)) {
             // Ricerca locale sui dati in cache
             const filteredData = cachedData.filter((material: Material) =>
-              material.name.toLowerCase().includes(query.toLowerCase()) ||
-              material.category.toLowerCase().includes(query.toLowerCase()) ||
-              material.supplier.toLowerCase().includes(query.toLowerCase())
+              String(material.name || '').toLowerCase().includes(query.toLowerCase()) ||
+              String(material.category || '').toLowerCase().includes(query.toLowerCase()) ||
+              String(material.supplier || '').toLowerCase().includes(query.toLowerCase())
             );
             toast.error('Sei offline – ricerca sui dati in cache');
             return filteredData;

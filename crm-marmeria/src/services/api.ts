@@ -4,6 +4,7 @@ import { getCurrentQueueScope, offlineQueue } from './offlineQueue';
 
 interface ReplayConfig extends AxiosRequestConfig {
   _replay?: boolean;
+  _crmContext?: string;
 }
 
 const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
@@ -15,6 +16,19 @@ const SERVER_URL_KEY = 'crm_server_identity_url';
 const DATA_EPOCH_KEY = 'crm_data_epoch';
 const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
+const currentUserId = () => {
+  try {
+    return String(JSON.parse(localStorage.getItem('crm_user_data') || 'null')?.id || '');
+  } catch {
+    return '';
+  }
+};
+const clientContextFingerprint = () => [
+  normalizeBaseUrl(localStorage.getItem('crm_api_base_url') || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3001/api'),
+  localStorage.getItem(SERVER_ID_KEY) || '',
+  localStorage.getItem(DATA_EPOCH_KEY) || '',
+  currentUserId(),
+].join('|');
 
 class ApiClient {
   private axiosInstance: AxiosInstance;
@@ -58,6 +72,7 @@ class ApiClient {
   private setupInterceptors(): void {
     this.axiosInstance.interceptors.request.use((config: any) => {
       config.baseURL = this.getBaseURL();
+      config._crmContext = clientContextFingerprint();
       config.headers = config.headers || {};
       const token = localStorage.getItem('crm_auth_token');
       if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -86,7 +101,15 @@ class ApiClient {
     });
 
     this.axiosInstance.interceptors.response.use(
-      (response) => response,
+      (response) => {
+        const requestContext = (response.config as ReplayConfig)._crmContext;
+        if (requestContext && requestContext !== clientContextFingerprint()) {
+          const error = new Error('Risposta ignorata perché account o server sono cambiati');
+          (error as any).code = 'STALE_CONTEXT_RESPONSE';
+          return Promise.reject(error);
+        }
+        return response;
+      },
       async (error) => {
         const config = (error.config || {}) as ReplayConfig & { headers?: Record<string, string> };
         const method = String(config.method || 'get').toLowerCase();

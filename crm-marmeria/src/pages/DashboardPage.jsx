@@ -8,19 +8,10 @@ import AttachmentsPanel from '../components/AttachmentsPanel';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
-import { apiClient } from '../services/api';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
+import { observeServerScope, stableServerKey } from '../utils/serverScope';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
-
-const hashScope = (value) => {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-};
 
 const parseDate = (value) => {
   if (!value) return null;
@@ -49,6 +40,7 @@ const DashboardPage = () => {
   const [editingNote, setEditingNote] = useState(null);
   const [editText, setEditText] = useState('');
   const [completingId, setCompletingId] = useState(null);
+  const [notesScopeRevision, setNotesScopeRevision] = useState(0);
 
   const canViewProjects = hasPermission('projects.view');
   const canEditProjects = hasPermission('projects.edit');
@@ -57,7 +49,12 @@ const DashboardPage = () => {
   const canViewInvoices = hasPermission('invoices.view');
   const canViewFinancials = ['admin', 'manager'].includes(user?.role || '') && canViewInvoices;
   const selectedProject = projects.find((project) => String(project.id) === String(viewProjectId));
-  const notesKey = `dashboardNotes:${String(user?.id || 'anonymous')}:${hashScope(apiClient.getBaseURL())}`;
+  const notesKey = useMemo(
+    () => `dashboardNotes:${String(user?.id || 'anonymous')}:${stableServerKey(false)}`,
+    [user?.id, notesScopeRevision],
+  );
+
+  useEffect(() => observeServerScope(() => setNotesScopeRevision((value) => value + 1)), []);
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Dashboard' }]);
