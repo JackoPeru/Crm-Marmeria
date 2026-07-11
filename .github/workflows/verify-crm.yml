@@ -96,7 +96,8 @@ jobs:
           const path = require('path');
           const asar = require('@electron/asar');
           const archive = path.join('dist-electron', 'linux-unpacked', 'resources', 'app.asar');
-          const entries = asar.listPackage(archive).map((entry) => entry.replace(/^\//, ''));
+          const entries = asar.listPackage(archive)
+            .map((entry) => entry.replace(/^[\\/]/, '').replace(/\\/g, '/'));
           const required = ['electron/main.cjs', 'server/app.js', 'server/database.js'];
           const forbidden = [
             'server/smoke-test.js',
@@ -148,19 +149,32 @@ jobs:
       - name: Inspect Windows package contents
         shell: pwsh
         run: |
-          if (-not (Test-Path 'dist-electron\win-unpacked\CRM Marmeria.exe')) {
+          $executables = @(Get-ChildItem 'dist-electron\win-unpacked' -Filter '*.exe' -File)
+          if ($executables.Count -eq 0) {
             throw 'Eseguibile Windows non generato'
           }
-          @'
+          Write-Host "Eseguibili generati: $($executables.Name -join ', ')"
+
+          $nodeScript = @'
           const path = require('path');
           const asar = require('@electron/asar');
           const archive = path.join('dist-electron', 'win-unpacked', 'resources', 'app.asar');
-          const entries = asar.listPackage(archive).map((entry) => entry.replace(/^\//, ''));
-          for (const item of ['electron/main.cjs', 'server/app.js', 'server/database.js']) {
+          const entries = asar.listPackage(archive)
+            .map((entry) => entry.replace(/^[\\/]/, '').replace(/\\/g, '/'));
+          const required = ['electron/main.cjs', 'server/app.js', 'server/database.js'];
+          const forbidden = [
+            'server/smoke-test.js',
+            'server/setup-test.js',
+            'server/mutation-barrier.check.js',
+            'electron/network-config.check.cjs',
+            'server/data/users.json',
+          ];
+          for (const item of required) {
             if (!entries.includes(item)) throw new Error(`File runtime mancante: ${item}`);
           }
-          for (const item of ['server/smoke-test.js', 'server/setup-test.js', 'electron/network-config.check.cjs']) {
+          for (const item of forbidden) {
             if (entries.includes(item)) throw new Error(`File di test incluso: ${item}`);
           }
           console.log(`app.asar Windows verificato: ${entries.length} voci`);
-          '@ | node
+          '@
+          $nodeScript | node
