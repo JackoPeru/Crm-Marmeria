@@ -61,20 +61,30 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
     };
 
-    const handleExpiredSession = () => {
+    const resetSession = (showExpiredMessage: boolean) => {
       authService.clearAuth();
       realtimeService.disconnect();
       setUser(null);
       void clearAccountScopedState();
       window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
-      toast.error('Sessione scaduta. Accedi nuovamente.', { id: 'session-expired' });
+      if (showExpiredMessage) {
+        toast.error('Sessione scaduta. Accedi nuovamente.', { id: 'session-expired' });
+      }
+    };
+
+    const handleExpiredSession = () => resetSession(true);
+    const handleServerChanged = () => {
+      resetSession(false);
+      toast('Server centrale cambiato. Accedi al nuovo server.', { id: 'server-changed' });
     };
 
     window.addEventListener('crm-auth-expired', handleExpiredSession);
+    window.addEventListener('crm-auth-reset-for-server-change', handleServerChanged);
     void initialize();
     return () => {
       mounted = false;
       window.removeEventListener('crm-auth-expired', handleExpiredSession);
+      window.removeEventListener('crm-auth-reset-for-server-change', handleServerChanged);
     };
   }, []);
 
