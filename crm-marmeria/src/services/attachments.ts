@@ -40,16 +40,13 @@ export const attachmentsService = {
       { responseType: 'blob' },
     );
     const url = URL.createObjectURL(response.data);
-    try {
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = attachment.originalName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    } finally {
-      URL.revokeObjectURL(url);
-    }
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = attachment.originalName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
   },
 
   async remove(id: string): Promise<void> {
