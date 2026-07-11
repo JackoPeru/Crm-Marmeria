@@ -1,9 +1,8 @@
 name: Apply and verify third review
 
 on:
-  push:
-    branches:
-      - fix/core-reliability-2026-07
+  pull_request:
+    branches: [master]
 
 permissions:
   contents: write
@@ -63,7 +62,7 @@ jobs:
         run: |
           git rm crm-marmeria/scripts/apply-third-review.py
           git config user.name "github-actions[bot]"
-          git config user.email "4189828+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .
           git commit -m "fix: harden restore, setup, LAN identity and supported runtime"
           git push origin HEAD:fix/core-reliability-2026-07
