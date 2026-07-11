@@ -28,7 +28,23 @@ interface QueueDatabase extends DBSchema {
   };
 }
 
-const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '').toLowerCase();
+const normalizeBaseUrl = (value: string) => {
+  const trimmed = value.trim().replace(/\/$/, '');
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hash = '';
+    parsed.search = '';
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.pathname = parsed.pathname.replace(/\/$/, '');
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return trimmed;
+  }
+};
+
+const isObject = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
 
 export const getCurrentQueueScope = (): QueueScope | null => {
   try {
@@ -71,6 +87,53 @@ class OfflineQueue {
     scope: QueueScope | null = getCurrentQueueScope(),
   ): Promise<QueuedRequest> {
     if (!scope) throw new Error('Impossibile accodare la modifica senza un utente autenticato');
+
+    const db = await this.getDatabase();
+    const current = await this.list(scope);
+    const sameResource = current.filter((item) => item.url === request.url && !item.blocked);
+    const previousUpdate = [...sameResource].reverse().find(
+      (item) => ['put', 'patch'].includes(item.method),
+    );
+
+    if (['put', 'patch'].includes(request.method) && previousUpdate) {
+      const merged: QueuedRequest = {
+        ...previousUpdate,
+        method: request.method,
+        data: isObject(previousUpdate.data) && isObject(request.data)
+          ? { ...previousUpdate.data, ...request.data }
+          : request.data,
+        headers: {
+          ...(request.headers || {}),
+          ...(previousUpdate.headers?.['If-Match']
+            ? { 'If-Match': previousUpdate.headers['If-Match'] }
+            : {}),
+          'X-Operation-Id': previousUpdate.id,
+        },
+        attempts: 0,
+        blocked: false,
+        lastError: undefined,
+        conflictVersion: undefined,
+      };
+      await db.put('requests', merged);
+      this.notify();
+      return merged;
+    }
+
+    if (request.method === 'delete' && previousUpdate) {
+      for (const item of sameResource.filter((entry) => ['put', 'patch'].includes(entry.method))) {
+        await db.delete('requests', item.id);
+      }
+      request = {
+        ...request,
+        headers: {
+          ...(request.headers || {}),
+          ...(previousUpdate.headers?.['If-Match']
+            ? { 'If-Match': previousUpdate.headers['If-Match'] }
+            : {}),
+        },
+      };
+    }
+
     const value: QueuedRequest = {
       ...request,
       ownerUserId: String(scope.userId),
@@ -79,7 +142,7 @@ class OfflineQueue {
       attempts: 0,
       blocked: false,
     };
-    await (await this.getDatabase()).put('requests', value);
+    await db.put('requests', value);
     this.notify();
     return value;
   }
@@ -131,9 +194,9 @@ class OfflineQueue {
     let nextData = request.data;
     if (useLatestVersion && Number.isFinite(request.conflictVersion)) {
       nextHeaders['If-Match'] = String(request.conflictVersion);
-      if (nextData && typeof nextData === 'object' && !Array.isArray(nextData)) {
+      if (isObject(nextData)) {
         nextData = {
-          ...(nextData as Record<string, unknown>),
+          ...nextData,
           expectedVersion: request.conflictVersion,
           version: request.conflictVersion,
         };
