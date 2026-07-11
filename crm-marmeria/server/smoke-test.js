@@ -424,6 +424,16 @@ async function runServerTest() {
       body: JSON.stringify({ data: { client: [] } }),
     });
     assert.equal(partialBackup.response.status, 400, 'Un backup parziale non deve cancellare le sezioni omesse');
+    const malformedLegacyBackup = await requestJson(baseUrl, '/backup/import', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({ data: { clients: [], orders: 'non-array' } }),
+    });
+    assert.equal(
+      malformedLegacyBackup.response.status,
+      400,
+      'Una sezione legacy malformata non deve essere convertita in una lista vuota',
+    );
     const projectAfterRejectedImport = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
       headers: authHeaders(adminToken),
     });
@@ -482,6 +492,19 @@ async function runServerTest() {
       false,
       'settings.view non deve aggirare clients.view nello storico globale',
     );
+    const deniedFullExport = await requestJson(baseUrl, '/backup/export', {
+      headers: authHeaders(auditViewerToken),
+    });
+    assert.equal(
+      deniedFullExport.response.status,
+      403,
+      'settings.view non deve consentire l’esportazione dell’intero database',
+    );
+    const adminFullExport = await requestJson(baseUrl, '/backup/export', {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(adminFullExport.response.status, 200);
+    assert.ok(Array.isArray(adminFullExport.body.data.invoice));
     const users = await requestJson(baseUrl, '/users', {
       headers: authHeaders(adminToken),
     });

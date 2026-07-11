@@ -182,7 +182,7 @@ const SettingsPage = () => {
         />
       </Section>
 
-      <DataManager />
+      {user?.role === 'admin' && <DataManager />}
 
       <Section icon={Database} title="Preferenze Dati" iconClass="text-purple-500">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

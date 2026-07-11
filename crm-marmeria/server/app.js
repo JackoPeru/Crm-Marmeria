@@ -359,6 +359,13 @@ const normalizeBackupPayload = (raw) => {
 
   const legacyKeys = ['clients', 'orders', 'projects', 'materials', 'quotes', 'invoices'];
   if (!legacyKeys.some((key) => Object.prototype.hasOwnProperty.call(data, key))) return raw;
+  for (const key of legacyKeys) {
+    if (Object.prototype.hasOwnProperty.call(data, key) && !Array.isArray(data[key])) {
+      const error = new Error(`La sezione legacy ${key} del backup non è valida`);
+      error.status = 400;
+      throw error;
+    }
+  }
   const legacyOrders = Array.isArray(data.orders) ? data.orders : [];
   const typedOrders = (type) => legacyOrders.filter((item) => item?.type === type);
   return {
@@ -1270,8 +1277,8 @@ async function createCrmServer(options = {}) {
     }
   });
 
-  app.get('/api/backup/export', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.exportJson()));
-  app.post('/api/backup/import', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+  app.get('/api/backup/export', authenticateToken, requireRole('admin'), (req, res) => res.json(db.exportJson()));
+  app.post('/api/backup/import', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       const backup = normalizeBackupPayload(req.body);
       await runMaintenance('pre-importazione', () => db.restoreJson(backup, req.user));
@@ -1282,8 +1289,8 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-  app.get('/api/backup', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.exportJson()));
-  app.post('/api/backup/restore', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+  app.get('/api/backup', authenticateToken, requireRole('admin'), (req, res) => res.json(db.exportJson()));
+  app.post('/api/backup/restore', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       const backup = normalizeBackupPayload(req.body);
       await runMaintenance('pre-ripristino', () => db.restoreJson(backup, req.user));
@@ -1294,7 +1301,7 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-  app.post('/api/backup/clear', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+  app.post('/api/backup/clear', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       await runMaintenance('pre-cancellazione', () => db.restoreJson({
         data: Object.fromEntries(ENTITY_TYPES.map((type) => [type, []])),
@@ -1306,8 +1313,8 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-  app.get('/api/backups', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.listSnapshots()));
-  app.post('/api/backups', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+  app.get('/api/backups', authenticateToken, requireRole('admin'), (req, res) => res.json(db.listSnapshots()));
+  app.post('/api/backups', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       const snapshot = await runMaintenance(null, () => db.createSnapshot(req.body?.label || 'manuale'));
       return res.status(201).json(snapshot);
@@ -1315,7 +1322,7 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-  app.post('/api/backups/:name/restore', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+  app.post('/api/backups/:name/restore', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       const snapshot = await runMaintenance(
         'pre-ripristino',
