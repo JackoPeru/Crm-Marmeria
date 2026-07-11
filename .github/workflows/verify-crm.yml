@@ -1,37 +1,71 @@
-name: Diagnose fifth offline patch
+name: Apply fifth offline review
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  apply:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/core-reliability-2026-07
 
-      - name: Capture patch mismatch
-        id: patch
-        continue-on-error: true
-        run: python3 crm-marmeria/scripts/apply-fifth-offline.py > crm-marmeria/fifth-offline-patch.txt 2>&1
-
-      - name: Upload patch report
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@v4
         with:
-          name: fifth-offline-patch
-          path: crm-marmeria/fifth-offline-patch.txt
-          if-no-files-found: error
-          retention-days: 3
+          node-version: '22'
 
-      - name: Enforce result
-        if: steps.patch.outcome == 'failure'
+      - name: Apply offline consistency patch
+        run: python3 crm-marmeria/scripts/apply-fifth-offline-v2.py
+
+      - name: Install clean dependencies
         working-directory: crm-marmeria
         run: |
-          cat fifth-offline-patch.txt
-          exit 1
+          npm ci
+          npm ci --prefix server
+
+      - name: Verify offline optimistic behavior
+        working-directory: crm-marmeria
+        run: |
+          npm test -- --run src/services/optimisticMutation.test.ts src/services/requestScope.test.ts src/services/offlineQueue.test.ts
+          npm run typecheck
+
+      - name: Verify complete runtime and server suite
+        working-directory: crm-marmeria
+        env:
+          TZ: Europe/Rome
+        run: |
+          node electron/main-helpers.check.cjs
+          node electron/main-bootstrap.check.cjs
+          node electron/server-identity.check.cjs
+          node electron/server-master.check.cjs
+          node electron/network-config.check.cjs
+          node server/runtime-files.check.js
+          node server/index-bootstrap.check.js
+          node server/mutation-barrier.check.js
+          node server/setup-test.js
+          node server/smoke-test.js create
+          node server/smoke-test.js update
+          node server/smoke-test.js conflict
+          node server/smoke-test.js integrity
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm test -- --run
+          npm audit --omit=dev --audit-level=low
+          npm audit --prefix server --omit=dev --audit-level=low
+          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+          npm run build
+          timeout 180s npx electron-builder --linux dir --publish never
+
+      - name: Commit verified offline patch
+        run: |
+          git rm crm-marmeria/scripts/apply-fifth-offline.py crm-marmeria/scripts/apply-fifth-offline-v2.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "fix: preserve complete entities during offline mutations"
+          git push origin HEAD:fix/core-reliability-2026-07
