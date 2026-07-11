@@ -74,9 +74,12 @@
       "dist/**/*",
       "electron/**/*",
       "server/**/*",
+      "!electron/*.check.cjs",
       "!server/node_modules/**/*",
+      "!server/data/**/*",
       "!server/smoke-test.js",
-      "node_modules/**/*"
+      "!server/setup-test.js",
+      "!server/*.check.js"
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*",
