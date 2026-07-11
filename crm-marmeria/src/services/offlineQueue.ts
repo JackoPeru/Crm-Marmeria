@@ -3,6 +3,7 @@ import { openDB, DBSchema, IDBPDatabase } from 'idb';
 export interface QueueScope {
   userId: string;
   apiBaseUrl: string;
+  serverId?: string;
 }
 
 export interface QueuedRequest {
@@ -18,6 +19,7 @@ export interface QueuedRequest {
   conflictVersion?: number;
   ownerUserId: string;
   apiBaseUrl: string;
+  serverId?: string;
 }
 
 interface QueueDatabase extends DBSchema {
@@ -46,19 +48,24 @@ const isObject = (value: unknown): value is Record<string, unknown> => (
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 );
 
-export const getCurrentQueueScope = (): QueueScope | null => {
+const currentUserId = (): string => {
   try {
     const user = JSON.parse(localStorage.getItem('crm_user_data') || 'null');
-    const userId = user?.id == null ? '' : String(user.id);
-    const apiBaseUrl = normalizeBaseUrl(
-      localStorage.getItem('crm_api_base_url')
-        || import.meta.env.VITE_API_BASE_URL
-        || 'http://127.0.0.1:3001/api',
-    );
-    return userId && apiBaseUrl ? { userId, apiBaseUrl } : null;
+    return user?.id == null ? '' : String(user.id);
   } catch {
-    return null;
+    return '';
   }
+};
+
+export const getCurrentQueueScope = (): QueueScope | null => {
+  const userId = currentUserId();
+  const apiBaseUrl = normalizeBaseUrl(
+    localStorage.getItem('crm_api_base_url')
+      || import.meta.env.VITE_API_BASE_URL
+      || 'http://127.0.0.1:3001/api',
+  );
+  const serverId = String(localStorage.getItem('crm_server_id') || '').trim() || undefined;
+  return userId && apiBaseUrl ? { userId, apiBaseUrl, serverId } : null;
 };
 
 class OfflineQueue {
@@ -82,8 +89,21 @@ class OfflineQueue {
     window.dispatchEvent(new CustomEvent('crm-offline-queue-changed'));
   }
 
+  private matchesScope(request: QueuedRequest, scope: QueueScope): boolean {
+    if (request.ownerUserId !== String(scope.userId)) return false;
+    if (scope.serverId) {
+      if (request.serverId) return request.serverId === scope.serverId;
+      return normalizeBaseUrl(request.apiBaseUrl || '') === normalizeBaseUrl(scope.apiBaseUrl);
+    }
+    return !request.serverId
+      && normalizeBaseUrl(request.apiBaseUrl || '') === normalizeBaseUrl(scope.apiBaseUrl);
+  }
+
   async add(
-    request: Omit<QueuedRequest, 'createdAt' | 'attempts' | 'blocked' | 'ownerUserId' | 'apiBaseUrl'>,
+    request: Omit<
+      QueuedRequest,
+      'createdAt' | 'attempts' | 'blocked' | 'ownerUserId' | 'apiBaseUrl' | 'serverId'
+    >,
     scope: QueueScope | null = getCurrentQueueScope(),
   ): Promise<QueuedRequest> {
     if (!scope) throw new Error('Impossibile accodare la modifica senza un utente autenticato');
@@ -138,6 +158,7 @@ class OfflineQueue {
       ...request,
       ownerUserId: String(scope.userId),
       apiBaseUrl: normalizeBaseUrl(scope.apiBaseUrl),
+      serverId: scope.serverId,
       createdAt: new Date().toISOString(),
       attempts: 0,
       blocked: false,
@@ -149,12 +170,40 @@ class OfflineQueue {
 
   async list(scope: QueueScope | null = getCurrentQueueScope()): Promise<QueuedRequest[]> {
     if (!scope) return [];
-    const normalizedUrl = normalizeBaseUrl(scope.apiBaseUrl);
     const requests = await (await this.getDatabase()).getAllFromIndex('requests', 'by-created');
-    return requests.filter((request) => (
-      request.ownerUserId === String(scope.userId)
-      && normalizeBaseUrl(request.apiBaseUrl || '') === normalizedUrl
-    ));
+    return requests.filter((request) => this.matchesScope(request, scope));
+  }
+
+  async adoptServerIdentity(
+    serverId: string,
+    apiBaseUrl: string,
+    previousApiUrls: string[] = [],
+  ): Promise<void> {
+    const userId = currentUserId();
+    const normalizedId = String(serverId || '').trim();
+    if (!userId || !normalizedId) return;
+
+    const acceptedUrls = new Set(
+      [apiBaseUrl, ...previousApiUrls]
+        .filter(Boolean)
+        .map((value) => normalizeBaseUrl(String(value))),
+    );
+    const db = await this.getDatabase();
+    const transaction = db.transaction('requests', 'readwrite');
+    const requests = await transaction.store.index('by-created').getAll();
+    for (const request of requests) {
+      if (request.ownerUserId !== userId) continue;
+      const belongsToServer = request.serverId === normalizedId
+        || (!request.serverId && acceptedUrls.has(normalizeBaseUrl(request.apiBaseUrl || '')));
+      if (!belongsToServer) continue;
+      await transaction.store.put({
+        ...request,
+        serverId: normalizedId,
+        apiBaseUrl: normalizeBaseUrl(apiBaseUrl),
+      });
+    }
+    await transaction.done;
+    this.notify();
   }
 
   async count(scope: QueueScope | null = getCurrentQueueScope()): Promise<number> {
