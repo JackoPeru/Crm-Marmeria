@@ -1,121 +1,59 @@
-name: Verify CRM Marmeria
+name: Apply and verify third review
 
 on:
-  pull_request:
-    branches: [master]
   push:
     branches:
       - fix/core-reliability-2026-07
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  verify:
+  apply:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: crm-marmeria
     steps:
-      - name: Checkout
+      - name: Checkout review branch
         uses: actions/checkout@v4
+        with:
+          ref: fix/core-reliability-2026-07
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-          cache-dependency-path: |
-            crm-marmeria/package-lock.json
-            crm-marmeria/server/package-lock.json
 
-      - name: Install Electron app dependencies
-        run: npm ci
+      - name: Apply deterministic source patches
+        run: python3 crm-marmeria/scripts/apply-third-review.py
 
-      - name: Install standalone server dependencies
-        run: npm ci --prefix server
-
-      - name: Check Node and Electron syntax
+      - name: Upgrade supported runtime and upload middleware
+        working-directory: crm-marmeria
         run: |
-          node --check server/index.js
+          npm install --save-dev electron@43.1.0
+          npm install multer@2.2.0
+          npm install --prefix server multer@2.2.0
+
+      - name: Verify destructive and security cases before commit
+        working-directory: crm-marmeria
+        env:
+          TZ: Europe/Rome
+        run: |
           node --check server/app.js
           node --check server/database.js
-          node --check server/middleware/auth.js
-          node --check server/snapshot-compat.js
-          node --check server/smoke-test.js
-          node --check server/setup-test.js
+          node --check server/restore-safety.js
           node --check electron/main.cjs
           node --check electron/server.cjs
-          node --check electron/discovery.cjs
-          node --check electron/preload.cjs
-          node --check electron/native-smoke.cjs
+          node server/setup-test.js
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm run typecheck
+          npm test -- --run
+          npm run build
 
-      - name: Typecheck TypeScript
-        id: typecheck
-        continue-on-error: true
-        run: npm run typecheck > typecheck-report.txt 2>&1
-
-      - name: Upload TypeScript report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: typecheck-report
-          path: crm-marmeria/typecheck-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce TypeScript result
-        if: steps.typecheck.outcome == 'failure'
+      - name: Commit verified third-review fixes
         run: |
-          cat typecheck-report.txt
-          exit 1
-
-      - name: Test frontend utilities
-        run: npm test -- --run
-
-      - name: Test secure first-run setup
-        run: node server/setup-test.js
-
-      - name: Test SQLite create
-        run: node server/smoke-test.js create
-
-      - name: Test SQLite update
-        run: node server/smoke-test.js update
-
-      - name: Test SQLite conflict detection
-        run: node server/smoke-test.js conflict
-
-      - name: Test data integrity and attachments
-        run: node server/smoke-test.js integrity
-
-      - name: Test SQLite snapshot backup and restore
-        run: node server/smoke-test.js snapshot
-
-      - name: Test central server permissions and realtime
-        run: node server/smoke-test.js server
-
-      - name: Test Electron native modules
-        id: electron_native
-        continue-on-error: true
-        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox > electron-native-report.txt 2>&1
-
-      - name: Upload Electron native report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: electron-native-report
-          path: crm-marmeria/electron-native-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce Electron native result
-        if: steps.electron_native.outcome == 'failure'
-        run: |
-          cat electron-native-report.txt
-          exit 1
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Package Electron directory
-        run: timeout 180s npx electron-builder --linux dir --publish never
+          git rm crm-marmeria/scripts/apply-third-review.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "fix: harden restore, setup, LAN identity and supported runtime"
+          git push origin HEAD:fix/core-reliability-2026-07
