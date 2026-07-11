@@ -28,7 +28,7 @@ interface NetworkStatus {
 interface NetworkStatusContextType {
   networkStatus: NetworkStatus;
   checkConnection: () => Promise<boolean>;
-  setApiUrl: (url: string) => Promise<boolean>;
+  setApiUrl: (url: string, expectedServerId?: string) => Promise<boolean>;
   forceOfflineMode: () => void;
   exitOfflineMode: () => void;
   isForceOffline: boolean;
@@ -95,16 +95,31 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
     return reachable;
   }, [refreshQueueCount]);
 
-  const setApiUrl = useCallback(async (url: string) => {
+  const setApiUrl = useCallback(async (url: string, expectedServerId?: string) => {
     const previousUrl = apiClient.getBaseURL();
+    const previousServerId = apiClient.getServerId();
+    const normalizedExpectedId = String(expectedServerId || '').trim() || null;
+    const sameVerifiedServer = Boolean(
+      normalizedExpectedId
+      && (!previousServerId || previousServerId === normalizedExpectedId),
+    );
+
     apiClient.setBaseURL(url);
     const nextUrl = apiClient.getBaseURL();
+    if (normalizedExpectedId) {
+      localStorage.setItem('crm_server_id', normalizedExpectedId);
+    } else if (previousUrl !== nextUrl) {
+      localStorage.removeItem('crm_server_id');
+      localStorage.removeItem('crm_server_identity_url');
+    }
 
     if (previousUrl !== nextUrl) {
       realtimeService.disconnect();
-      await cacheService.clearAll();
-      window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
-      window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
+      if (!sameVerifiedServer) {
+        await cacheService.clearAll();
+        window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
+        window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
+      }
     }
 
     setNetworkStatus((previous) => ({
@@ -143,13 +158,18 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
         try {
           const result = await window.electronAPI.network.getPreferences();
           if (result.success && result.prefs?.apiUrl) {
-            if (apiClient.getBaseURL() !== result.prefs.apiUrl) {
-              await setApiUrl(result.prefs.apiUrl);
+            const configuredUrl = result.prefs.apiUrl;
+            const configuredServerId = result.prefs.discoveredServerId;
+            if (
+              apiClient.getBaseURL() !== configuredUrl
+              || (configuredServerId && apiClient.getServerId() !== configuredServerId)
+            ) {
+              await setApiUrl(configuredUrl, configuredServerId);
               return;
             }
             setNetworkStatus((previous) => ({
               ...previous,
-              apiUrl: result.prefs?.apiUrl || previous.apiUrl,
+              apiUrl: configuredUrl,
             }));
           }
         } catch (error) {
