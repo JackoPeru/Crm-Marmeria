@@ -3,7 +3,17 @@ import { Download, File, Paperclip, Trash2, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { attachmentsService } from '../services/attachments';
 import type { AttachmentRecord } from '../services/attachments';
+import { useAuth } from '../contexts/AuthContext';
 import AuditHistory from './AuditHistory';
+
+const permissionPrefixes: Record<string, string> = {
+  client: 'clients',
+  order: 'orders',
+  project: 'projects',
+  material: 'materials',
+  quote: 'quotes',
+  invoice: 'invoices',
+};
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -15,8 +25,11 @@ const AttachmentsPanel: React.FC<{
   entityType: string;
   entityId: string;
 }> = ({ entityType, entityId }) => {
+  const { hasPermission } = useAuth();
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
   const [busy, setBusy] = useState(false);
+  const prefix = permissionPrefixes[entityType];
+  const canEdit = Boolean(prefix && hasPermission(`${prefix}.edit`));
 
   const load = async () => {
     try {
@@ -56,7 +69,7 @@ const AttachmentsPanel: React.FC<{
   const upload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     event.target.value = '';
-    if (!files?.length) return;
+    if (!canEdit || !files?.length) return;
     setBusy(true);
     try {
       await attachmentsService.upload(entityType, entityId, files);
@@ -81,6 +94,7 @@ const AttachmentsPanel: React.FC<{
   };
 
   const remove = async (attachment: AttachmentRecord) => {
+    if (!canEdit) return;
     if (!window.confirm(`Eliminare ${attachment.originalName}?`)) return;
     setBusy(true);
     try {
@@ -100,16 +114,18 @@ const AttachmentsPanel: React.FC<{
         <h3 className="font-semibold flex items-center gap-2">
           <Paperclip size={18} /> Foto e allegati
         </h3>
-        <label className={`px-3 py-2 text-sm rounded-md text-white flex items-center gap-2 ${busy ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'}`}>
-          <Upload size={16} /> Aggiungi file
-          <input
-            type="file"
-            multiple
-            onChange={upload}
-            disabled={busy}
-            className="hidden"
-          />
-        </label>
+        {canEdit && (
+          <label className={`px-3 py-2 text-sm rounded-md text-white flex items-center gap-2 ${busy ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'}`}>
+            <Upload size={16} /> Aggiungi file
+            <input
+              type="file"
+              multiple
+              onChange={upload}
+              disabled={busy}
+              className="hidden"
+            />
+          </label>
+        )}
       </div>
 
       {!attachments.length ? (
@@ -139,15 +155,17 @@ const AttachmentsPanel: React.FC<{
                 >
                   <Download size={17} />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void remove(attachment)}
-                  disabled={busy}
-                  className="p-2 text-red-600 disabled:opacity-50"
-                  title="Elimina"
-                >
-                  <Trash2 size={17} />
-                </button>
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => void remove(attachment)}
+                    disabled={busy}
+                    className="p-2 text-red-600 disabled:opacity-50"
+                    title="Elimina"
+                  >
+                    <Trash2 size={17} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
