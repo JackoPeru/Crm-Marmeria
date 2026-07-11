@@ -12,6 +12,7 @@ const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|quotes|invoice
 const AUTH_ACTION = /^\/auth\/(login|logout)\/?$/;
 const SERVER_ID_KEY = 'crm_server_id';
 const SERVER_URL_KEY = 'crm_server_identity_url';
+const DATA_EPOCH_KEY = 'crm_data_epoch';
 const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 
@@ -38,6 +39,10 @@ class ApiClient {
 
   getServerId(): string | null {
     return localStorage.getItem(SERVER_ID_KEY);
+  }
+
+  getDataEpoch(): string | null {
+    return localStorage.getItem(DATA_EPOCH_KEY);
   }
 
   setBaseURL(url: string): void {
@@ -175,29 +180,48 @@ class ApiClient {
       const currentUrl = this.getBaseURL();
       const response = await this.axiosInstance.get('/health', { timeout: 5000 });
       const serverId = String(response.data?.serverId || '').trim();
-      if (serverId) {
-        const previousId = localStorage.getItem(SERVER_ID_KEY);
-        const previousIdentityUrl = localStorage.getItem(SERVER_URL_KEY) || '';
-        const identityChanged = Boolean(previousId && previousId !== serverId);
+      const dataEpoch = String(response.data?.dataEpoch || '').trim();
+      if (!serverId || !dataEpoch || response.data?.mode !== 'central-server') return false;
 
-        localStorage.setItem(SERVER_ID_KEY, serverId);
-        localStorage.setItem(SERVER_URL_KEY, currentUrl);
-        window.dispatchEvent(new CustomEvent('crm-server-identity-changed', {
-          detail: { serverId, apiUrl: currentUrl, previousId },
-        }));
+      const previousId = localStorage.getItem(SERVER_ID_KEY);
+      const previousEpoch = localStorage.getItem(DATA_EPOCH_KEY);
+      const identityChanged = Boolean(previousId && previousId !== serverId);
+      const generationChanged = Boolean(
+        previousId === serverId
+        && previousEpoch
+        && previousEpoch !== dataEpoch,
+      );
 
-        if (identityChanged) {
-          window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
-          window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
-          return true;
-        }
-
-        await offlineQueue.adoptServerIdentity(
+      localStorage.setItem(SERVER_ID_KEY, serverId);
+      localStorage.setItem(SERVER_URL_KEY, currentUrl);
+      localStorage.setItem(DATA_EPOCH_KEY, dataEpoch);
+      window.dispatchEvent(new CustomEvent('crm-server-identity-changed', {
+        detail: {
           serverId,
-          currentUrl,
-          [previousIdentityUrl, currentUrl],
-        );
+          dataEpoch,
+          apiUrl: currentUrl,
+          previousId,
+          previousEpoch,
+        },
+      }));
+
+      if (generationChanged) {
+        const removed = await offlineQueue.removeStaleGenerations(serverId, dataEpoch);
+        if (removed) {
+          toast.error(`${removed} modifiche offline precedenti al ripristino sono state eliminate per evitare di riapplicarle.`, {
+            id: 'stale-offline-operations',
+            duration: 8000,
+          });
+        }
       }
+
+      if (identityChanged || generationChanged) {
+        window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
+        window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
+        return true;
+      }
+
+      await offlineQueue.updateServerAddress(serverId, currentUrl);
       await this.replayOfflineQueue();
       return true;
     } catch {
@@ -208,30 +232,28 @@ class ApiClient {
   async replayOfflineQueue(): Promise<void> {
     if (this.replaying) return;
     const scope = getCurrentQueueScope();
-    if (!scope) return;
+    if (!scope?.serverId || !scope.dataEpoch) return;
 
     this.replaying = true;
     try {
       for (const request of await offlineQueue.list(scope)) {
         if (request.blocked) continue;
         try {
-          const stableServerMatch = Boolean(
-            request.serverId
-            && scope.serverId
-            && request.serverId === scope.serverId,
-          );
+          const stableServerMatch = request.serverId === scope.serverId
+            && request.dataEpoch === scope.dataEpoch;
+          if (!stableServerMatch) continue;
           await this.axiosInstance.request({
             method: request.method,
             url: request.url,
             data: request.data,
             headers: request.headers,
-            baseURL: stableServerMatch ? scope.apiBaseUrl : request.apiBaseUrl,
+            baseURL: scope.apiBaseUrl,
             _replay: true,
           } as ReplayConfig);
           await offlineQueue.remove(request.id);
         } catch (error: any) {
           const responseStatus = error.response?.status;
-          if ([400, 403, 404, 409].includes(responseStatus)) {
+          if ([400, 403, 404, 409, 428].includes(responseStatus)) {
             const currentVersion = Number(error.response?.data?.current?.version);
             await offlineQueue.markFailure(
               request.id,
