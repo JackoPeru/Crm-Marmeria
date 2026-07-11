@@ -1,14 +1,14 @@
-name: Diagnose fourth frontend patch
+name: Apply fourth frontend review
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  apply:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
@@ -21,23 +21,88 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Diagnose frontend patch
-        id: patch
-        continue-on-error: true
-        run: python3 crm-marmeria/scripts/apply-fourth-frontend.py > crm-marmeria/frontend-patch-report.txt 2>&1
+      - name: Apply fourth-run frontend patch
+        run: python3 crm-marmeria/scripts/apply-fourth-frontend.py
 
-      - name: Upload frontend patch report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-patch-report
-          path: crm-marmeria/frontend-patch-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce patch result
-        if: steps.patch.outcome == 'failure'
+      - name: Install clean dependencies
         working-directory: crm-marmeria
         run: |
-          cat frontend-patch-report.txt
-          exit 1
+          npm ci
+          npm ci --prefix server
+
+      - name: Enforce zero production vulnerabilities
+        working-directory: crm-marmeria
+        run: |
+          npm audit --omit=dev --json > root-audit.json || true
+          npm audit --prefix server --omit=dev --json > server-audit.json || true
+          node - <<'NODE'
+          for (const file of ['root-audit.json', 'server-audit.json']) {
+            const audit = require(`./${file}`);
+            const total = audit.metadata?.vulnerabilities?.total || 0;
+            console.log(file, audit.metadata?.vulnerabilities || {});
+            if (total !== 0) process.exitCode = 1;
+          }
+          NODE
+
+      - name: Verify complete application
+        working-directory: crm-marmeria
+        env:
+          TZ: Europe/Rome
+        run: |
+          node --check server/app.js
+          node --check server/database.js
+          node --check server/restore-safety.js
+          node --check server/mutation-barrier.js
+          node --check server/middleware/auth.js
+          node --check electron/main.cjs
+          node --check electron/discovery.cjs
+          node --check electron/network-config.cjs
+          node electron/network-config.check.cjs
+          node server/mutation-barrier.check.js
+          node server/setup-test.js
+          node server/smoke-test.js create
+          node server/smoke-test.js update
+          node server/smoke-test.js conflict
+          node server/smoke-test.js integrity
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm run typecheck
+          npm test -- --run
+          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+          npm run build
+          timeout 180s npx electron-builder --linux dir --publish never
+
+      - name: Inspect packaged application
+        working-directory: crm-marmeria
+        run: |
+          node - <<'NODE'
+          const path = require('path');
+          const asar = require('@electron/asar');
+          const archive = path.join('dist-electron', 'linux-unpacked', 'resources', 'app.asar');
+          const entries = asar.listPackage(archive).map((entry) => entry.replace(/^\//, ''));
+          const required = ['electron/main.cjs', 'server/app.js', 'server/database.js'];
+          const forbidden = [
+            'server/smoke-test.js',
+            'server/setup-test.js',
+            'server/mutation-barrier.check.js',
+            'electron/network-config.check.cjs',
+            'server/data/users.json',
+          ];
+          for (const item of required) {
+            if (!entries.includes(item)) throw new Error(`File runtime mancante nel pacchetto: ${item}`);
+          }
+          for (const item of forbidden) {
+            if (entries.includes(item)) throw new Error(`File di test/sviluppo incluso nel pacchetto: ${item}`);
+          }
+          console.log(`Contenuto app.asar verificato: ${entries.length} voci`);
+          NODE
+
+      - name: Commit verified frontend patch
+        run: |
+          git rm crm-marmeria/scripts/apply-fourth-frontend.py
+          git checkout -- .github/workflows/verify-crm.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "fix: isolate client state and harden frontend lifecycle"
+          git push origin HEAD:fix/core-reliability-2026-07
