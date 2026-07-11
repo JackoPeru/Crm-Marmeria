@@ -17,12 +17,16 @@ const COMPROMISED_DEFAULT_HASHES = new Set([
 
 const usersFile = () => path.join(dataDirectory, 'users.json');
 
-const readUsers = () => {
+const readUsersRaw = () => {
   if (!fs.existsSync(usersFile())) return [];
   const users = JSON.parse(fs.readFileSync(usersFile(), 'utf8'));
   if (!Array.isArray(users)) throw new Error('Il file utenti non contiene un elenco valido');
   return users;
 };
+
+const readUsers = () => readUsersRaw().filter(
+  (user) => !COMPROMISED_DEFAULT_HASHES.has(user.password),
+);
 
 const writeUsers = (users) => {
   const filePath = usersFile();
@@ -84,7 +88,7 @@ const configureAuth = ({ dataDir }) => {
   }
   if (!jwtSecret) throw new Error('Segreto JWT non disponibile');
 
-  let users = readUsers();
+  let users = readUsersRaw();
   const safeUsers = users.filter((user) => !COMPROMISED_DEFAULT_HASHES.has(user.password));
   if (safeUsers.length !== users.length) {
     if (!writeUsers(safeUsers)) throw new Error('Rimozione account predefiniti non sicuri fallita');
