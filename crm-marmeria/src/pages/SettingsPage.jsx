@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import DataManager from '../components/DataManager';
+import UserManagement from '../components/UserManagement';
 import useUI from '../hooks/useUI';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -154,6 +155,8 @@ const SettingsPage = () => {
           {savingProfile ? 'Salvataggio...' : 'Salva modifiche profilo'}
         </button>
       </Section>
+
+      {user?.role === 'admin' && <UserManagement />}
 
       <Section icon={Bell} title="Notifiche" iconClass="text-green-500">
         <AnimatedSwitch
