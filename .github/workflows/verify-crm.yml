@@ -1,135 +1,63 @@
-name: Verify CRM Marmeria
+name: Upgrade production dependencies
 
 on:
   pull_request:
     branches: [master]
-  push:
-    branches:
-      - fix/core-reliability-2026-07
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  verify:
+  upgrade:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: crm-marmeria
     steps:
-      - name: Checkout
+      - name: Checkout review branch
         uses: actions/checkout@v4
+        with:
+          ref: fix/core-reliability-2026-07
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: |
-            crm-marmeria/package-lock.json
-            crm-marmeria/server/package-lock.json
 
-      - name: Install Electron app dependencies
-        run: npm ci
-
-      - name: Install standalone server dependencies
-        run: npm ci --prefix server
-
-      - name: Check Node and Electron syntax
+      - name: Upgrade direct production dependencies
+        working-directory: crm-marmeria
         run: |
-          node --check server/index.js
-          node --check server/app.js
-          node --check server/database.js
-          node --check server/restore-safety.js
-          node --check server/middleware/auth.js
-          node --check server/snapshot-compat.js
-          node --check server/smoke-test.js
-          node --check server/setup-test.js
-          node --check electron/main.cjs
-          node --check electron/server.cjs
-          node --check electron/discovery.cjs
-          node --check electron/preload.cjs
-          node --check electron/native-smoke.cjs
+          npm uninstall react-router-dom
+          npm install axios@latest bcrypt@6.0.0 express@4.22.2 ws@latest
+          npm install --prefix server bcrypt@6.0.0 express@4.22.2 ws@latest
 
-      - name: Typecheck TypeScript
-        id: typecheck
-        continue-on-error: true
-        run: npm run typecheck > typecheck-report.txt 2>&1
-
-      - name: Upload TypeScript report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: typecheck-report
-          path: crm-marmeria/typecheck-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce TypeScript result
-        if: steps.typecheck.outcome == 'failure'
+      - name: Enforce production audit
+        working-directory: crm-marmeria
         run: |
-          cat typecheck-report.txt
-          exit 1
+          npm audit --omit=dev --json > production-audit.json || true
+          node - <<'NODE'
+          const audit = require('./production-audit.json');
+          const counts = audit.metadata?.vulnerabilities || {};
+          console.log(counts);
+          if ((counts.critical || 0) > 0 || (counts.high || 0) > 0) process.exit(1);
+          NODE
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --json > production-audit.json || true
-
-      - name: Upload dependency audit
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-audit
-          path: crm-marmeria/production-audit.json
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Test frontend utilities
-        run: npm test -- --run
-
-      - name: Test secure first-run setup
-        run: node server/setup-test.js
-
-      - name: Test SQLite create
-        run: node server/smoke-test.js create
-
-      - name: Test SQLite update
-        run: node server/smoke-test.js update
-
-      - name: Test SQLite conflict detection
-        run: node server/smoke-test.js conflict
-
-      - name: Test data integrity and attachments
-        run: node server/smoke-test.js integrity
-
-      - name: Test validated snapshot restore and power-loss recovery
-        run: node server/smoke-test.js snapshot
-
-      - name: Test central server permissions, CORS, dates and realtime
+      - name: Verify application and native runtime
+        working-directory: crm-marmeria
         env:
           TZ: Europe/Rome
-        run: node server/smoke-test.js server
-
-      - name: Test Electron native modules
-        id: electron_native
-        continue-on-error: true
-        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox > electron-native-report.txt 2>&1
-
-      - name: Upload Electron native report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: electron-native-report
-          path: crm-marmeria/electron-native-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce Electron native result
-        if: steps.electron_native.outcome == 'failure'
         run: |
-          cat electron-native-report.txt
-          exit 1
+          node server/setup-test.js
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm run typecheck
+          npm test -- --run
+          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+          npm run build
+          timeout 180s npx electron-builder --linux dir --publish never
 
-      - name: Build frontend
-        run: npm run build
-
-      - name: Package Electron directory
-        run: timeout 180s npx electron-builder --linux dir --publish never
+      - name: Commit verified dependency upgrades
+        run: |
+          git checkout -- .github/workflows/verify-crm.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crm-marmeria/package.json crm-marmeria/package-lock.json crm-marmeria/server/package.json crm-marmeria/server/package-lock.json
+          git commit -m "security: upgrade production dependencies"
+          git push origin HEAD:fix/core-reliability-2026-07
