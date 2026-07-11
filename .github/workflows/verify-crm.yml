@@ -1,14 +1,14 @@
-name: Inspect SQLite registry versions
+name: Refresh native runtime lockfiles
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  refresh:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
@@ -21,18 +21,31 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Query npm registry
+      - name: Refresh dependency lockfiles
         working-directory: crm-marmeria
         run: |
-          npm view better-sqlite3 versions --json > better-sqlite3-versions.json
-          npm view electron versions --json > electron-versions.json
+          npm install
+          npm install --prefix server
 
-      - name: Upload registry versions
-        uses: actions/upload-artifact@v4
-        with:
-          name: registry-versions
-          path: |
-            crm-marmeria/better-sqlite3-versions.json
-            crm-marmeria/electron-versions.json
-          if-no-files-found: error
-          retention-days: 3
+      - name: Verify supported native runtime pair
+        working-directory: crm-marmeria
+        env:
+          TZ: Europe/Rome
+        run: |
+          node server/setup-test.js
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm run typecheck
+          npm test -- --run
+          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+          npm run build
+          timeout 180s npx electron-builder --linux dir --publish never
+
+      - name: Commit refreshed lockfiles
+        run: |
+          git checkout -- .github/workflows/verify-crm.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crm-marmeria/package-lock.json crm-marmeria/server/package-lock.json
+          git commit -m "chore: refresh supported native runtime lockfiles"
+          git push origin HEAD:fix/core-reliability-2026-07
