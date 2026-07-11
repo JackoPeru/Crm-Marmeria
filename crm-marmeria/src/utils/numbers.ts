@@ -18,7 +18,7 @@ export const parseLocaleNumber = (value: unknown): number => {
     normalized = compact.replace(',', '.');
   }
 
-  const parsed = Number.parseFloat(normalized);
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
