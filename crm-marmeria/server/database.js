@@ -15,6 +15,23 @@ const isInside = (parent, child) => {
   const relative = path.relative(resolved(parent), resolved(child));
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 };
+const numeric = (value) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const compact = String(value ?? '').trim().replace(/[\s€£$']/g, '');
+  if (!compact) return 0;
+  const comma = compact.lastIndexOf(',');
+  const dot = compact.lastIndexOf('.');
+  let normalized = compact;
+  if (comma >= 0 && dot >= 0) {
+    normalized = comma > dot
+      ? compact.replace(/\./g, '').replace(',', '.')
+      : compact.replace(/,/g, '');
+  } else if (comma >= 0) {
+    normalized = compact.replace(',', '.');
+  }
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 class CrmDatabase {
   constructor({ dataDir, backupDir, attachmentsDir }) {
@@ -110,23 +127,90 @@ class CrmDatabase {
 
   normalizeData(type, input) {
     const data = clone(input) || {};
+
+    for (const key of ['id', 'clientId', 'customerId', 'projectId', 'quoteId']) {
+      if (data[key] != null && data[key] !== '') data[key] = String(data[key]);
+    }
+
+    if (Array.isArray(data.items)) {
+      data.items = data.items.map((item) => ({
+        ...item,
+        materialId: item.materialId == null || item.materialId === ''
+          ? null
+          : String(item.materialId),
+        quantity: numeric(item.quantity),
+        unitPrice: numeric(item.unitPrice),
+        taxRate: numeric(item.taxRate),
+      }));
+    }
+
     if (type === 'client') {
       const commercialType = data.clientType
         || (['Azienda', 'Privato'].includes(data.type) ? data.type : 'Privato');
+      data.type = commercialType;
+      data.clientType = commercialType;
+      data.entityType = 'client';
+      return data;
+    }
+
+    if (type === 'material') {
+      const unitPrice = numeric(data.unitPrice ?? data.price);
+      const stockQuantity = numeric(data.stockQuantity ?? data.quantity ?? data.stock);
+      const minStockLevel = numeric(data.minStockLevel ?? data.minQuantity ?? 10);
       return {
         ...data,
-        type: commercialType,
-        clientType: commercialType,
-        entityType: 'client',
+        type: 'material',
+        entityType: 'material',
+        unitPrice,
+        price: unitPrice,
+        stockQuantity,
+        quantity: stockQuantity,
+        stock: stockQuantity,
+        minStockLevel,
+        minQuantity: minStockLevel,
       };
     }
-    return { ...data, type, entityType: type };
+
+    if (['order', 'project', 'quote', 'invoice'].includes(type)) {
+      data.type = type;
+      data.entityType = type;
+      if (data.title != null || data.name != null) {
+        data.title = data.title ?? data.name ?? '';
+        data.name = data.name ?? data.title ?? '';
+      }
+      if (data.deadline != null || data.endDate != null || data.estimatedDelivery != null) {
+        data.deadline = data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '';
+        data.endDate = data.endDate ?? data.deadline;
+      }
+    }
+
+    if (['quote', 'invoice'].includes(type) && Array.isArray(data.items)) {
+      const subtotal = data.items.reduce(
+        (sum, item) => sum + numeric(item.quantity) * numeric(item.unitPrice),
+        0,
+      );
+      const taxTotal = type === 'invoice'
+        ? data.items.reduce((sum, item) => {
+          const line = numeric(item.quantity) * numeric(item.unitPrice);
+          return sum + line * (numeric(item.taxRate) / 100);
+        }, 0)
+        : 0;
+      data.subtotal = Number(subtotal.toFixed(2));
+      data.taxTotal = Number(taxTotal.toFixed(2));
+      data.total = Number((subtotal + taxTotal).toFixed(2));
+      data.amount = data.total;
+    } else if (data.amount != null || data.total != null) {
+      data.amount = numeric(data.amount ?? data.total);
+      if (data.total != null) data.total = numeric(data.total);
+    }
+
+    if (type === 'project' && data.budget != null) data.budget = numeric(data.budget);
+    return data;
   }
 
   decode(row) {
     if (!row) return null;
-    const stored = JSON.parse(row.data_json);
-    const data = this.normalizeData(row.entity_type, stored);
+    const data = this.normalizeData(row.entity_type, JSON.parse(row.data_json));
     return {
       ...data,
       id: String(row.id),
@@ -569,7 +653,7 @@ class CrmDatabase {
     const data = {};
     for (const type of ENTITY_TYPES) data[type] = this.list(type);
     return {
-      version: '3.1',
+      version: '3.2',
       exportedAt: now(),
       data,
       audit: this.listAudit({ limit: 500 }),
@@ -647,7 +731,7 @@ class CrmDatabase {
       const metadata = {
         name,
         label,
-        version: 2,
+        version: 3,
         createdAt: now(),
       };
       fs.writeFileSync(
@@ -674,7 +758,11 @@ class CrmDatabase {
         if (!fs.existsSync(metadataPath) || !fs.existsSync(databasePath)) return null;
         try {
           const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-          return { ...metadata, sizeBytes: this.directorySize(directory) };
+          return {
+            ...metadata,
+            name: entry.name,
+            sizeBytes: this.directorySize(directory),
+          };
         } catch {
           return null;
         }
@@ -696,8 +784,7 @@ class CrmDatabase {
   }
 
   pruneSnapshots(keep = 30) {
-    const snapshots = this.listSnapshots();
-    snapshots.slice(keep).forEach((snapshot) => {
+    this.listSnapshots().slice(keep).forEach((snapshot) => {
       fs.rmSync(path.join(this.backupDir, snapshot.name), {
         recursive: true,
         force: true,
@@ -730,9 +817,16 @@ class CrmDatabase {
 
     try {
       fs.copyFileSync(dbSource, stageDb);
-      if (fs.existsSync(usersSource)) fs.copyFileSync(usersSource, stageUsers);
+      if (fs.existsSync(usersSource)) {
+        fs.copyFileSync(usersSource, stageUsers);
+      } else if (fs.existsSync(this.usersPath)) {
+        fs.copyFileSync(this.usersPath, stageUsers);
+      }
+
       if (fs.existsSync(attachmentsSource)) {
         fs.cpSync(attachmentsSource, stageAttachments, { recursive: true });
+      } else if (fs.existsSync(this.attachmentsDir)) {
+        fs.cpSync(this.attachmentsDir, stageAttachments, { recursive: true });
       } else {
         fs.mkdirSync(stageAttachments, { recursive: true });
       }
