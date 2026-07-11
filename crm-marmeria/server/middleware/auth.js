@@ -5,7 +5,8 @@ const path = require('path');
 const crypto = require('crypto');
 
 let dataDirectory = path.join(__dirname, '../data');
-let jwtSecret = process.env.JWT_SECRET || null;
+const configuredJwtSecret = process.env.JWT_SECRET || null;
+let jwtSecret = configuredJwtSecret;
 let usersMutationQueue = Promise.resolve();
 const seedUsersPath = path.join(__dirname, '../data/users.json');
 const JWT_EXPIRES_IN = '24h';
@@ -46,6 +47,10 @@ const mutateUsers = (mutator) => {
   return task;
 };
 
+const drainUserMutations = async () => {
+  await usersMutationQueue;
+};
+
 const writeJsonAtomically = (filePath, value) => {
   const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(value, null, 2));
@@ -54,6 +59,7 @@ const writeJsonAtomically = (filePath, value) => {
 
 const configureAuth = ({ dataDir }) => {
   dataDirectory = dataDir || dataDirectory;
+  usersMutationQueue = Promise.resolve();
   fs.mkdirSync(dataDirectory, { recursive: true });
   const usersPath = usersFile();
   if (!fs.existsSync(usersPath)) {
@@ -64,6 +70,7 @@ const configureAuth = ({ dataDir }) => {
     }
   }
 
+  jwtSecret = configuredJwtSecret;
   if (!jwtSecret) {
     const secretPath = path.join(dataDirectory, '.jwt-secret');
     if (!fs.existsSync(secretPath)) {
@@ -71,6 +78,8 @@ const configureAuth = ({ dataDir }) => {
     }
     jwtSecret = fs.readFileSync(secretPath, 'utf8').trim();
   }
+
+  if (!jwtSecret) throw new Error('Segreto JWT non disponibile');
 
   const users = readUsers();
   let usersChanged = false;
@@ -178,5 +187,6 @@ module.exports = {
   readUsers,
   writeUsers,
   mutateUsers,
+  drainUserMutations,
   usersFile,
 };
