@@ -21,6 +21,28 @@ const removePath = (target) => {
   fs.rmSync(target, { recursive: true, force: true });
 };
 
+const syncFile = (filePath) => {
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+};
+
+const syncDirectory = (directoryPath) => {
+  try {
+    const descriptor = fs.openSync(directoryPath, 'r');
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  } catch {
+    // Windows non consente sempre fsync su una directory; i file sono già sincronizzati.
+  }
+};
+
 const atomicWriteJson = (filePath, value) => {
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   const descriptor = fs.openSync(temporary, 'w');
@@ -31,6 +53,7 @@ const atomicWriteJson = (filePath, value) => {
     fs.closeSync(descriptor);
   }
   fs.renameSync(temporary, filePath);
+  syncDirectory(path.dirname(filePath));
 };
 
 const validateDatabase = (databasePath) => {
@@ -129,10 +152,20 @@ const recoverInterruptedRestore = ({ dataDir, dbPath, usersPath, attachmentsDir 
   const previousDb = journal.previousDb || defaults.previousDb;
   const previousUsers = journal.previousUsers || defaults.previousUsers;
   const previousAttachments = journal.previousAttachments || defaults.previousAttachments;
-  const shouldRollback = journal.state !== 'committed'
+  let shouldRollback = journal.state !== 'committed'
     || !fs.existsSync(dbPath)
     || !fs.existsSync(usersPath)
     || !fs.existsSync(attachmentsDir);
+
+  if (!shouldRollback) {
+    try {
+      validateDatabase(dbPath);
+      validateUsers(usersPath);
+    } catch (error) {
+      console.error('Ripristino committato non valido, recupero la versione precedente:', error.message);
+      shouldRollback = true;
+    }
+  }
 
   if (shouldRollback) {
     if (fs.existsSync(previousDb)) {
@@ -154,6 +187,7 @@ const recoverInterruptedRestore = ({ dataDir, dbPath, usersPath, attachmentsDir 
   removePath(previousAttachments);
   removePath(journal.stageRoot);
   removePath(defaults.journalPath);
+  syncDirectory(dataDir);
   return true;
 };
 
@@ -161,6 +195,7 @@ module.exports = {
   atomicWriteJson,
   recoverInterruptedRestore,
   restorePaths,
+  syncFile,
   validateDatabase,
   validateUsers,
 };
