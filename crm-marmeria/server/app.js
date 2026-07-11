@@ -17,6 +17,7 @@ const {
   findUserByCredentials,
   readUsers,
   mutateUsers,
+  drainUserMutations,
   configureAuth,
   verifyToken,
 } = require('./middleware/auth');
@@ -42,6 +43,16 @@ const WORKER_FIELDS = {
   material: ['stockQuantity', 'quantity', 'stock', 'notes'],
 };
 
+const FINANCIAL_FIELDS = new Set([
+  'amount', 'budget', 'cost', 'fiscalCode', 'minPrice', 'paymentDetails',
+  'price', 'purchasePrice', 'salePrice', 'subtotal', 'taxTotal', 'total',
+  'totalPrice', 'unitPrice', 'vatNumber',
+]);
+
+const LOGIN_LIMIT = 5;
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const loginAttempts = new Map();
+
 const publicUser = (user) => ({
   id: String(user.id),
   username: user.username,
@@ -60,6 +71,59 @@ const publicActor = (user) => ({
 
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const hasAny = (object, keys) => keys.some((key) => hasOwn(object, key));
+const numeric = (value) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const compact = String(value ?? '').trim().replace(/[\s€£$']/g, '');
+  if (!compact) return 0;
+  const comma = compact.lastIndexOf(',');
+  const dot = compact.lastIndexOf('.');
+  let normalized = compact;
+  if (comma >= 0 && dot >= 0) {
+    normalized = comma > dot
+      ? compact.replace(/\./g, '').replace(',', '.')
+      : compact.replace(/,/g, '');
+  } else if (comma >= 0) {
+    normalized = compact.replace(',', '.');
+  }
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const dateKey = (value) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+};
+const betweenDates = (value, start, end) => {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= start.getTime() && timestamp <= end.getTime();
+};
+const addDays = (date, days) => {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+};
+const canViewFinancials = (user) => ['admin', 'manager'].includes(user?.role);
+
+const redactFinancials = (value) => {
+  if (Array.isArray(value)) return value.map(redactFinancials);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !FINANCIAL_FIELDS.has(key))
+      .map(([key, nested]) => [key, redactFinancials(nested)]),
+  );
+};
+
+const presentEntity = (user, type, item) => {
+  if (item == null || canViewFinancials(user)) return item;
+  if (!['project', 'order', 'material', 'quote', 'invoice', 'client'].includes(type)) return item;
+  return redactFinancials(item);
+};
+
+const presentAudit = (user, item) => ({
+  ...item,
+  previous: presentEntity(user, item.entityType, item.previous),
+  next: presentEntity(user, item.entityType, item.next),
+});
 
 const normalize = (type, raw = {}, { defaults = false } = {}) => {
   const data = { ...raw };
@@ -72,11 +136,11 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     data.items = data.items.map((item) => ({
       ...item,
       materialId: item.materialId == null || item.materialId === ''
-        ? item.materialId
+        ? null
         : String(item.materialId),
-      quantity: Number(item.quantity || 0),
-      unitPrice: Number(item.unitPrice || 0),
-      taxRate: Number(item.taxRate || 0),
+      quantity: numeric(item.quantity),
+      unitPrice: numeric(item.unitPrice),
+      taxRate: numeric(item.taxRate),
     }));
   }
 
@@ -93,24 +157,19 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
   if (type === 'material') {
     data.type = 'material';
     data.entityType = 'material';
-
     if (defaults || hasAny(data, ['unitPrice', 'price'])) {
-      const unitPrice = Number(data.unitPrice ?? data.price ?? 0) || 0;
+      const unitPrice = numeric(data.unitPrice ?? data.price);
       data.unitPrice = unitPrice;
       data.price = unitPrice;
     }
     if (defaults || hasAny(data, ['stockQuantity', 'quantity', 'stock'])) {
-      const stockQuantity = Number(
-        data.stockQuantity ?? data.quantity ?? data.stock ?? 0,
-      ) || 0;
+      const stockQuantity = numeric(data.stockQuantity ?? data.quantity ?? data.stock);
       data.stockQuantity = stockQuantity;
       data.quantity = stockQuantity;
       data.stock = stockQuantity;
     }
     if (defaults || hasAny(data, ['minStockLevel', 'minQuantity'])) {
-      const minStockLevel = Number(
-        data.minStockLevel ?? data.minQuantity ?? 10,
-      ) || 0;
+      const minStockLevel = numeric(data.minStockLevel ?? data.minQuantity ?? 10);
       data.minStockLevel = minStockLevel;
       data.minQuantity = minStockLevel;
     }
@@ -119,21 +178,16 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
   if (['order', 'project', 'quote', 'invoice'].includes(type)) {
     data.type = type;
     data.entityType = type;
-
     if (defaults || hasAny(data, ['title', 'name'])) {
-      const title = data.title ?? data.name ?? '';
-      const name = data.name ?? data.title ?? '';
-      data.title = title;
-      data.name = name;
+      data.title = data.title ?? data.name ?? '';
+      data.name = data.name ?? data.title ?? '';
     }
     if (defaults || hasAny(data, ['deadline', 'endDate', 'estimatedDelivery'])) {
-      const deadline = data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '';
-      data.deadline = deadline;
-      data.endDate = data.endDate ?? deadline;
+      data.deadline = data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '';
+      data.endDate = data.endDate ?? data.deadline;
     }
-    if (hasAny(data, ['amount', 'total'])) {
-      data.amount = Number(data.amount ?? data.total) || 0;
-    }
+    if (type === 'project' && hasOwn(data, 'budget')) data.budget = numeric(data.budget);
+    if (hasAny(data, ['amount', 'total'])) data.amount = numeric(data.amount ?? data.total);
   }
 
   return data;
@@ -151,9 +205,30 @@ const sanitizePatch = (user, type, input = {}) => {
   const entries = user.role === 'admin' || user.role === 'manager'
     ? Object.entries(patch)
     : Object.entries(patch).filter(([key]) => (WORKER_FIELDS[type] || []).includes(key));
-
   if (!entries.length) return null;
   return normalize(type, Object.fromEntries(entries));
+};
+
+const validateEntity = (type, payload) => {
+  const required = {
+    client: ['name'],
+    material: ['name'],
+    project: ['name'],
+    quote: ['date', 'customerId'],
+    invoice: ['date', 'customerId'],
+    order: ['title'],
+  }[type] || [];
+  const missing = required.filter((key) => payload[key] == null || String(payload[key]).trim() === '');
+  if (missing.length) {
+    const error = new Error(`Campi richiesti mancanti: ${missing.join(', ')}`);
+    error.status = 400;
+    throw error;
+  }
+  if (['quote', 'invoice'].includes(type) && (!Array.isArray(payload.items) || !payload.items.length)) {
+    const error = new Error('Inserire almeno una voce nel documento');
+    error.status = 400;
+    throw error;
+  }
 };
 
 const expectedVersionFrom = (req) => {
@@ -168,14 +243,11 @@ const operationIdFrom = (req, scope) => {
   return operationId ? `${scope}:${operationId}` : null;
 };
 
-const routeForType = (type) => Object.entries(ROUTES)
-  .find(([, config]) => config.type === type);
-
+const routeForType = (type) => Object.entries(ROUTES).find(([, config]) => config.type === type);
 const permissionForType = (type, action = 'view') => {
   const entry = routeForType(type);
   return entry ? `${entry[1].permission}.${action}` : null;
 };
-
 const hasEntityPermission = (user, type, action) => {
   const permission = permissionForType(type, action);
   return Boolean(permission && user?.permissions?.includes(permission));
@@ -190,10 +262,7 @@ const createRealtime = (server) => {
       const user = verifyToken(token);
       if (!user) return socket.close(4001, 'Token non valido');
       socket.authToken = token;
-      socket.send(JSON.stringify({
-        event: 'connected',
-        timestamp: new Date().toISOString(),
-      }));
+      socket.send(JSON.stringify({ event: 'connected', timestamp: new Date().toISOString() }));
       socket.on('message', (message) => {
         if (message.toString() === 'ping') socket.send('pong');
       });
@@ -204,11 +273,6 @@ const createRealtime = (server) => {
   });
 
   const broadcast = (payload, requiredPermission = null) => {
-    const message = JSON.stringify({
-      ...payload,
-      timestamp: new Date().toISOString(),
-    });
-
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
       const user = verifyToken(client.authToken);
@@ -217,7 +281,10 @@ const createRealtime = (server) => {
         continue;
       }
       if (requiredPermission && !user.permissions?.includes(requiredPermission)) continue;
-      client.send(message);
+      const projected = payload.item
+        ? { ...payload, item: presentEntity(user, payload.entityType, payload.item) }
+        : payload;
+      client.send(JSON.stringify({ ...projected, timestamp: new Date().toISOString() }));
     }
   };
 
@@ -249,6 +316,14 @@ async function createCrmServer(options = {}) {
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+  let maintenanceMode = false;
+  app.use('/api', (req, res, next) => {
+    if (maintenanceMode && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      return res.status(503).json({ error: 'Server in manutenzione: riprovare tra pochi secondi' });
+    }
+    return next();
+  });
+
   const server = http.createServer(app);
   const realtime = createRealtime(server);
   const upload = multer({
@@ -278,21 +353,38 @@ async function createCrmServer(options = {}) {
 
   const respondError = (res, error) => {
     console.error(error);
-    res.status(error.status || 500).json({
+    return res.status(error.status || 500).json({
       error: error.message || 'Errore interno del server',
       current: error.current || undefined,
     });
   };
 
+  const runMaintenance = async (snapshotLabel, action) => {
+    if (maintenanceMode) {
+      const error = new Error('È già in corso un’operazione di manutenzione');
+      error.status = 503;
+      throw error;
+    }
+    maintenanceMode = true;
+    try {
+      await drainUserMutations();
+      if (snapshotLabel) await db.createSnapshot(snapshotLabel);
+      return await action();
+    } finally {
+      maintenanceMode = false;
+    }
+  };
+
   app.get('/api/health', (req, res) => res.json({
-    status: 'ok',
-    version: '2.1.0',
+    status: maintenanceMode ? 'maintenance' : 'ok',
+    version: '2.2.0',
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,
     port: server.address()?.port || requestedPort,
     timestamp: new Date().toISOString(),
     websocket: true,
+    maintenance: maintenanceMode,
   }));
   app.head('/api/health', (req, res) => res.sendStatus(200));
 
@@ -303,10 +395,25 @@ async function createCrmServer(options = {}) {
       if (!username || !password) {
         return res.status(400).json({ error: 'Username e password richiesti' });
       }
+
+      const key = `${req.ip}|${username.toLowerCase()}`;
+      const previous = loginAttempts.get(key);
+      if (previous && Date.now() - previous.startedAt < LOGIN_WINDOW_MS && previous.count >= LOGIN_LIMIT) {
+        return res.status(429).json({ error: 'Troppi tentativi di accesso. Riprovare più tardi.' });
+      }
+      if (previous && Date.now() - previous.startedAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
+
       const user = findUserByCredentials(username);
       if (!user || !(await verifyPassword(password, user.password))) {
+        const current = loginAttempts.get(key);
+        loginAttempts.set(key, {
+          count: (current?.count || 0) + 1,
+          startedAt: current?.startedAt || Date.now(),
+        });
         return res.status(401).json({ error: 'Credenziali non valide' });
       }
+
+      loginAttempts.delete(key);
       return res.json({ token: generateToken(user), user: publicUser(user) });
     } catch (error) {
       return respondError(res, error);
@@ -329,6 +436,10 @@ async function createCrmServer(options = {}) {
           .filter((key) => req.body[key] !== undefined)
           .map((key) => [key, String(req.body[key]).trim()]),
       );
+      if ((updates.username !== undefined && !updates.username)
+        || (updates.email !== undefined && !updates.email)) {
+        return res.status(400).json({ error: 'Username ed email non possono essere vuoti' });
+      }
       const updatedUser = await mutateUsers(async (users) => {
         const index = users.findIndex((user) => String(user.id) === String(req.user.id));
         if (index < 0) {
@@ -345,16 +456,12 @@ async function createCrmServer(options = {}) {
           error.status = 400;
           throw error;
         }
-        users[index] = {
-          ...users[index],
-          ...updates,
-          updatedAt: new Date().toISOString(),
-        };
+        users[index] = { ...users[index], ...updates, updatedAt: new Date().toISOString() };
         return { value: users[index] };
       });
-      res.json({ user: publicUser(updatedUser) });
+      return res.json({ user: publicUser(updatedUser) });
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   });
 
@@ -365,16 +472,16 @@ async function createCrmServer(options = {}) {
   app.post('/api/users', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       const {
-        username,
-        email,
-        password,
-        firstName,
-        lastName,
-        role,
-        permissions,
+        username, email, password, firstName, lastName, role, permissions,
       } = req.body;
       if (!username || !email || !password || !firstName || !lastName || !role) {
         return res.status(400).json({ error: 'Tutti i campi sono richiesti' });
+      }
+      if (String(password).length < 8) {
+        return res.status(400).json({ error: 'La password deve contenere almeno 8 caratteri' });
+      }
+      if (!['admin', 'manager', 'worker'].includes(String(role))) {
+        return res.status(400).json({ error: 'Ruolo non valido' });
       }
       const passwordHash = await hashPassword(String(password));
       const createdUser = await mutateUsers(async (users) => {
@@ -391,7 +498,7 @@ async function createCrmServer(options = {}) {
           firstName: String(firstName).trim(),
           lastName: String(lastName).trim(),
           role: String(role),
-          permissions: Array.isArray(permissions) ? permissions.map(String) : [],
+          permissions: Array.isArray(permissions) ? [...new Set(permissions.map(String))] : [],
           isActive: true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -407,6 +514,12 @@ async function createCrmServer(options = {}) {
 
   app.put('/api/users/:id', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
+      if (req.body.password && String(req.body.password).length < 8) {
+        return res.status(400).json({ error: 'La password deve contenere almeno 8 caratteri' });
+      }
+      if (req.body.role && !['admin', 'manager', 'worker'].includes(String(req.body.role))) {
+        return res.status(400).json({ error: 'Ruolo non valido' });
+      }
       const passwordHash = req.body.password
         ? await hashPassword(String(req.body.password))
         : null;
@@ -422,10 +535,11 @@ async function createCrmServer(options = {}) {
           throw error;
         }
         const updates = Object.fromEntries(
-          allowed
-            .filter((key) => req.body[key] !== undefined)
-            .map((key) => [key, req.body[key]]),
+          allowed.filter((key) => req.body[key] !== undefined).map((key) => [key, req.body[key]]),
         );
+        if (Array.isArray(updates.permissions)) {
+          updates.permissions = [...new Set(updates.permissions.map(String))];
+        }
         if (users.some((user, userIndex) => (
           userIndex !== index
           && ((updates.username && user.username === updates.username)
@@ -444,18 +558,18 @@ async function createCrmServer(options = {}) {
         };
         return { value: users[index] };
       });
-      res.json(publicUser(updatedUser));
+      return res.json(publicUser(updatedUser));
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   });
 
   app.get('/api/clients/search', authenticateToken, requirePermission('clients.view'), (req, res) => {
     const query = String(req.query.q || '').toLowerCase();
-    res.json(db.list('client').filter((item) => (
-      [item.name, item.email, item.phone]
-        .some((value) => String(value || '').toLowerCase().includes(query))
-    )));
+    res.json(db.list('client')
+      .filter((item) => [item.name, item.email, item.phone]
+        .some((value) => String(value || '').toLowerCase().includes(query)))
+      .map((item) => presentEntity(req.user, 'client', item)));
   });
 
   app.get('/api/clients/stats', authenticateToken, requirePermission('clients.view'), (req, res) => {
@@ -476,10 +590,10 @@ async function createCrmServer(options = {}) {
 
   app.get('/api/materials/search', authenticateToken, requirePermission('materials.view'), (req, res) => {
     const query = String(req.query.q || '').toLowerCase();
-    res.json(db.list('material').filter((item) => (
-      [item.name, item.category, item.supplier]
-        .some((value) => String(value || '').toLowerCase().includes(query))
-    )));
+    res.json(db.list('material')
+      .filter((item) => [item.name, item.category, item.supplier]
+        .some((value) => String(value || '').toLowerCase().includes(query)))
+      .map((item) => presentEntity(req.user, 'material', item)));
   });
 
   app.get('/api/materials/stats', authenticateToken, requirePermission('materials.view'), (req, res) => {
@@ -497,10 +611,12 @@ async function createCrmServer(options = {}) {
       byCategory,
       lowStock: low.length,
       lowStockItems: low.length,
-      totalValue: items.reduce(
-        (sum, item) => sum + Number(item.stockQuantity || 0) * Number(item.unitPrice || 0),
-        0,
-      ),
+      totalValue: canViewFinancials(req.user)
+        ? items.reduce(
+          (sum, item) => sum + Number(item.stockQuantity || 0) * Number(item.unitPrice || 0),
+          0,
+        )
+        : null,
     });
   });
 
@@ -509,21 +625,44 @@ async function createCrmServer(options = {}) {
   });
 
   app.get('/api/materials/suppliers', authenticateToken, requirePermission('materials.view'), (req, res) => {
-    res.json([
-      ...new Set(db.list('material').map((item) => item.supplier || 'Non specificato')),
-    ]);
+    res.json([...new Set(db.list('material').map((item) => item.supplier || 'Non specificato'))]);
   });
 
   app.get('/api/orders/search', authenticateToken, requirePermission('orders.view'), (req, res) => {
     const query = String(req.query.q || '').toLowerCase();
-    res.json(db.list('order').filter((item) => (
-      [item.title, item.name, item.clientName]
-        .some((value) => String(value || '').toLowerCase().includes(query))
-    )));
+    res.json(db.list('order')
+      .filter((item) => [item.title, item.name, item.clientName, item.status]
+        .some((value) => String(value || '').toLowerCase().includes(query)))
+      .map((item) => presentEntity(req.user, 'order', item)));
   });
 
   app.get('/api/orders/by-status/:status', authenticateToken, requirePermission('orders.view'), (req, res) => {
-    res.json(db.list('order').filter((item) => item.status === req.params.status));
+    res.json(db.list('order')
+      .filter((item) => item.status === req.params.status)
+      .map((item) => presentEntity(req.user, 'order', item)));
+  });
+
+  app.get('/api/orders/:id/status', authenticateToken, requirePermission('orders.view'), (req, res) => {
+    const item = db.get('order', req.params.id);
+    if (!item) return res.status(404).json({ error: 'Ordine non trovato' });
+    const endDate = new Date(item.estimatedDelivery || item.endDate || item.deadline || '');
+    const delayed = Number.isFinite(endDate.getTime())
+      && endDate < new Date()
+      && item.status !== 'Completato';
+    const completion = item.progress != null
+      ? Math.max(0, Math.min(100, Number(item.progress) || 0))
+      : ({ Preventivo: 0, 'In Attesa': 10, 'In Lavorazione': 50, Completato: 100, Annullato: 0 }[item.status] || 0);
+    return res.json({
+      id: String(item.id),
+      status: item.status,
+      eta: item.estimatedDelivery || item.endDate || item.deadline || null,
+      clientName: item.clientName || item.client || '',
+      title: item.title || item.name || '',
+      priority: item.priority || 'Media',
+      completionPercentage: completion,
+      delaysCount: delayed ? 1 : 0,
+      lastUpdate: item.updatedAt,
+    });
   });
 
   const updateOrderStatus = (req, res) => {
@@ -544,7 +683,7 @@ async function createCrmServer(options = {}) {
         item: result.item,
         actor: publicActor(req.user),
       }, 'orders.view');
-      return res.json(result.item);
+      return res.json(presentEntity(req.user, 'order', result.item));
     } catch (error) {
       return respondError(res, error);
     }
@@ -557,13 +696,13 @@ async function createCrmServer(options = {}) {
     const base = `/api/${route}`;
 
     app.get(base, authenticateToken, requirePermission(`${config.permission}.view`), (req, res) => {
-      res.json(db.list(config.type));
+      res.json(db.list(config.type).map((item) => presentEntity(req.user, config.type, item)));
     });
 
     app.get(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.view`), (req, res) => {
       const item = db.get(config.type, req.params.id);
       if (!item) return res.status(404).json({ error: 'Elemento non trovato' });
-      return res.json(item);
+      return res.json(presentEntity(req.user, config.type, item));
     });
 
     app.post(base, authenticateToken, requirePermission(`${config.permission}.create`), (req, res) => {
@@ -574,6 +713,7 @@ async function createCrmServer(options = {}) {
         if (!payload) {
           return res.status(403).json({ error: 'Nessun campo modificabile per questo ruolo' });
         }
+        validateEntity(config.type, payload);
         const result = db.create(
           config.type,
           payload,
@@ -586,7 +726,9 @@ async function createCrmServer(options = {}) {
           item: result.item,
           actor: publicActor(req.user),
         }, `${config.permission}.view`);
-        return res.status(result.replayed ? 200 : 201).json(result.item);
+        return res
+          .status(result.replayed ? 200 : 201)
+          .json(presentEntity(req.user, config.type, result.item));
       } catch (error) {
         return respondError(res, error);
       }
@@ -595,9 +737,7 @@ async function createCrmServer(options = {}) {
     const update = (req, res) => {
       try {
         const patch = sanitizePatch(req.user, config.type, req.body);
-        if (!patch) {
-          return res.status(400).json({ error: 'Nessun campo valido da modificare' });
-        }
+        if (!patch) return res.status(400).json({ error: 'Nessun campo valido da modificare' });
         const result = db.update(
           config.type,
           req.params.id,
@@ -612,7 +752,7 @@ async function createCrmServer(options = {}) {
           item: result.item,
           actor: publicActor(req.user),
         }, `${config.permission}.view`);
-        return res.json(result.item);
+        return res.json(presentEntity(req.user, config.type, result.item));
       } catch (error) {
         return respondError(res, error);
       }
@@ -643,18 +783,25 @@ async function createCrmServer(options = {}) {
     });
   }
 
+  const allWork = () => [...db.list('project'), ...db.list('order')];
+  const invoiceRevenue = (start, end) => db.list('invoice')
+    .filter((item) => betweenDates(item.date || item.createdAt, start, end))
+    .reduce((sum, item) => sum + numeric(item.total ?? item.amount), 0);
+
   app.get('/api/analytics/dashboard', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
     const projects = db.list('project');
-    const invoices = db.list('invoice');
     const materials = db.list('material');
     const clients = db.list('client');
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const nowDate = new Date();
     res.json({
       totalProjects: projects.length,
       totalClients: clients.length,
-      totalRevenue: invoices.reduce(
-        (sum, item) => sum + Number(item.total || item.amount || 0),
-        0,
-      ),
+      totalMaterials: materials.length,
+      totalRevenue: canViewFinancials(req.user) ? invoiceRevenue(monthStart, nowDate) : null,
+      financialsVisible: canViewFinancials(req.user),
       pendingOrders: projects.filter((item) => item.status === 'In Attesa').length,
       inProgressOrders: projects.filter(
         (item) => ['In Corso', 'In Lavorazione'].includes(item.status),
@@ -671,28 +818,116 @@ async function createCrmServer(options = {}) {
 
   app.get('/api/analytics/daily/:date?', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
     const date = req.params.date || new Date().toISOString().slice(0, 10);
-    const items = [...db.list('project'), ...db.list('order')]
-      .filter((item) => String(item.createdAt || '').slice(0, 10) === date);
+    const work = allWork();
+    const materials = db.list('material');
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const dayEnd = new Date(`${date}T23:59:59.999Z`);
+    if (Number.isNaN(dayStart.getTime())) return res.status(400).json({ error: 'Data non valida' });
+    const completed = work.filter(
+      (item) => item.status === 'Completato' && betweenDates(item.updatedAt, dayStart, dayEnd),
+    );
+    const deliveriesDue = work.filter(
+      (item) => dateKey(item.deadline || item.endDate || item.estimatedDelivery) === date,
+    );
     res.json({
       date,
-      totalOrders: items.length,
-      totalRevenue: items.reduce(
-        (sum, item) => sum + Number(item.amount || item.total || 0),
-        0,
-      ),
-      newClients: db.list('client')
-        .filter((item) => String(item.createdAt || '').slice(0, 10) === date).length,
-      pendingOrders: items.filter(
-        (item) => ['pending', 'In Attesa'].includes(item.status),
+      ordersCompleted: completed.length,
+      deliveriesDue: deliveriesDue.length,
+      delays: work.filter((item) => {
+        const due = new Date(item.deadline || item.endDate || item.estimatedDelivery || '');
+        return Number.isFinite(due.getTime()) && due < dayEnd && item.status !== 'Completato';
+      }).length,
+      newOrders: work.filter((item) => betweenDates(item.createdAt, dayStart, dayEnd)).length,
+      revenue: canViewFinancials(req.user) ? invoiceRevenue(dayStart, dayEnd) : 0,
+      activeProjects: work.filter(
+        (item) => ['In Corso', 'In Lavorazione'].includes(item.status),
       ).length,
-      completedOrders: items.filter(
-        (item) => ['completed', 'Completato'].includes(item.status),
-      ).length,
+      urgentTasks: work.filter((item) => item.priority === 'Urgente').length,
+      clientsContacted: 0,
+      materials: {
+        lowStock: materials.filter(
+          (item) => Number(item.stockQuantity || 0) < Number(item.minStockLevel || 0),
+        ).length,
+        outOfStock: materials.filter((item) => Number(item.stockQuantity || 0) <= 0).length,
+      },
+    });
+  });
+
+  app.get('/api/analytics/weekly/:weekStart?', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
+    const start = new Date(`${req.params.weekStart || new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+    if (Number.isNaN(start.getTime())) return res.status(400).json({ error: 'Data non valida' });
+    const end = addDays(start, 6);
+    end.setUTCHours(23, 59, 59, 999);
+    const work = allWork().filter((item) => betweenDates(item.createdAt, start, end));
+    const completed = work.filter((item) => item.status === 'Completato');
+    const revenue = canViewFinancials(req.user) ? invoiceRevenue(start, end) : 0;
+    res.json({
+      weekStart: start.toISOString().slice(0, 10),
+      weekEnd: end.toISOString().slice(0, 10),
+      totalOrders: work.length,
+      completedOrders: completed.length,
+      totalRevenue: revenue,
+      averageOrderValue: work.length ? revenue / work.length : 0,
+      clientSatisfaction: 0,
+      deliveryPerformance: work.length ? (completed.length / work.length) * 100 : 0,
+      topMaterials: [],
+    });
+  });
+
+  app.get('/api/analytics/monthly/:year/:month', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
+    const year = Number(req.params.year);
+    const month = Number(req.params.month);
+    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+      return res.status(400).json({ error: 'Mese o anno non validi' });
+    }
+    const start = new Date(Date.UTC(year, month - 1, 1));
+    const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+    const work = allWork().filter((item) => betweenDates(item.createdAt, start, end));
+    const completed = work.filter((item) => item.status === 'Completato');
+    const revenue = canViewFinancials(req.user) ? invoiceRevenue(start, end) : 0;
+    res.json({
+      month: String(month).padStart(2, '0'),
+      year,
+      totalOrders: work.length,
+      totalRevenue: revenue,
+      newClients: db.list('client').filter((item) => betweenDates(item.createdAt, start, end)).length,
+      completionRate: work.length ? (completed.length / work.length) * 100 : 0,
+      averageDeliveryTime: 0,
+      topClients: [],
+      growthRate: 0,
+    });
+  });
+
+  app.get('/api/analytics/performance/:period', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
+    const allowed = { week: 7, month: 30, quarter: 90 };
+    const days = allowed[req.params.period];
+    if (!days) return res.status(400).json({ error: 'Periodo non valido' });
+    const end = new Date();
+    const start = addDays(end, -days);
+    const work = allWork().filter((item) => betweenDates(item.updatedAt, start, end));
+    const completed = work.filter((item) => item.status === 'Completato');
+    const onTime = completed.filter((item) => {
+      const completedAt = new Date(item.completedAt || item.updatedAt);
+      const due = new Date(item.deadline || item.endDate || item.estimatedDelivery || '');
+      return Number.isFinite(due.getTime()) && completedAt <= due;
+    });
+    res.json({
+      onTimeDelivery: completed.length ? (onTime.length / completed.length) * 100 : 0,
+      customerSatisfaction: 0,
+      orderAccuracy: 0,
+      responseTime: 0,
+      qualityScore: 0,
     });
   });
 
   app.get('/api/analytics/trends', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
     const metric = String(req.query.metric || 'orders');
+    if (!['orders', 'revenue', 'clients', 'satisfaction'].includes(metric)) {
+      return res.status(400).json({ error: 'Metrica non valida' });
+    }
+    if (metric === 'revenue' && !canViewFinancials(req.user)) {
+      return res.status(403).json({ error: 'Permessi insufficienti per i dati finanziari' });
+    }
     const start = new Date(String(
       req.query.startDate || new Date(Date.now() - 30 * 86400000).toISOString(),
     ));
@@ -700,20 +935,40 @@ async function createCrmServer(options = {}) {
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
       return res.status(400).json({ error: 'Intervallo date non valido' });
     }
-    const orders = [...db.list('order'), ...db.list('project')];
+    if ((end.getTime() - start.getTime()) / 86400000 > 366) {
+      return res.status(400).json({ error: 'Intervallo massimo: 366 giorni' });
+    }
+
+    const work = allWork();
     const clients = db.list('client');
     const invoices = db.list('invoice');
     const data = [];
-    for (const current = new Date(start); current <= end; current.setDate(current.getDate() + 1)) {
+    for (const current = new Date(start); current <= end; current.setUTCDate(current.getUTCDate() + 1)) {
       const date = current.toISOString().slice(0, 10);
-      const value = metric === 'clients'
-        ? clients.filter((item) => String(item.createdAt || '').slice(0, 10) === date).length
+      const orders = work.filter((item) => dateKey(item.createdAt) === date).length;
+      const clientCount = clients.filter((item) => dateKey(item.createdAt) === date).length;
+      const revenue = canViewFinancials(req.user)
+        ? invoices
+          .filter((item) => dateKey(item.date || item.createdAt) === date)
+          .reduce((sum, item) => sum + numeric(item.total ?? item.amount), 0)
+        : 0;
+      const row = {
+        period: date,
+        date,
+        label: date,
+        orders,
+        revenue,
+        clients: clientCount,
+        satisfaction: 0,
+      };
+      row.value = metric === 'clients'
+        ? clientCount
         : metric === 'revenue'
-          ? invoices
-            .filter((item) => String(item.createdAt || '').slice(0, 10) === date)
-            .reduce((sum, item) => sum + Number(item.total || item.amount || 0), 0)
-          : orders.filter((item) => String(item.createdAt || '').slice(0, 10) === date).length;
-      data.push({ date, value, label: date });
+          ? revenue
+          : metric === 'satisfaction'
+            ? 0
+            : orders;
+      data.push(row);
     }
     return res.json(data);
   });
@@ -723,7 +978,7 @@ async function createCrmServer(options = {}) {
       type: req.query.type,
       id: req.query.id,
       limit: req.query.limit,
-    }));
+    }).map((item) => presentAudit(req.user, item)));
   });
 
   app.get('/api/audit/:type/:id', authenticateToken, (req, res) => {
@@ -734,7 +989,7 @@ async function createCrmServer(options = {}) {
       type: req.params.type,
       id: req.params.id,
       limit: req.query.limit,
-    }));
+    }).map((item) => presentAudit(req.user, item)));
   });
 
   const ensureAttachmentEntity = (action) => (req, res, next) => {
@@ -765,9 +1020,7 @@ async function createCrmServer(options = {}) {
     upload.array('files', 10),
     (req, res) => {
       try {
-        if (!req.files?.length) {
-          return res.status(400).json({ error: 'Nessun file ricevuto' });
-        }
+        if (!req.files?.length) return res.status(400).json({ error: 'Nessun file ricevuto' });
         const records = req.files.map((file) => ({
           entityType: req.params.type,
           entityId: req.params.id,
@@ -828,12 +1081,11 @@ async function createCrmServer(options = {}) {
 
   app.post('/api/backup/import', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      await db.createSnapshot('pre-importazione');
-      db.restoreJson(req.body, req.user);
+      await runMaintenance('pre-importazione', () => db.restoreJson(req.body, req.user));
       realtime.broadcast({ event: 'database.restored' });
-      res.json({ message: 'Backup importato' });
+      return res.json({ message: 'Backup importato' });
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   });
 
@@ -856,25 +1108,23 @@ async function createCrmServer(options = {}) {
           },
         }
         : req.body;
-      await db.createSnapshot('pre-ripristino');
-      db.restoreJson(backup, req.user);
+      await runMaintenance('pre-ripristino', () => db.restoreJson(backup, req.user));
       realtime.broadcast({ event: 'database.restored' });
-      res.json({ message: 'Backup ripristinato' });
+      return res.json({ message: 'Backup ripristinato' });
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   });
 
   app.post('/api/backup/clear', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      await db.createSnapshot('pre-cancellazione');
-      db.restoreJson({
+      await runMaintenance('pre-cancellazione', () => db.restoreJson({
         data: Object.fromEntries(ENTITY_TYPES.map((type) => [type, []])),
-      }, req.user);
+      }, req.user));
       realtime.broadcast({ event: 'database.restored' });
-      res.json({ message: 'Dati cancellati' });
+      return res.json({ message: 'Dati cancellati' });
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   });
 
@@ -884,20 +1134,23 @@ async function createCrmServer(options = {}) {
 
   app.post('/api/backups', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      res.status(201).json(await db.createSnapshot(req.body?.label || 'manuale'));
+      await drainUserMutations();
+      return res.status(201).json(await db.createSnapshot(req.body?.label || 'manuale'));
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   });
 
   app.post('/api/backups/:name/restore', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      await db.createSnapshot('pre-ripristino');
-      const snapshot = db.restoreSnapshot(req.params.name, req.user);
+      const snapshot = await runMaintenance(
+        'pre-ripristino',
+        () => db.restoreSnapshot(req.params.name, req.user),
+      );
       realtime.broadcast({ event: 'database.restored', snapshot });
-      res.json(snapshot);
+      return res.json(snapshot);
     } catch (error) {
-      respondError(res, error);
+      return respondError(res, error);
     }
   });
 
@@ -914,10 +1167,16 @@ async function createCrmServer(options = {}) {
 
   app.use('*', (req, res) => res.status(404).json({ error: 'Endpoint non trovato' }));
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(requestedPort, host, resolve);
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(requestedPort, host, resolve);
+    });
+  } catch (error) {
+    for (const client of realtime.wss.clients) client.terminate();
+    db.close();
+    throw error;
+  }
   const actualPort = server.address().port;
 
   const ensureDailyBackup = async () => {
@@ -926,7 +1185,10 @@ async function createCrmServer(options = {}) {
       const alreadyCreated = db.listSnapshots().some(
         (item) => item.createdAt.startsWith(today) && item.label === 'automatico',
       );
-      if (!alreadyCreated) await db.createSnapshot('automatico');
+      if (!alreadyCreated) {
+        await drainUserMutations();
+        await db.createSnapshot('automatico');
+      }
     } catch (error) {
       console.error('Backup automatico fallito:', error);
     }
