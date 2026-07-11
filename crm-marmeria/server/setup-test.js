@@ -2,13 +2,14 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const bcrypt = require('bcrypt');
 const { createCrmServer } = require('./app');
 
 const compromisedAdmin = {
   id: 'admin_001',
   username: 'admin',
   email: 'admin@marmeria.com',
-  password: '$2b$10$xgjipj3RtM9D8nyR2J8RnOPAtJ.aAyxrVpPmAXDbFnJmbfrdQVTsG',
+  password: bcrypt.hashSync('admin123', 10),
   role: 'admin',
   firstName: 'Amministratore',
   lastName: 'Sistema',
@@ -62,7 +63,7 @@ async function run() {
     assert.equal(
       initialHealth.body.setupRequired,
       true,
-      'Gli account predefiniti compromessi devono essere rimossi',
+      'Qualunque hash bcrypt delle password pubbliche deve essere rimosso',
     );
 
     const missingSecret = await requestJson(baseUrl, '/auth/login', {
