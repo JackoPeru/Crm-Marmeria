@@ -99,15 +99,19 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
     const previousUrl = apiClient.getBaseURL();
     apiClient.setBaseURL(url);
     const nextUrl = apiClient.getBaseURL();
+
     if (previousUrl !== nextUrl) {
       realtimeService.disconnect();
-      await Promise.allSettled([
-        cacheService.clear('customers'),
-        cacheService.clear('materials'),
-      ]);
+      await cacheService.clearAll();
+      window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
       window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
     }
-    setNetworkStatus((previous) => ({ ...previous, apiUrl: nextUrl }));
+
+    setNetworkStatus((previous) => ({
+      ...previous,
+      apiUrl: nextUrl,
+      serverReachable: false,
+    }));
     return checkConnection();
   }, [checkConnection]);
 
@@ -139,7 +143,10 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
         try {
           const result = await window.electronAPI.network.getPreferences();
           if (result.success && result.prefs?.apiUrl) {
-            apiClient.setBaseURL(result.prefs.apiUrl);
+            if (apiClient.getBaseURL() !== result.prefs.apiUrl) {
+              await setApiUrl(result.prefs.apiUrl);
+              return;
+            }
             setNetworkStatus((previous) => ({
               ...previous,
               apiUrl: result.prefs?.apiUrl || previous.apiUrl,
@@ -169,7 +176,10 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
         realtimeStatus: (event as CustomEvent<NetworkStatus['realtimeStatus']>).detail,
       }));
     };
-    const apiChanged = () => void checkConnection();
+    const apiChanged = (event: Event) => {
+      const apiUrl = String((event as CustomEvent<string>).detail || apiClient.getBaseURL());
+      setNetworkStatus((previous) => ({ ...previous, apiUrl }));
+    };
     const authChanged = () => {
       void refreshQueueCount();
       if (localStorage.getItem('crm_auth_token')) void checkConnection();
@@ -196,7 +206,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
       window.removeEventListener('crm-auth-changed', authChanged);
       window.removeEventListener('crm-offline-queue-changed', queueChanged);
     };
-  }, [checkConnection, refreshQueueCount]);
+  }, [checkConnection, refreshQueueCount, setApiUrl]);
 
   const value = useMemo(() => ({
     networkStatus,
