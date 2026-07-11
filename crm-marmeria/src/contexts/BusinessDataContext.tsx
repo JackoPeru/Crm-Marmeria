@@ -5,10 +5,12 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
+import { observeServerScope, stableServerKey } from '../utils/serverScope';
 import { useAuth } from './AuthContext';
 
 type CollectionName = 'projects' | 'quotes' | 'invoices';
@@ -80,11 +82,13 @@ const writeCache = (collection: CollectionName, scope: string, data: Entity[]) =
 
 export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { isAuthenticated, user } = useAuth();
-  const [apiUrl, setApiUrl] = useState(() => apiClient.getBaseURL());
+  const [scopeRevision, setScopeRevision] = useState(0);
   const scope = useMemo(
-    () => `${String(user?.id || 'anonymous')}|${apiUrl.toLowerCase()}`,
-    [user?.id, apiUrl],
+    () => `${String(user?.id || 'anonymous')}|${stableServerKey(true)}`,
+    [user?.id, scopeRevision],
   );
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
 
   const [projects, setProjects] = useState<Entity[]>(() => readCache('projects', scope));
   const [quotes, setQuotes] = useState<Entity[]>(() => readCache('quotes', scope));
@@ -102,30 +106,38 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     action: 'view' | 'create' | 'edit' | 'delete',
   ) => user?.permissions?.includes(`${collection}.${action}`) ?? false, [user?.permissions]);
 
-  const replaceCollection = useCallback((collection: CollectionName, items: Entity[]) => {
+  const replaceCollection = useCallback((
+    collection: CollectionName,
+    items: Entity[],
+    targetScope: string,
+  ) => {
+    if (scopeRef.current !== targetScope) return false;
     const normalized = items.map(normalizeEntity);
     setters[collection](normalized);
-    writeCache(collection, scope, normalized);
-  }, [scope, setters]);
+    writeCache(collection, targetScope, normalized);
+    return true;
+  }, [setters]);
 
   const loadCollection = useCallback(async (collection: CollectionName) => {
+    const targetScope = scope;
     if (!can(collection, 'view')) {
-      setters[collection]([]);
+      if (scopeRef.current === targetScope) setters[collection]([]);
       return;
     }
     try {
       const response = await apiClient.get(`/${collection}`);
-      replaceCollection(collection, response.data || []);
+      replaceCollection(collection, response.data || [], targetScope);
     } catch (error: any) {
       if (error.code !== 'ERR_NETWORK' && error.code !== 'ECONNABORTED' && error.response) {
         throw error;
       }
-      replaceCollection(collection, readCache(collection, scope));
+      replaceCollection(collection, readCache(collection, targetScope), targetScope);
     }
   }, [can, replaceCollection, scope, setters]);
 
   const refresh = useCallback(async () => {
     if (!isAuthenticated) return;
+    const targetScope = scope;
     setLoading(true);
     try {
       await Promise.all(
@@ -135,9 +147,11 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     } catch (error) {
       console.error('Caricamento dati aziendali fallito:', error);
     } finally {
-      setLoading(false);
+      if (scopeRef.current === targetScope) setLoading(false);
     }
-  }, [isAuthenticated, loadCollection]);
+  }, [isAuthenticated, loadCollection, scope]);
+
+  useEffect(() => observeServerScope(() => setScopeRevision((value) => value + 1)), []);
 
   useEffect(() => {
     setProjects(readCache('projects', scope));
@@ -162,32 +176,26 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
           const next = current.some((entry) => entry.id === item.id)
             ? current.map((entry) => (entry.id === item.id ? item : entry))
             : [item, ...current];
-          writeCache(collection, scope, next);
+          writeCache(collection, scopeRef.current, next);
           return next;
         });
       } else if (detail.id) {
         setters[collection]((current) => {
           const next = current.filter((entry) => entry.id !== String(detail.id));
-          writeCache(collection, scope, next);
+          writeCache(collection, scopeRef.current, next);
           return next;
         });
       }
     };
 
     const refreshRequested = () => void refresh();
-    const apiChanged = (event: Event) => {
-      setApiUrl(String((event as CustomEvent<string>).detail || apiClient.getBaseURL()));
-    };
-
     window.addEventListener('crm-realtime', realtime);
     window.addEventListener('crm-data-refresh-requested', refreshRequested);
-    window.addEventListener('crm-api-url-changed', apiChanged);
     return () => {
       window.removeEventListener('crm-realtime', realtime);
       window.removeEventListener('crm-data-refresh-requested', refreshRequested);
-      window.removeEventListener('crm-api-url-changed', apiChanged);
     };
-  }, [can, refresh, scope, setters]);
+  }, [can, refresh, setters]);
 
   const createEntity = useCallback(async (
     collection: CollectionName,
@@ -197,18 +205,20 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
       toast.error('Non hai il permesso per creare questo elemento');
       return false;
     }
+    const targetScope = scope;
     try {
       const response = await apiClient.post(`/${collection}`, data);
+      if (scopeRef.current !== targetScope) return false;
       const created = normalizeEntity(response.data);
       setters[collection]((current) => {
         const next = [created, ...current.filter((item) => item.id !== created.id)];
-        writeCache(collection, scope, next);
+        writeCache(collection, targetScope, next);
         return next;
       });
       if (response.status !== 202) toast.success('Elemento creato con successo');
       return true;
     } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Creazione non riuscita');
+      toast.error(error.response?.data?.error || error.message || 'Creazione non riuscita');
       return false;
     }
   }, [can, scope, setters]);
@@ -225,25 +235,31 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     const collections = { projects, quotes, invoices };
     const current = collections[collection].find((item) => item.id === String(id));
     const expectedVersion = data.version ?? current?.version;
+    if (!Number.isInteger(Number(expectedVersion))) {
+      toast.error('Versione non disponibile. Ricarica i dati prima di modificare.');
+      return false;
+    }
+    const targetScope = scope;
     try {
       const response = await apiClient.put(`/${collection}/${String(id)}`, {
         ...data,
         expectedVersion,
       });
+      if (scopeRef.current !== targetScope) return false;
       const updated = normalizeEntity({ ...current, ...response.data, id: String(id) });
       setters[collection]((items) => {
         const next = items.map((item) => (item.id === updated.id ? updated : item));
-        writeCache(collection, scope, next);
+        writeCache(collection, targetScope, next);
         return next;
       });
       if (response.status !== 202) toast.success('Elemento aggiornato con successo');
       return true;
     } catch (error: any) {
-      if (error.response?.status === 409) {
-        toast.error('Questo elemento è stato modificato da un’altra postazione. I dati sono stati aggiornati.');
+      if ([409, 428].includes(error.response?.status)) {
+        toast.error('I dati non sono più aggiornati. Sono stati ricaricati dal server.');
         await loadCollection(collection);
       } else {
-        toast.error(error.response?.data?.error || 'Aggiornamento non riuscito');
+        toast.error(error.response?.data?.error || error.message || 'Aggiornamento non riuscito');
       }
       return false;
     }
@@ -256,22 +272,26 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     }
     const collections = { projects, quotes, invoices };
     const current = collections[collection].find((item) => item.id === String(id));
+    if (!Number.isInteger(Number(current?.version))) {
+      toast.error('Versione non disponibile. Ricarica i dati prima di eliminare.');
+      return false;
+    }
+    const targetScope = scope;
     try {
       const response = await apiClient.delete(`/${collection}/${String(id)}`, {
-        headers: current?.version != null
-          ? { 'If-Match': String(current.version) }
-          : undefined,
+        headers: { 'If-Match': String(current?.version) },
       });
+      if (scopeRef.current !== targetScope) return false;
       setters[collection]((items) => {
         const next = items.filter((item) => item.id !== String(id));
-        writeCache(collection, scope, next);
+        writeCache(collection, targetScope, next);
         return next;
       });
       if (response.status !== 202) toast.success('Elemento eliminato con successo');
       return true;
     } catch (error: any) {
-      if (error.response?.status === 409) await loadCollection(collection);
-      toast.error(error.response?.data?.error || 'Eliminazione non riuscita');
+      if ([409, 428].includes(error.response?.status)) await loadCollection(collection);
+      toast.error(error.response?.data?.error || error.message || 'Eliminazione non riuscita');
       return false;
     }
   }, [can, invoices, loadCollection, projects, quotes, scope, setters]);
