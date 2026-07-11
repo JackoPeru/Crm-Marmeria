@@ -21,6 +21,7 @@ interface UserForm {
   firstName: string;
   lastName: string;
   role: ManagedUser['role'];
+  permissions: string[];
   isActive: boolean;
 }
 
@@ -31,16 +32,15 @@ const allCrudPermissions = CRUD_SECTIONS.flatMap((section) => [
   `${section}.edit`,
   `${section}.delete`,
 ]);
+const ALL_PERMISSIONS = [
+  'dashboard.view',
+  ...allCrudPermissions,
+  'settings.view', 'settings.edit',
+  'users.view', 'users.create', 'users.edit', 'users.delete',
+];
 
 const permissionPreset = (role: ManagedUser['role']) => {
-  if (role === 'admin') {
-    return [
-      'dashboard.view',
-      ...allCrudPermissions,
-      'settings.view', 'settings.edit',
-      'users.view', 'users.create', 'users.edit', 'users.delete',
-    ];
-  }
+  if (role === 'admin') return [...ALL_PERMISSIONS];
   if (role === 'manager') {
     return [
       'dashboard.view',
@@ -56,19 +56,42 @@ const permissionPreset = (role: ManagedUser['role']) => {
   ];
 };
 
-const emptyForm: UserForm = {
+const emptyForm = (): UserForm => ({
   username: '',
   email: '',
   password: '',
   firstName: '',
   lastName: '',
   role: 'worker',
+  permissions: permissionPreset('worker'),
   isActive: true,
+});
+
+const permissionLabel = (permission: string) => {
+  const [section, action] = permission.split('.');
+  const sections: Record<string, string> = {
+    dashboard: 'Dashboard',
+    clients: 'Clienti',
+    projects: 'Progetti',
+    materials: 'Materiali',
+    quotes: 'Preventivi',
+    invoices: 'Fatture',
+    orders: 'Ordini',
+    settings: 'Impostazioni',
+    users: 'Utenti',
+  };
+  const actions: Record<string, string> = {
+    view: 'visualizza',
+    create: 'crea',
+    edit: 'modifica',
+    delete: 'elimina',
+  };
+  return `${sections[section] || section}: ${actions[action] || action}`;
 };
 
 const UserManagement: React.FC = () => {
   const [users, setUsers] = useState<ManagedUser[]>([]);
-  const [form, setForm] = useState<UserForm>(emptyForm);
+  const [form, setForm] = useState<UserForm>(() => emptyForm());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -92,7 +115,7 @@ const UserManagement: React.FC = () => {
 
   const openCreate = () => {
     setEditingId(null);
-    setForm(emptyForm);
+    setForm(emptyForm());
     setShowForm(true);
   };
 
@@ -105,9 +128,27 @@ const UserManagement: React.FC = () => {
       firstName: user.firstName,
       lastName: user.lastName,
       role: user.role,
+      permissions: [...(user.permissions || [])],
       isActive: user.isActive,
     });
     setShowForm(true);
+  };
+
+  const changeRole = (role: ManagedUser['role']) => {
+    setForm((previous) => ({
+      ...previous,
+      role,
+      permissions: permissionPreset(role),
+    }));
+  };
+
+  const togglePermission = (permission: string) => {
+    setForm((previous) => ({
+      ...previous,
+      permissions: previous.permissions.includes(permission)
+        ? previous.permissions.filter((entry) => entry !== permission)
+        : [...previous.permissions, permission],
+    }));
   };
 
   const save = async (event: React.FormEvent) => {
@@ -134,7 +175,7 @@ const UserManagement: React.FC = () => {
         lastName: form.lastName.trim(),
         role: form.role,
         isActive: form.isActive,
-        permissions: permissionPreset(form.role),
+        permissions: [...new Set(form.permissions)],
         ...(form.password ? { password: form.password } : {}),
       };
       if (editingId) {
@@ -146,7 +187,7 @@ const UserManagement: React.FC = () => {
       }
       setShowForm(false);
       setEditingId(null);
-      setForm(emptyForm);
+      setForm(emptyForm());
       await loadUsers();
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Salvataggio utente non riuscito');
@@ -172,7 +213,7 @@ const UserManagement: React.FC = () => {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400 mb-5">
-        Gli operai possono aggiornare stato dei lavori, fase, note e stock. Prezzi, fatture e dati amministrativi restano esclusi.
+        I preset vengono applicati soltanto quando cambi ruolo. I permessi personalizzati esistenti non vengono più sovrascritti aprendo e salvando un account.
       </p>
 
       <div className="overflow-x-auto">
@@ -212,7 +253,7 @@ const UserManagement: React.FC = () => {
 
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-lg bg-white dark:bg-dark-card p-6 shadow-xl">
+          <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-lg bg-white dark:bg-dark-card p-6 shadow-xl">
             <div className="flex justify-between items-center mb-5">
               <h3 className="text-xl font-semibold flex items-center gap-2">
                 <Shield size={20} /> {editingId ? 'Modifica account' : 'Nuovo account'}
@@ -239,7 +280,7 @@ const UserManagement: React.FC = () => {
                 </label>
                 <label className="block">
                   <span className="block text-sm font-medium mb-1">Ruolo *</span>
-                  <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as ManagedUser['role'] })} className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700">
+                  <select value={form.role} onChange={(event) => changeRole(event.target.value as ManagedUser['role'])} className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700">
                     <option value="worker">Operaio</option>
                     <option value="manager">Responsabile</option>
                     <option value="admin">Amministratore</option>
@@ -250,6 +291,23 @@ const UserManagement: React.FC = () => {
                   <input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700" autoComplete="new-password" />
                 </label>
               </div>
+
+              <fieldset className="mt-5 border rounded-md p-4">
+                <legend className="px-2 text-sm font-semibold">Permessi</legend>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {ALL_PERMISSIONS.map((permission) => (
+                    <label key={permission} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={form.permissions.includes(permission)}
+                        onChange={() => togglePermission(permission)}
+                      />
+                      {permissionLabel(permission)}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
               {editingId && (
                 <label className="mt-4 flex items-center gap-2">
                   <input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} />
