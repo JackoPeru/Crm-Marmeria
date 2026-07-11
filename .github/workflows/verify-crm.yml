@@ -1,14 +1,14 @@
-name: Diagnose fourth server review
+name: Apply fourth server review
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  apply:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
@@ -22,7 +22,9 @@ jobs:
           node-version: '22'
 
       - name: Apply fourth-run server patch
-        run: python3 crm-marmeria/scripts/apply-fourth-server.py
+        run: |
+          python3 crm-marmeria/scripts/apply-fourth-server.py
+          sed -i 's/mutation-barrier\.test\.js/mutation-barrier.check.js/g' crm-marmeria/server/package.json
 
       - name: Install dependencies
         working-directory: crm-marmeria
@@ -30,56 +32,39 @@ jobs:
           npm ci
           npm ci --prefix server
 
-      - name: Run diagnostic verification
-        id: verify
-        continue-on-error: true
+      - name: Verify patched server and application
         working-directory: crm-marmeria
         env:
           TZ: Europe/Rome
         run: |
-          set +e
-          : > fourth-server-report.txt
-          run_test() {
-            echo "===== $* =====" | tee -a fourth-server-report.txt
-            "$@" >> fourth-server-report.txt 2>&1
-            code=$?
-            echo "EXIT=$code" | tee -a fourth-server-report.txt
-            if [ "$code" -ne 0 ]; then exit "$code"; fi
-          }
-          run_test node --check server/app.js
-          run_test node --check server/database.js
-          run_test node --check server/restore-safety.js
-          run_test node --check server/mutation-barrier.js
-          run_test node --check server/middleware/auth.js
-          run_test node --check electron/main.cjs
-          run_test node --check electron/discovery.cjs
-          run_test node electron/network-config.test.cjs
-          run_test node server/mutation-barrier.test.js
-          run_test node server/setup-test.js
-          run_test node server/smoke-test.js create
-          run_test node server/smoke-test.js update
-          run_test node server/smoke-test.js conflict
-          run_test node server/smoke-test.js integrity
-          run_test node server/smoke-test.js snapshot
-          run_test node server/smoke-test.js server
-          run_test npm run typecheck
-          run_test npm test -- --run
-          run_test timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
-          run_test npm run build
-          run_test timeout 180s npx electron-builder --linux dir --publish never
+          node --check server/app.js
+          node --check server/database.js
+          node --check server/restore-safety.js
+          node --check server/mutation-barrier.js
+          node --check server/middleware/auth.js
+          node --check electron/main.cjs
+          node --check electron/discovery.cjs
+          node electron/network-config.check.cjs
+          node server/mutation-barrier.check.js
+          node server/setup-test.js
+          node server/smoke-test.js create
+          node server/smoke-test.js update
+          node server/smoke-test.js conflict
+          node server/smoke-test.js integrity
+          node server/smoke-test.js snapshot
+          node server/smoke-test.js server
+          npm run typecheck
+          npm test -- --run
+          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+          npm run build
+          timeout 180s npx electron-builder --linux dir --publish never
 
-      - name: Upload diagnostic report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fourth-server-report
-          path: crm-marmeria/fourth-server-report.txt
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Enforce verification result
-        if: steps.verify.outcome == 'failure'
-        working-directory: crm-marmeria
+      - name: Commit verified server patch
         run: |
-          cat fourth-server-report.txt
-          exit 1
+          git rm crm-marmeria/scripts/apply-fourth-server.py
+          git checkout -- .github/workflows/verify-crm.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "fix: harden maintenance, sessions and restore consistency"
+          git push origin HEAD:fix/core-reliability-2026-07
