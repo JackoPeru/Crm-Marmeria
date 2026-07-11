@@ -68,6 +68,7 @@ class CentralCrmServer {
       'quotes.json': 'quotes.json',
       'invoices.json': 'invoices.json',
       'orders.json': 'orders.json',
+      'users.json': 'users.json',
     };
 
     for (const sourceDirectory of legacyDirectories) {
