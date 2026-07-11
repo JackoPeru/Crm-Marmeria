@@ -1,10 +1,13 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import toast from 'react-hot-toast';
 import { getCurrentQueueScope, offlineQueue } from './offlineQueue';
+import type { QueueScope } from './offlineQueue';
+import { bindRequestToScope, queueScopesEqual } from './requestScope';
 
 interface ReplayConfig extends AxiosRequestConfig {
   _replay?: boolean;
   _crmContext?: string;
+  _replayScope?: QueueScope;
 }
 
 const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
@@ -70,9 +73,15 @@ class ApiClient {
   }
 
   private setupInterceptors(): void {
-    this.axiosInstance.interceptors.request.use((config: any) => {
-      config.baseURL = this.getBaseURL();
-      config._crmContext = clientContextFingerprint();
+    this.axiosInstance.interceptors.request.use((config: ReplayConfig & any) => {
+      const binding = bindRequestToScope(
+        config._replayScope,
+        getCurrentQueueScope(),
+        this.getBaseURL(),
+        clientContextFingerprint(),
+      );
+      config.baseURL = binding.baseURL;
+      config._crmContext = binding.fingerprint;
       config.headers = config.headers || {};
       const token = localStorage.getItem('crm_auth_token');
       if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -261,6 +270,8 @@ class ApiClient {
     try {
       for (const request of await offlineQueue.list(scope)) {
         if (request.blocked) continue;
+        const currentScope = getCurrentQueueScope();
+        if (!queueScopesEqual(scope, currentScope)) break;
         try {
           const stableServerMatch = request.serverId === scope.serverId
             && request.dataEpoch === scope.dataEpoch;
@@ -272,9 +283,11 @@ class ApiClient {
             headers: request.headers,
             baseURL: scope.apiBaseUrl,
             _replay: true,
+            _replayScope: scope,
           } as ReplayConfig);
           await offlineQueue.remove(request.id);
         } catch (error: any) {
+          if (['QUEUE_SCOPE_CHANGED', 'STALE_CONTEXT_RESPONSE'].includes(error?.code)) break;
           const responseStatus = error.response?.status;
           if ([400, 403, 404, 409, 428].includes(responseStatus)) {
             const currentVersion = Number(error.response?.data?.current?.version);

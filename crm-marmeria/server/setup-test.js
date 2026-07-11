@@ -5,6 +5,19 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 const { createCrmServer } = require('./app');
 
+const safeWorker = {
+  id: 'worker_001',
+  username: 'operaio-sicuro',
+  email: 'operaio-sicuro@marmeria.com',
+  password: bcrypt.hashSync('Worker-password-123', 10),
+  role: 'worker',
+  firstName: 'Operaio',
+  lastName: 'Sicuro',
+  isActive: true,
+  permissions: ['dashboard.view'],
+  sessionVersion: 1,
+};
+
 const compromisedAdmin = {
   id: 'admin_001',
   username: 'admin',
@@ -42,7 +55,7 @@ async function run() {
   fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(
     path.join(dataDir, 'users.json'),
-    JSON.stringify([compromisedAdmin], null, 2),
+    JSON.stringify([compromisedAdmin, safeWorker], null, 2),
   );
 
   let instance;
@@ -124,8 +137,9 @@ async function run() {
 
     const users = await requestJson(baseUrl, '/users', { headers: authHeaders });
     assert.equal(users.response.status, 200);
-    assert.equal(users.body.length, 1);
-    assert.equal(users.body[0].username, 'proprietario');
+    assert.equal(users.body.length, 2, 'Il recupero admin non deve cancellare gli account operativi sicuri');
+    assert.ok(users.body.some((entry) => entry.username === 'proprietario'));
+    assert.ok(users.body.some((entry) => entry.username === 'operaio-sicuro'));
 
     const publicUserPassword = await requestJson(baseUrl, '/users', {
       method: 'POST',
@@ -192,8 +206,9 @@ async function run() {
 
     const stillAdmin = await requestJson(baseUrl, '/users', { headers: authHeaders });
     assert.equal(stillAdmin.response.status, 200);
-    assert.equal(stillAdmin.body[0].role, 'admin');
-    assert.equal(stillAdmin.body[0].isActive, true);
+    const survivingAdmin = stillAdmin.body.find((entry) => entry.id === setup.body.user.id);
+    assert.equal(survivingAdmin.role, 'admin');
+    assert.equal(survivingAdmin.isActive, true);
 
     const reusedSetup = await requestJson(baseUrl, '/auth/login', {
       method: 'POST',

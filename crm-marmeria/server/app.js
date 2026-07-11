@@ -81,6 +81,7 @@ const publicUser = (user) => ({
 });
 
 const publicActor = (user) => ({ id: String(user.id), username: user.username });
+const hasActiveAdmin = () => readUsers().some((user) => user.role === 'admin' && user.isActive);
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const hasAny = (object, keys) => keys.some((key) => hasOwn(object, key));
 const isLoopback = (req) => [
@@ -347,6 +348,31 @@ const hasEntityPermission = (user, type, action) => {
   const permission = permissionForType(type, action);
   return Boolean(permission && user?.permissions?.includes(permission));
 };
+const canViewAuditEntry = (user, item) => item.entityType === 'database'
+  ? user?.role === 'admin' || user?.permissions?.includes('settings.edit')
+  : hasEntityPermission(user, item.entityType, 'view');
+
+const normalizeBackupPayload = (raw) => {
+  if (!raw?.data || typeof raw.data !== 'object' || Array.isArray(raw.data)) return raw;
+  const data = raw.data;
+  if (ENTITY_TYPES.some((type) => Object.prototype.hasOwnProperty.call(data, type))) return raw;
+
+  const legacyKeys = ['clients', 'orders', 'projects', 'materials', 'quotes', 'invoices'];
+  if (!legacyKeys.some((key) => Object.prototype.hasOwnProperty.call(data, key))) return raw;
+  const legacyOrders = Array.isArray(data.orders) ? data.orders : [];
+  const typedOrders = (type) => legacyOrders.filter((item) => item?.type === type);
+  return {
+    ...raw,
+    data: {
+      client: Array.isArray(data.clients) ? data.clients : [],
+      order: legacyOrders.filter((item) => !item?.type || item.type === 'order'),
+      project: Array.isArray(data.projects) ? data.projects : typedOrders('project'),
+      material: Array.isArray(data.materials) ? data.materials : [],
+      quote: Array.isArray(data.quotes) ? data.quotes : typedOrders('quote'),
+      invoice: Array.isArray(data.invoices) ? data.invoices : typedOrders('invoice'),
+    },
+  };
+};
 
 const createRealtime = (server) => {
   const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 8192 });
@@ -521,7 +547,7 @@ async function createCrmServer(options = {}) {
     websocket: true,
     maintenance: mutationBarrier.isMaintenance,
     dataEpoch: getAuthEpoch(),
-    setupRequired: readUsers().length === 0,
+    setupRequired: !hasActiveAdmin(),
   }));
   app.head('/api/health', (req, res) => res.sendStatus(200));
 
@@ -533,7 +559,7 @@ async function createCrmServer(options = {}) {
         return res.status(400).json({ error: 'Username e password richiesti' });
       }
 
-      if (readUsers().length === 0) {
+      if (!hasActiveAdmin()) {
         if (!isLoopback(req)) {
           return res.status(403).json({
             error: 'La configurazione iniziale deve essere completata sul PC principale',
@@ -555,9 +581,17 @@ async function createCrmServer(options = {}) {
         }
         const passwordHash = await hashPassword(password);
         const firstUser = await mutateUsers(async (users) => {
-          if (users.length) {
+          if (users.some((entry) => entry.role === 'admin' && entry.isActive)) {
             const error = new Error('Configurazione iniziale già completata');
             error.status = 409;
+            throw error;
+          }
+          if (users.some((entry) => (
+            canonicalIdentity(entry.username) === canonicalIdentity(username)
+            || canonicalIdentity(entry.email) === canonicalIdentity(email)
+          ))) {
+            const error = new Error('Username o email già utilizzati da un account esistente');
+            error.status = 400;
             throw error;
           }
           const user = {
@@ -872,9 +906,13 @@ async function createCrmServer(options = {}) {
         'order', req.params.id, patch, expectedVersionFrom(req, true), req.user,
         operationIdFrom(req, `order:status:${req.params.id}`),
       );
-      realtime.broadcast({
-        event: 'orders.updated', entityType: 'order', item: result.item, actor: publicActor(req.user),
-      }, 'orders.view');
+      if (!result.replayed) {
+        realtime.broadcast({
+          event: 'orders.updated', entityType: 'order', item: result.item, actor: publicActor(req.user),
+        }, 'orders.view');
+      } else {
+        res.set('X-Idempotent-Replay', 'true');
+      }
       return res.json(presentEntity(req.user, 'order', result.item));
     } catch (error) {
       return respondError(res, error);
@@ -903,9 +941,13 @@ async function createCrmServer(options = {}) {
         const result = db.create(
           config.type, payload, req.user, operationIdFrom(req, `${config.type}:create`),
         );
-        realtime.broadcast({
-          event: `${route}.created`, entityType: config.type, item: result.item, actor: publicActor(req.user),
-        }, `${config.permission}.view`);
+        if (!result.replayed) {
+          realtime.broadcast({
+            event: `${route}.created`, entityType: config.type, item: result.item, actor: publicActor(req.user),
+          }, `${config.permission}.view`);
+        } else {
+          res.set('X-Idempotent-Replay', 'true');
+        }
         return res.status(result.replayed ? 200 : 201)
           .json(presentEntity(req.user, config.type, result.item));
       } catch (error) {
@@ -923,9 +965,13 @@ async function createCrmServer(options = {}) {
           config.type, req.params.id, patch, expectedVersionFrom(req, true), req.user,
           operationIdFrom(req, `${config.type}:update:${req.params.id}`),
         );
-        realtime.broadcast({
-          event: `${route}.updated`, entityType: config.type, item: result.item, actor: publicActor(req.user),
-        }, `${config.permission}.view`);
+        if (!result.replayed) {
+          realtime.broadcast({
+            event: `${route}.updated`, entityType: config.type, item: result.item, actor: publicActor(req.user),
+          }, `${config.permission}.view`);
+        } else {
+          res.set('X-Idempotent-Replay', 'true');
+        }
         return res.json(presentEntity(req.user, config.type, result.item));
       } catch (error) {
         return respondError(res, error);
@@ -939,9 +985,13 @@ async function createCrmServer(options = {}) {
           config.type, req.params.id, expectedVersionFrom(req, true), req.user,
           operationIdFrom(req, `${config.type}:delete:${req.params.id}`),
         );
-        realtime.broadcast({
-          event: `${route}.deleted`, entityType: config.type, id: result.id, actor: publicActor(req.user),
-        }, `${config.permission}.view`);
+        if (!result.replayed) {
+          realtime.broadcast({
+            event: `${route}.deleted`, entityType: config.type, id: result.id, actor: publicActor(req.user),
+          }, `${config.permission}.view`);
+        } else {
+          res.set('X-Idempotent-Replay', 'true');
+        }
         return res.json(result);
       } catch (error) {
         return respondError(res, error);
@@ -1133,6 +1183,7 @@ async function createCrmServer(options = {}) {
 
   app.get('/api/audit', authenticateToken, requirePermission('settings.view'), (req, res) => {
     res.json(db.listAudit({ type: req.query.type, id: req.query.id, limit: req.query.limit })
+      .filter((item) => canViewAuditEntry(req.user, item))
       .map((item) => presentAudit(req.user, item)));
   });
   app.get('/api/audit/:type/:id', authenticateToken, (req, res) => {
@@ -1222,7 +1273,8 @@ async function createCrmServer(options = {}) {
   app.get('/api/backup/export', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.exportJson()));
   app.post('/api/backup/import', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      await runMaintenance('pre-importazione', () => db.restoreJson(req.body, req.user));
+      const backup = normalizeBackupPayload(req.body);
+      await runMaintenance('pre-importazione', () => db.restoreJson(backup, req.user));
       rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored' });
       return res.json({ message: 'Backup importato' });
@@ -1233,19 +1285,7 @@ async function createCrmServer(options = {}) {
   app.get('/api/backup', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.exportJson()));
   app.post('/api/backup/restore', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      const backup = req.body?.data && !req.body.data.client && req.body.data.clients
-        ? {
-          ...req.body,
-          data: {
-            client: req.body.data.clients,
-            order: req.body.data.orders?.filter((item) => item.type === 'order') || [],
-            project: req.body.data.orders?.filter((item) => item.type === 'project') || [],
-            quote: req.body.data.orders?.filter((item) => item.type === 'quote') || [],
-            invoice: req.body.data.orders?.filter((item) => item.type === 'invoice') || [],
-            material: req.body.data.materials || [],
-          },
-        }
-        : req.body;
+      const backup = normalizeBackupPayload(req.body);
       await runMaintenance('pre-ripristino', () => db.restoreJson(backup, req.user));
       rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored' });
@@ -1315,7 +1355,7 @@ async function createCrmServer(options = {}) {
 
   const ensureDailyBackup = async () => {
     try {
-      if (!readUsers().some((user) => user.role === 'admin' && user.isActive)) return;
+      if (!hasActiveAdmin()) return;
       const today = localToday();
       const alreadyCreated = db.listSnapshots().some(
         (item) => localDateKey(item.createdAt) === today && item.label === 'automatico',

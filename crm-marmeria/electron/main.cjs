@@ -12,12 +12,17 @@ const {
   selectSingleMaster,
   validatePrefs,
 } = require('./network-config.cjs');
+const {
+  assertTrustedSender: assertTrustedIpcSender,
+  createRendererTrustChecker,
+  createSerializedExecutor,
+  probeApi: probeCentralApi,
+} = require('./main-helpers.cjs');
 
 const isDev = process.env.NODE_ENV === 'development';
 let centralServer = null;
 let mainWindow = null;
 let quitAfterServerStop = false;
-let networkOperationQueue = Promise.resolve();
 
 const lock = app.requestSingleInstanceLock();
 if (!lock) app.quit();
@@ -30,6 +35,17 @@ app.on('second-instance', () => {
 
 const prefsPath = () => path.join(app.getPath('userData'), 'network-prefs.json');
 const productionEntryUrl = () => pathToFileURL(path.join(__dirname, '../dist/index.html')).toString();
+const isTrustedRendererUrl = createRendererTrustChecker({
+  isDev,
+  productionFile: productionEntryUrl(),
+});
+const serializeNetworkOperation = createSerializedExecutor();
+const probeApi = (apiUrl, expectedServerId = null) => probeCentralApi(
+  apiUrl,
+  expectedServerId,
+  { normalizeApiUrl },
+);
+const assertTrustedSender = (event) => assertTrustedIpcSender(event, isTrustedRendererUrl);
 
 const readPrefs = () => {
   try {

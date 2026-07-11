@@ -273,6 +273,41 @@ async function runServerTest() {
     assert.ok(projectEvent, 'L’operaio deve ricevere l’aggiornamento operativo realtime');
     assert.equal('budget' in projectEvent.item, false, 'Il realtime operaio deve rimuovere il budget');
 
+    const laterUpdate = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      method: 'PUT',
+      headers: {
+        ...authHeaders(adminToken),
+        'If-Match': String(adminUpdate.body.version),
+        'X-Operation-Id': 'admin-later-update-ci',
+      },
+      body: JSON.stringify({ status: 'In Lavorazione', phase: 'Finitura' }),
+    });
+    assert.equal(laterUpdate.response.status, 200);
+    await wait(100);
+    const eventsBeforeReplay = workerEvents.length;
+    const replayedUpdate = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      method: 'PUT',
+      headers: {
+        ...authHeaders(adminToken),
+        'If-Match': String(adminProject.body.version),
+        'X-Operation-Id': 'admin-financial-update-ci',
+      },
+      body: JSON.stringify({ budget: 2000, status: 'In Corso' }),
+    });
+    assert.equal(replayedUpdate.response.status, 200);
+    assert.equal(replayedUpdate.response.headers.get('x-idempotent-replay'), 'true');
+    await wait(150);
+    assert.equal(
+      workerEvents.length,
+      eventsBeforeReplay,
+      'Il replay idempotente non deve ritrasmettere un evento realtime obsoleto',
+    );
+    const currentAfterReplay = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(currentAfterReplay.body.version, laterUpdate.body.version);
+    assert.equal(currentAfterReplay.body.phase, 'Finitura');
+
     const workerAudit = await requestJson(
       baseUrl,
       `/audit/project/${createdProject.body.id}`,
@@ -383,6 +418,17 @@ async function runServerTest() {
     assert.equal(trends.body.length, 3);
     assert.ok('period' in trends.body[0] && 'orders' in trends.body[0]);
 
+    const partialBackup = await requestJson(baseUrl, '/backup/import', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({ data: { client: [] } }),
+    });
+    assert.equal(partialBackup.response.status, 400, 'Un backup parziale non deve cancellare le sezioni omesse');
+    const projectAfterRejectedImport = await requestJson(baseUrl, `/projects/${createdProject.body.id}`, {
+      headers: authHeaders(adminToken),
+    });
+    assert.equal(projectAfterRejectedImport.response.status, 200);
+
     const deniedRevenueTrend = await requestJson(
       baseUrl,
       '/analytics/trends?metric=revenue&startDate=2030-01-01&endDate=2030-01-03',
@@ -406,6 +452,36 @@ async function runServerTest() {
       })
     )));
     assert.ok(createUsers.every((result) => result.response.status === 201));
+    const auditViewerCreated = await requestJson(baseUrl, '/users', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({
+        username: 'audit-limitato',
+        email: 'audit-limitato@example.test',
+        password,
+        firstName: 'Audit',
+        lastName: 'Limitato',
+        role: 'worker',
+        permissions: ['settings.view'],
+      }),
+    });
+    assert.equal(auditViewerCreated.response.status, 201);
+    const auditViewerToken = await login('audit-limitato');
+    const auditedClient = await requestJson(baseUrl, '/clients', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({ name: 'Cliente riservato audit' }),
+    });
+    assert.equal(auditedClient.response.status, 201);
+    const limitedAudit = await requestJson(baseUrl, '/audit', {
+      headers: authHeaders(auditViewerToken),
+    });
+    assert.equal(limitedAudit.response.status, 200);
+    assert.equal(
+      limitedAudit.body.some((entry) => entry.entityType === 'client'),
+      false,
+      'settings.view non deve aggirare clients.view nello storico globale',
+    );
     const users = await requestJson(baseUrl, '/users', {
       headers: authHeaders(adminToken),
     });
@@ -483,6 +559,29 @@ async function run(mode) {
     }
 
     if (mode === 'integrity') {
+      const migrationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-migration-'));
+      const migrationData = path.join(migrationRoot, 'data');
+      const migrationBackups = path.join(migrationRoot, 'backups');
+      const migrationAttachments = path.join(migrationRoot, 'attachments');
+      fs.mkdirSync(migrationData, { recursive: true });
+      fs.writeFileSync(path.join(migrationData, 'clients.json'), '{json non valido');
+      const migrationDb = new CrmDatabase({
+        dataDir: migrationData,
+        backupDir: migrationBackups,
+        attachmentsDir: migrationAttachments,
+      });
+      assert.equal(migrationDb.migrateLegacy(migrationData), false);
+      assert.equal(
+        migrationDb.db.prepare("SELECT value FROM metadata WHERE key = 'legacy_json_migrated'").get(),
+        undefined,
+        'Una migrazione fallita deve essere ritentabile',
+      );
+      fs.writeFileSync(path.join(migrationData, 'clients.json'), JSON.stringify([{ id: 'legacy-client', name: 'Legacy' }]));
+      assert.equal(migrationDb.migrateLegacy(migrationData), true);
+      assert.ok(migrationDb.get('client', 'legacy-client'));
+      migrationDb.close();
+      fs.rmSync(migrationRoot, { recursive: true, force: true });
+
       const client = db.create(
         'client',
         { name: 'Cliente CI', type: 'Azienda' },

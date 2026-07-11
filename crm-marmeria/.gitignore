@@ -49,3 +49,6 @@ coverage
 # Temporary folders
 tmp
 temp
+# Generated dependency audit reports
+root-audit.json
+server-audit.json

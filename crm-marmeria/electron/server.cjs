@@ -5,6 +5,7 @@ const Module = require('module');
 const { app } = require('electron');
 const { DiscoveryAdvertiser, discoverMasters, localAddresses } = require('./discovery.cjs');
 const { upgradeLegacySnapshots } = require('../server/snapshot-compat');
+const { readOrCreateServerId } = require('./server-identity.cjs');
 
 // Il progetto contiene due installazioni distinte: una ricompilata per Electron
 // e una per il server Node standalone. Durante l'esecuzione Electron i moduli
@@ -47,9 +48,7 @@ class CentralCrmServer {
 
   getServerId() {
     if (this.serverId) return this.serverId;
-    const filePath = this.identityPath();
-    if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, crypto.randomUUID());
-    this.serverId = fs.readFileSync(filePath, 'utf8').trim();
+    this.serverId = readOrCreateServerId(this.identityPath());
     return this.serverId;
   }
 
@@ -96,9 +95,11 @@ class CentralCrmServer {
       : path.join(resolvedSelection, 'CRM-Marmeria-Backups');
   }
 
-  async findOtherMasters(ownId) {
-    const discovered = await discoverMasters(1200);
-    return discovered.filter((master) => master.serverId !== ownId);
+  async findOtherMasters() {
+    // L'advertiser locale non è ancora attivo durante start(). Qualunque risposta
+    // verificata appartiene quindi a un altro processo o PC, anche con lo stesso ID
+    // copiato accidentalmente insieme alla cartella userData.
+    return discoverMasters(1200);
   }
 
   async start(port = 3001, selectedBackupPath = null, options = {}) {
@@ -123,13 +124,13 @@ class CentralCrmServer {
     if (this.instance) await this.stop();
 
     const ownId = this.getServerId();
-    let otherMasters = await this.findOtherMasters(ownId);
+    let otherMasters = await this.findOtherMasters();
 
     // Un secondo controllo con jitter riduce la possibilità che due PC,
     // avviati nello stesso istante, si promuovano entrambi a master.
     if (!otherMasters.length && !options.force) {
       await wait(250 + Math.floor(Math.random() * 500));
-      otherMasters = await this.findOtherMasters(ownId);
+      otherMasters = await this.findOtherMasters();
     }
 
     if (otherMasters.length && !options.force) {

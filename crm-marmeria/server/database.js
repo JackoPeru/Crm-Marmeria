@@ -478,47 +478,45 @@ class CrmDatabase {
     const marker = this.db.prepare(
       "SELECT value FROM metadata WHERE key = 'legacy_json_migrated'",
     ).get();
-    if (marker) return;
+    if (marker) return true;
 
-    const mapping = [
+    const staged = [];
+    let failed = false;
+    const stageArray = (filename, mapper) => {
+      const filePath = path.join(dataDir, filename);
+      if (!fs.existsSync(filePath)) return;
+      try {
+        const items = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (!Array.isArray(items)) throw new Error('il contenuto non è un elenco');
+        items.forEach((item) => staged.push(mapper(item)));
+      } catch (error) {
+        failed = true;
+        console.error(`Migrazione ${filename} rinviata:`, error.message);
+      }
+    };
+
+    for (const [filename, type] of [
       ['clients.json', 'client'],
       ['materials.json', 'material'],
       ['projects.json', 'project'],
       ['quotes.json', 'quote'],
       ['invoices.json', 'invoice'],
-    ];
+    ]) {
+      stageArray(filename, (item) => ({ type, item }));
+    }
+    stageArray('orders.json', (item) => ({
+      type: ENTITY_TYPES.includes(item?.type) ? item.type : 'order',
+      item,
+    }));
 
+    if (failed) return false;
     this.db.transaction(() => {
-      for (const [filename, type] of mapping) {
-        const filePath = path.join(dataDir, filename);
-        if (!fs.existsSync(filePath)) continue;
-        try {
-          const items = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          if (Array.isArray(items)) items.forEach((item) => this.importEntity(type, item));
-        } catch (error) {
-          console.error(`Migrazione ${filename} fallita:`, error);
-        }
-      }
-
-      const ordersPath = path.join(dataDir, 'orders.json');
-      if (fs.existsSync(ordersPath)) {
-        try {
-          const items = JSON.parse(fs.readFileSync(ordersPath, 'utf8'));
-          if (Array.isArray(items)) {
-            items.forEach((item) => {
-              const type = ENTITY_TYPES.includes(item.type) ? item.type : 'order';
-              this.importEntity(type, item);
-            });
-          }
-        } catch (error) {
-          console.error('Migrazione orders.json fallita:', error);
-        }
-      }
-
+      staged.forEach(({ type, item }) => this.importEntity(type, item));
       this.db.prepare(
         "INSERT OR REPLACE INTO metadata(key, value) VALUES ('legacy_json_migrated', ?)",
       ).run(now());
     })();
+    return true;
   }
 
   listAudit({ type, id, limit = 100 }) {
@@ -691,10 +689,21 @@ class CrmDatabase {
     }
 
     for (const type of ENTITY_TYPES) {
-      if (backup.data[type] != null && !Array.isArray(backup.data[type])) {
-        const error = new Error(`La sezione ${type} del backup non è valida`);
+      if (!Object.prototype.hasOwnProperty.call(backup.data, type) || !Array.isArray(backup.data[type])) {
+        const error = new Error(`Il backup deve contenere la sezione completa ${type}`);
         error.status = 400;
         throw error;
+      }
+      const ids = new Set();
+      for (const item of backup.data[type]) {
+        if (item?.id == null || item.id === '') continue;
+        const id = String(item.id);
+        if (ids.has(id)) {
+          const error = new Error(`La sezione ${type} contiene ID duplicati`);
+          error.status = 400;
+          throw error;
+        }
+        ids.add(id);
       }
     }
 
@@ -703,8 +712,7 @@ class CrmDatabase {
       this.db.prepare('DELETE FROM operations').run();
       this.db.prepare('DELETE FROM entities').run();
       for (const type of ENTITY_TYPES) {
-        const items = Array.isArray(backup.data[type]) ? backup.data[type] : [];
-        items.forEach((item) => this.importEntity(type, item));
+        backup.data[type].forEach((item) => this.importEntity(type, item));
       }
       this.writeAudit({
         user,
