@@ -1,55 +1,38 @@
-name: Apply fifth independent review
+name: Verify CRM Marmeria
 
 on:
   pull_request:
     branches: [master]
+  push:
+    branches:
+      - fix/core-reliability-2026-07
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
+  linux-server-and-package:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
     steps:
-      - name: Checkout review branch
-        uses: actions/checkout@v4
-        with:
-          ref: fix/core-reliability-2026-07
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Apply fifth-run patch
-        run: python3 crm-marmeria/scripts/apply-fifth-review.py
+          cache: npm
+          cache-dependency-path: |
+            crm-marmeria/package-lock.json
+            crm-marmeria/server/package-lock.json
 
       - name: Install clean dependencies
-        working-directory: crm-marmeria
         run: |
           npm ci
           npm ci --prefix server
 
-      - name: Verify fifth-run regressions first
-        working-directory: crm-marmeria
-        run: |
-          node --check electron/main.cjs
-          node --check electron/main-helpers.cjs
-          node --check electron/server.cjs
-          node --check electron/server-identity.cjs
-          node electron/main-helpers.check.cjs
-          node electron/main-bootstrap.check.cjs
-          node electron/server-identity.check.cjs
-          node electron/server-master.check.cjs
-          npm test -- --run src/services/requestScope.test.ts src/services/offlineQueue.test.ts
-          node server/setup-test.js
-          node server/smoke-test.js integrity
-          node server/smoke-test.js server
-
-      - name: Verify complete application
-        working-directory: crm-marmeria
-        env:
-          TZ: Europe/Rome
+      - name: Check executable runtime and syntax
         run: |
           node --check server/index.js
           node --check server/app.js
@@ -60,30 +43,131 @@ jobs:
           node --check server/snapshot-compat.js
           node --check server/smoke-test.js
           node --check server/setup-test.js
+          node --check electron/main.cjs
+          node --check electron/main-helpers.cjs
+          node --check electron/server.cjs
+          node --check electron/server-identity.cjs
           node --check electron/discovery.cjs
           node --check electron/network-config.cjs
           node --check electron/preload.cjs
+          node --check electron/native-smoke.cjs
+          node electron/main-helpers.check.cjs
+          node electron/main-bootstrap.check.cjs
+          node electron/server-identity.check.cjs
+          node electron/server-master.check.cjs
           node electron/network-config.check.cjs
           node server/mutation-barrier.check.js
+
+      - name: Enforce zero production vulnerabilities
+        run: |
+          npm audit --omit=dev --audit-level=low
+          npm audit --prefix server --omit=dev --audit-level=low
+
+      - name: Typecheck and frontend tests
+        run: |
+          npm run typecheck
+          npm test -- --run
+
+      - name: Test setup, database and server invariants
+        env:
+          TZ: Europe/Rome
+        run: |
+          node server/setup-test.js
           node server/smoke-test.js create
           node server/smoke-test.js update
           node server/smoke-test.js conflict
+          node server/smoke-test.js integrity
           node server/smoke-test.js snapshot
-          npm run typecheck
-          npm test -- --run
-          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
-          npm audit --omit=dev --audit-level=low
-          npm audit --prefix server --omit=dev --audit-level=low
+          node server/smoke-test.js server
+
+      - name: Test Electron native modules
+        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+
+      - name: Build and package Linux app
+        run: |
           npm run build
           timeout 180s npx electron-builder --linux dir --publish never
 
-      - name: Inspect packaged runtime
-        working-directory: crm-marmeria
+      - name: Inspect Linux package contents
         run: |
           node - <<'NODE'
           const path = require('path');
           const asar = require('@electron/asar');
           const archive = path.join('dist-electron', 'linux-unpacked', 'resources', 'app.asar');
+          const entries = asar.listPackage(archive)
+            .map((entry) => entry.replace(/^[\\/]/, '').replace(/\\/g, '/'));
+          const required = [
+            'electron/main.cjs',
+            'electron/main-helpers.cjs',
+            'electron/server-identity.cjs',
+            'server/app.js',
+            'server/database.js',
+          ];
+          const forbidden = [
+            'electron/main-bootstrap.check.cjs',
+            'electron/main-helpers.check.cjs',
+            'electron/server-master.check.cjs',
+            'server/smoke-test.js',
+            'server/setup-test.js',
+            'server/data/users.json',
+          ];
+          for (const item of required) {
+            if (!entries.includes(item)) throw new Error(`File runtime mancante: ${item}`);
+          }
+          for (const item of forbidden) {
+            if (entries.includes(item)) throw new Error(`File di test incluso: ${item}`);
+          }
+          NODE
+
+  windows-native-and-package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: crm-marmeria/package-lock.json
+
+      - name: Install Electron dependencies for Windows
+        run: npm ci
+
+      - name: Verify Windows runtime bootstrap
+        run: |
+          node electron\main-helpers.check.cjs
+          node electron\main-bootstrap.check.cjs
+          node electron\server-identity.check.cjs
+          node electron\server-master.check.cjs
+          node electron\network-config.check.cjs
+
+      - name: Typecheck and frontend tests on Windows
+        run: |
+          npm run typecheck
+          npm test -- --run
+
+      - name: Test Windows Electron native modules
+        timeout-minutes: 2
+        run: .\node_modules\.bin\electron.cmd electron\native-smoke.cjs
+
+      - name: Build and package Windows app
+        run: |
+          npm run build
+          npx electron-builder --win dir --publish never
+
+      - name: Inspect Windows package contents
+        shell: pwsh
+        run: |
+          $executables = @(Get-ChildItem 'dist-electron\win-unpacked' -Filter '*.exe' -File)
+          if ($executables.Count -eq 0) { throw 'Eseguibile Windows non generato' }
+          Write-Host "Eseguibili generati: $($executables.Name -join ', ')"
+          $nodeScript = @'
+          const path = require('path');
+          const asar = require('@electron/asar');
+          const archive = path.join('dist-electron', 'win-unpacked', 'resources', 'app.asar');
           const entries = asar.listPackage(archive)
             .map((entry) => entry.replace(/^[\\/]/, '').replace(/\\/g, '/'));
           for (const item of [
@@ -105,14 +189,5 @@ jobs:
           ]) {
             if (entries.includes(item)) throw new Error(`File di test incluso: ${item}`);
           }
-          NODE
-
-      - name: Commit verified fifth-run patch
-        run: |
-          git rm crm-marmeria/scripts/apply-fifth-review.py
-          git rm -f crm-marmeria/root-audit.json crm-marmeria/server-audit.json || true
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "fix: close fifth-run runtime and data-safety gaps"
-          git push origin HEAD:fix/core-reliability-2026-07
+          '@
+          $nodeScript | node
