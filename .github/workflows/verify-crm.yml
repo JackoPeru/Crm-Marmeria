@@ -21,11 +21,42 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Refresh native dependency lockfiles
+      - name: Refresh lockfiles without native scripts
         working-directory: crm-marmeria
         run: |
-          npm install
-          npm install --prefix server
+          npm install --ignore-scripts
+          npm install --prefix server --ignore-scripts
+
+      - name: Build standalone native modules
+        id: standalone_native
+        continue-on-error: true
+        working-directory: crm-marmeria
+        run: npm rebuild --prefix server bcrypt better-sqlite3 > standalone-native-report.txt 2>&1
+
+      - name: Build Electron native modules
+        id: electron_native_build
+        continue-on-error: true
+        working-directory: crm-marmeria
+        run: npx electron-builder install-app-deps > electron-native-build-report.txt 2>&1
+
+      - name: Upload native build reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-build-reports
+          path: |
+            crm-marmeria/standalone-native-report.txt
+            crm-marmeria/electron-native-build-report.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce native builds
+        if: steps.standalone_native.outcome == 'failure' || steps.electron_native_build.outcome == 'failure'
+        working-directory: crm-marmeria
+        run: |
+          cat standalone-native-report.txt
+          cat electron-native-build-report.txt
+          exit 1
 
       - name: Verify Electron 43 native modules and core tests
         working-directory: crm-marmeria
