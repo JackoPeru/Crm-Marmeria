@@ -97,7 +97,10 @@ const ServerConnectionSettings: React.FC = () => {
       }
 
       setPrefs(applied);
-      const connected = await setApiUrl(applied.apiUrl || networkStatus.apiUrl);
+      const connected = await setApiUrl(
+        applied.apiUrl || networkStatus.apiUrl,
+        applied.discoveredServerId,
+      );
       if (connected) toast.success('Configurazione server salvata e verificata');
       else toast.error('Configurazione salvata, ma il server non risponde');
     } catch (error) {
