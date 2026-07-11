@@ -9,6 +9,7 @@ interface ReplayConfig extends AxiosRequestConfig {
 const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
 const ENTITY_CREATE = /^\/(clients|orders|projects|materials|quotes|invoices)\/?$/;
 const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|quotes|invoices)(\/[^/?]+(\/status)?)?\/?$/;
+const AUTH_ACTION = /^\/auth\/(login|logout)\/?$/;
 const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 
@@ -80,8 +81,9 @@ class ApiClient {
         const method = String(config.method || 'get').toLowerCase();
         const url = String(config.url || '');
         const status = error.response?.status;
+        const hadAuthenticatedSession = Boolean(localStorage.getItem('crm_auth_token'));
 
-        if (status === 401) {
+        if (status === 401 && hadAuthenticatedSession && !AUTH_ACTION.test(url)) {
           localStorage.removeItem('crm_auth_token');
           localStorage.removeItem('crm_user_data');
           window.dispatchEvent(new CustomEvent('crm-auth-expired'));
