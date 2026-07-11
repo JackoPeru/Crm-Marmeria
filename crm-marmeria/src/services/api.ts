@@ -10,6 +10,8 @@ const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
 const ENTITY_CREATE = /^\/(clients|orders|projects|materials|quotes|invoices)\/?$/;
 const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|quotes|invoices)(\/[^/?]+(\/status)?)?\/?$/;
 const AUTH_ACTION = /^\/auth\/(login|logout)\/?$/;
+const SERVER_ID_KEY = 'crm_server_id';
+const SERVER_URL_KEY = 'crm_server_identity_url';
 const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 
@@ -32,6 +34,10 @@ class ApiClient {
         || import.meta.env.VITE_API_BASE_URL
         || 'http://127.0.0.1:3001/api',
     );
+  }
+
+  getServerId(): string | null {
+    return localStorage.getItem(SERVER_ID_KEY);
   }
 
   setBaseURL(url: string): void {
@@ -166,7 +172,25 @@ class ApiClient {
 
   async checkHealth(): Promise<boolean> {
     try {
-      await this.axiosInstance.get('/health', { timeout: 5000 });
+      const currentUrl = this.getBaseURL();
+      const response = await this.axiosInstance.get('/health', { timeout: 5000 });
+      const serverId = String(response.data?.serverId || '').trim();
+      if (serverId) {
+        const previousId = localStorage.getItem(SERVER_ID_KEY);
+        const previousIdentityUrl = localStorage.getItem(SERVER_URL_KEY) || '';
+        if (!previousId || previousId === serverId) {
+          await offlineQueue.adoptServerIdentity(
+            serverId,
+            currentUrl,
+            [previousIdentityUrl, currentUrl],
+          );
+        }
+        localStorage.setItem(SERVER_ID_KEY, serverId);
+        localStorage.setItem(SERVER_URL_KEY, currentUrl);
+        window.dispatchEvent(new CustomEvent('crm-server-identity-changed', {
+          detail: { serverId, apiUrl: currentUrl, previousId },
+        }));
+      }
       await this.replayOfflineQueue();
       return true;
     } catch {
@@ -184,12 +208,17 @@ class ApiClient {
       for (const request of await offlineQueue.list(scope)) {
         if (request.blocked) continue;
         try {
+          const stableServerMatch = Boolean(
+            request.serverId
+            && scope.serverId
+            && request.serverId === scope.serverId,
+          );
           await this.axiosInstance.request({
             method: request.method,
             url: request.url,
             data: request.data,
             headers: request.headers,
-            baseURL: request.apiBaseUrl,
+            baseURL: stableServerMatch ? scope.apiBaseUrl : request.apiBaseUrl,
             _replay: true,
           } as ReplayConfig);
           await offlineQueue.remove(request.id);
