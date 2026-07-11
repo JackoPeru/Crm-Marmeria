@@ -1,64 +1,79 @@
-name: Apply fourth frontend review
+name: Verify CRM Marmeria
 
 on:
   pull_request:
     branches: [master]
+  push:
+    branches:
+      - fix/core-reliability-2026-07
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
+  linux-server-and-package:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
     steps:
-      - name: Checkout review branch
-        uses: actions/checkout@v4
-        with:
-          ref: fix/core-reliability-2026-07
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Apply fourth-run frontend patch
-        run: python3 crm-marmeria/scripts/apply-fourth-frontend.py
+          cache: npm
+          cache-dependency-path: |
+            crm-marmeria/package-lock.json
+            crm-marmeria/server/package-lock.json
 
       - name: Install clean dependencies
-        working-directory: crm-marmeria
         run: |
           npm ci
-          npm install --prefix server
+          npm ci --prefix server
+
+      - name: Check syntax and isolated Node checks
+        run: |
+          node --check server/index.js
+          node --check server/app.js
+          node --check server/database.js
+          node --check server/restore-safety.js
+          node --check server/mutation-barrier.js
+          node --check server/middleware/auth.js
+          node --check server/snapshot-compat.js
+          node --check server/smoke-test.js
+          node --check server/setup-test.js
+          node --check electron/main.cjs
+          node --check electron/server.cjs
+          node --check electron/discovery.cjs
+          node --check electron/network-config.cjs
+          node --check electron/preload.cjs
+          node --check electron/native-smoke.cjs
+          node electron/network-config.check.cjs
+          node server/mutation-barrier.check.js
 
       - name: Enforce zero production vulnerabilities
-        working-directory: crm-marmeria
         run: |
           npm audit --omit=dev --json > root-audit.json || true
           npm audit --prefix server --omit=dev --json > server-audit.json || true
           node - <<'NODE'
           for (const file of ['root-audit.json', 'server-audit.json']) {
             const audit = require(`./${file}`);
-            const total = audit.metadata?.vulnerabilities?.total || 0;
-            console.log(file, audit.metadata?.vulnerabilities || {});
-            if (total !== 0) process.exitCode = 1;
+            const counts = audit.metadata?.vulnerabilities || {};
+            console.log(file, counts);
+            if ((counts.total || 0) !== 0) process.exitCode = 1;
           }
           NODE
 
-      - name: Verify complete application
-        working-directory: crm-marmeria
+      - name: Typecheck and frontend tests
+        run: |
+          npm run typecheck
+          npm test -- --run
+
+      - name: Test secure setup and server integrity
         env:
           TZ: Europe/Rome
         run: |
-          node --check server/app.js
-          node --check server/database.js
-          node --check server/restore-safety.js
-          node --check server/mutation-barrier.js
-          node --check server/middleware/auth.js
-          node --check electron/main.cjs
-          node --check electron/discovery.cjs
-          node --check electron/network-config.cjs
-          node electron/network-config.check.cjs
-          node server/mutation-barrier.check.js
           node server/setup-test.js
           node server/smoke-test.js create
           node server/smoke-test.js update
@@ -66,14 +81,16 @@ jobs:
           node server/smoke-test.js integrity
           node server/smoke-test.js snapshot
           node server/smoke-test.js server
-          npm run typecheck
-          npm test -- --run
-          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+
+      - name: Test Electron native modules
+        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+
+      - name: Build and package Linux app
+        run: |
           npm run build
           timeout 180s npx electron-builder --linux dir --publish never
 
-      - name: Inspect packaged application
-        working-directory: crm-marmeria
+      - name: Inspect Linux package contents
         run: |
           node - <<'NODE'
           const path = require('path');
@@ -89,20 +106,61 @@ jobs:
             'server/data/users.json',
           ];
           for (const item of required) {
-            if (!entries.includes(item)) throw new Error(`File runtime mancante nel pacchetto: ${item}`);
+            if (!entries.includes(item)) throw new Error(`File runtime mancante: ${item}`);
           }
           for (const item of forbidden) {
-            if (entries.includes(item)) throw new Error(`File di test/sviluppo incluso nel pacchetto: ${item}`);
+            if (entries.includes(item)) throw new Error(`File di test incluso: ${item}`);
           }
-          console.log(`Contenuto app.asar verificato: ${entries.length} voci`);
+          console.log(`app.asar Linux verificato: ${entries.length} voci`);
           NODE
 
-      - name: Commit verified frontend patch
+  windows-native-and-package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: crm-marmeria/package-lock.json
+
+      - name: Install Electron dependencies for Windows
+        run: npm ci
+
+      - name: Typecheck and frontend tests on Windows
         run: |
-          git rm crm-marmeria/scripts/apply-fourth-frontend.py
-          git checkout -- .github/workflows/verify-crm.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "fix: isolate client state and harden frontend lifecycle"
-          git push origin HEAD:fix/core-reliability-2026-07
+          npm run typecheck
+          npm test -- --run
+
+      - name: Test Windows Electron native modules
+        timeout-minutes: 2
+        run: .\node_modules\.bin\electron.cmd electron\native-smoke.cjs
+
+      - name: Build and package Windows app
+        run: |
+          npm run build
+          npx electron-builder --win dir --publish never
+
+      - name: Inspect Windows package contents
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist-electron\win-unpacked\CRM Marmeria.exe')) {
+            throw 'Eseguibile Windows non generato'
+          }
+          @'
+          const path = require('path');
+          const asar = require('@electron/asar');
+          const archive = path.join('dist-electron', 'win-unpacked', 'resources', 'app.asar');
+          const entries = asar.listPackage(archive).map((entry) => entry.replace(/^\//, ''));
+          for (const item of ['electron/main.cjs', 'server/app.js', 'server/database.js']) {
+            if (!entries.includes(item)) throw new Error(`File runtime mancante: ${item}`);
+          }
+          for (const item of ['server/smoke-test.js', 'server/setup-test.js', 'electron/network-config.check.cjs']) {
+            if (entries.includes(item)) throw new Error(`File di test incluso: ${item}`);
+          }
+          console.log(`app.asar Windows verificato: ${entries.length} voci`);
+          '@ | node
