@@ -85,6 +85,23 @@ async function run() {
     });
     assert.equal(shortPassword.response.status, 400);
 
+    const publicSetupPassword = await requestJson(baseUrl, '/auth/login', {
+      method: 'POST',
+      headers: { 'X-CRM-Setup-Secret': 'segreto-setup-ci' },
+      body: JSON.stringify({
+        username: 'proprietario',
+        password: 'operaio123',
+        email: 'proprietario@example.test',
+        firstName: 'Mario',
+        lastName: 'Bianchi',
+      }),
+    });
+    assert.equal(
+      publicSetupPassword.response.status,
+      400,
+      'La configurazione iniziale non deve accettare una password legacy pubblica',
+    );
+
     const setup = await requestJson(baseUrl, '/auth/login', {
       method: 'POST',
       headers: { 'X-CRM-Setup-Secret': 'segreto-setup-ci' },
@@ -109,6 +126,25 @@ async function run() {
     assert.equal(users.response.status, 200);
     assert.equal(users.body.length, 1);
     assert.equal(users.body[0].username, 'proprietario');
+
+    const publicUserPassword = await requestJson(baseUrl, '/users', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        username: 'vecchio-operaio',
+        email: 'vecchio-operaio@example.test',
+        password: 'admin123',
+        firstName: 'Vecchio',
+        lastName: 'Operaio',
+        role: 'worker',
+        permissions: ['dashboard.view'],
+      }),
+    });
+    assert.equal(
+      publicUserPassword.response.status,
+      400,
+      'La gestione utenti non deve ricreare account con password pubbliche',
+    );
 
     const demoteLastAdmin = await requestJson(baseUrl, `/users/${setup.body.user.id}`, {
       method: 'PUT',
