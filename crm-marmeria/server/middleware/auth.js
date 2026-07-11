@@ -207,7 +207,15 @@ const generateToken = (user) => jwt.sign(
   jwtSecret,
   { expiresIn: JWT_EXPIRES_IN },
 );
-const hashPassword = (password) => bcrypt.hash(password, 10);
+const hashPassword = (password) => {
+  const normalized = String(password || '');
+  if (PUBLIC_DEFAULT_PASSWORDS.includes(normalized)) {
+    const error = new Error('Questa password predefinita è pubblica e non può essere utilizzata');
+    error.status = 400;
+    throw error;
+  }
+  return bcrypt.hash(normalized, 10);
+};
 const verifyPassword = (password, hashedPassword) => bcrypt.compare(password, hashedPassword);
 const findUserByCredentials = (identifier) => readUsers().find((user) => (
   (user.username === identifier || user.email === identifier) && user.isActive
