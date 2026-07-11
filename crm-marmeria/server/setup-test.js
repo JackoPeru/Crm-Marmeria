@@ -85,15 +85,41 @@ async function run() {
     assert.ok(setup.body.user.permissions.includes('users.create'));
     assert.ok(setup.body.token);
 
+    const authHeaders = { Authorization: `Bearer ${setup.body.token}` };
     const finalHealth = await requestJson(baseUrl, '/health');
     assert.equal(finalHealth.body.setupRequired, false);
 
-    const users = await requestJson(baseUrl, '/users', {
-      headers: { Authorization: `Bearer ${setup.body.token}` },
-    });
+    const users = await requestJson(baseUrl, '/users', { headers: authHeaders });
     assert.equal(users.response.status, 200);
     assert.equal(users.body.length, 1);
     assert.equal(users.body[0].username, 'proprietario');
+
+    const demoteLastAdmin = await requestJson(baseUrl, `/users/${setup.body.user.id}`, {
+      method: 'PUT',
+      headers: authHeaders,
+      body: JSON.stringify({ role: 'worker' }),
+    });
+    assert.equal(
+      demoteLastAdmin.response.status,
+      400,
+      'Non deve essere possibile rimuovere l’ultimo amministratore attivo',
+    );
+
+    const disableLastAdmin = await requestJson(baseUrl, `/users/${setup.body.user.id}`, {
+      method: 'PUT',
+      headers: authHeaders,
+      body: JSON.stringify({ isActive: false }),
+    });
+    assert.equal(
+      disableLastAdmin.response.status,
+      400,
+      'Non deve essere possibile disattivare l’ultimo amministratore attivo',
+    );
+
+    const stillAdmin = await requestJson(baseUrl, '/users', { headers: authHeaders });
+    assert.equal(stillAdmin.response.status, 200);
+    assert.equal(stillAdmin.body[0].role, 'admin');
+    assert.equal(stillAdmin.body[0].isActive, true);
 
     const reusedSetup = await requestJson(baseUrl, '/auth/login', {
       method: 'POST',
