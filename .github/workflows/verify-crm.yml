@@ -1,14 +1,14 @@
-name: Apply fifth offline review
+name: Diagnose fifth offline verification
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
+  diagnose:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,53 +19,41 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Apply offline consistency patch
-        run: python3 crm-marmeria/scripts/apply-fifth-offline-v2.py
-
-      - name: Install clean dependencies
-        working-directory: crm-marmeria
+      - name: Apply patch and install
         run: |
+          python3 crm-marmeria/scripts/apply-fifth-offline-v2.py
+          cd crm-marmeria
           npm ci
-          npm ci --prefix server
 
-      - name: Verify offline optimistic behavior
+      - name: Capture focused verification
+        id: verify
+        continue-on-error: true
         working-directory: crm-marmeria
         run: |
-          npm test -- --run src/services/optimisticMutation.test.ts src/services/requestScope.test.ts src/services/offlineQueue.test.ts
-          npm run typecheck
+          set +e
+          : > fifth-offline-verification.txt
+          run_check() {
+            echo "===== $* =====" | tee -a fifth-offline-verification.txt
+            "$@" >> fifth-offline-verification.txt 2>&1
+            code=$?
+            echo "EXIT=$code" | tee -a fifth-offline-verification.txt
+            return $code
+          }
+          run_check npm test -- --run src/services/optimisticMutation.test.ts src/services/requestScope.test.ts src/services/offlineQueue.test.ts || exit $?
+          run_check npm run typecheck || exit $?
 
-      - name: Verify complete runtime and server suite
+      - name: Upload focused verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fifth-offline-verification
+          path: crm-marmeria/fifth-offline-verification.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce verification result
+        if: steps.verify.outcome == 'failure'
         working-directory: crm-marmeria
-        env:
-          TZ: Europe/Rome
         run: |
-          node electron/main-helpers.check.cjs
-          node electron/main-bootstrap.check.cjs
-          node electron/server-identity.check.cjs
-          node electron/server-master.check.cjs
-          node electron/network-config.check.cjs
-          node server/runtime-files.check.js
-          node server/index-bootstrap.check.js
-          node server/mutation-barrier.check.js
-          node server/setup-test.js
-          node server/smoke-test.js create
-          node server/smoke-test.js update
-          node server/smoke-test.js conflict
-          node server/smoke-test.js integrity
-          node server/smoke-test.js snapshot
-          node server/smoke-test.js server
-          npm test -- --run
-          npm audit --omit=dev --audit-level=low
-          npm audit --prefix server --omit=dev --audit-level=low
-          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
-          npm run build
-          timeout 180s npx electron-builder --linux dir --publish never
-
-      - name: Commit verified offline patch
-        run: |
-          git rm crm-marmeria/scripts/apply-fifth-offline.py crm-marmeria/scripts/apply-fifth-offline-v2.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "fix: preserve complete entities during offline mutations"
-          git push origin HEAD:fix/core-reliability-2026-07
+          cat fifth-offline-verification.txt
+          exit 1
