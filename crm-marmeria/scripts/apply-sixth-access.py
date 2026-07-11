@@ -45,11 +45,7 @@ const hasEntityPermission = (user, type, action) => {
 """,
     '',
 )
-replace_once(
-    app,
-    "const permissions = normalizePermissions(req.body?.permissions || []);",
-    "const permissions = ensureRolePermissions(role, normalizePermissions(req.body?.permissions || []));",
-)
+replace_once(app, "const permissions = normalizePermissions(req.body?.permissions || []);", "const permissions = ensureRolePermissions(role, normalizePermissions(req.body?.permissions || []));")
 replace_once(
     app,
     "if (req.body.permissions !== undefined) updates.permissions = normalizePermissions(req.body.permissions);",
@@ -159,5 +155,48 @@ replace_once(
     """                        checked={form.permissions.includes(permission)}
                         disabled={form.role === 'admin' && permission === 'settings.view'}
                         onChange={() => togglePermission(permission)}
+""",
+)
+
+smoke = ROOT / 'server/smoke-test.js'
+replace_once(
+    smoke,
+    """    assert.ok(createUsers.every((result) => result.response.status === 201));
+    const auditViewerCreated = await requestJson(baseUrl, '/users', {
+""",
+    """    assert.ok(createUsers.every((result) => result.response.status === 201));
+    const dashboardOnlyToken = await login('utente-a');
+    const dashboardOnly = await requestJson(baseUrl, '/analytics/dashboard', {
+      headers: authHeaders(dashboardOnlyToken),
+    });
+    assert.equal(dashboardOnly.response.status, 200);
+    assert.equal(dashboardOnly.body.totalProjects, 0);
+    assert.equal(dashboardOnly.body.totalClients, 0);
+    assert.equal(dashboardOnly.body.totalMaterials, 0);
+    assert.equal(dashboardOnly.body.totalRevenue, null);
+    const deniedOrderTrend = await requestJson(
+      baseUrl,
+      '/analytics/trends?metric=orders&startDate=2030-01-01&endDate=2030-01-03',
+      { headers: authHeaders(dashboardOnlyToken) },
+    );
+    assert.equal(deniedOrderTrend.response.status, 403);
+
+    const constrainedAdmin = await requestJson(baseUrl, '/users', {
+      method: 'POST',
+      headers: authHeaders(adminToken),
+      body: JSON.stringify({
+        username: 'admin-minimo',
+        email: 'admin-minimo@example.test',
+        password,
+        firstName: 'Admin',
+        lastName: 'Minimo',
+        role: 'admin',
+        permissions: [],
+      }),
+    });
+    assert.equal(constrainedAdmin.response.status, 201);
+    assert.ok(constrainedAdmin.body.permissions.includes('settings.view'));
+
+    const auditViewerCreated = await requestJson(baseUrl, '/users', {
 """,
 )
