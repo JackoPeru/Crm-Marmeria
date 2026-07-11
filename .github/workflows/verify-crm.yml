@@ -23,7 +23,17 @@ jobs:
           node-version: '20'
 
       - name: Apply deterministic source patches
-        run: python3 crm-marmeria/scripts/apply-third-review.py
+        run: |
+          python3 crm-marmeria/scripts/apply-third-review.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crm-marmeria/src/types/electron.d.ts')
+          text = path.read_text().replace(
+              'setupFirstAdmin: (credentials: LoginCredentials)',
+              'setupFirstAdmin: (credentials: { username: string; password: string; email?: string; firstName?: string; lastName?: string })',
+          )
+          path.write_text(text)
+          PY
 
       - name: Upgrade supported runtime and upload middleware
         working-directory: crm-marmeria
@@ -53,7 +63,7 @@ jobs:
         run: |
           git rm crm-marmeria/scripts/apply-third-review.py
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "4189828+github-actions[bot]@users.noreply.github.com"
           git add .
           git commit -m "fix: harden restore, setup, LAN identity and supported runtime"
           git push origin HEAD:fix/core-reliability-2026-07
