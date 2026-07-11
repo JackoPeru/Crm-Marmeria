@@ -5,7 +5,7 @@ const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mill
 
 async function run() {
   const barrier = new MutationBarrier({ timeoutMs: 1000 });
-  const release = barrier.enterMutation();
+  const release = barrier.enterRequest();
   assert.equal(typeof release, 'function');
 
   let maintenanceStarted = false;
@@ -15,16 +15,16 @@ async function run() {
   });
 
   await wait(20);
-  assert.equal(maintenanceStarted, false, 'La manutenzione deve attendere le mutazioni già iniziate');
-  assert.equal(barrier.enterMutation(), null, 'Nuove mutazioni devono essere bloccate durante la manutenzione');
+  assert.equal(maintenanceStarted, false, 'La manutenzione deve attendere le richieste già iniziate');
+  assert.equal(barrier.enterRequest(), null, 'Nuove richieste devono essere bloccate durante la manutenzione');
 
   release();
   await maintenance;
   assert.equal(maintenanceStarted, true);
   assert.equal(barrier.isMaintenance, false);
 
-  const nextRelease = barrier.enterMutation();
-  assert.equal(typeof nextRelease, 'function', 'Le mutazioni devono riprendere dopo la manutenzione');
+  const nextRelease = barrier.enterRequest();
+  assert.equal(typeof nextRelease, 'function', 'Le richieste devono riprendere dopo la manutenzione');
   nextRelease();
 }
 
