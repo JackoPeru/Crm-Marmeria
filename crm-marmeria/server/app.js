@@ -31,6 +31,18 @@ const ROUTES = {
   invoices: { type: 'invoice', permission: 'invoices' },
 };
 
+const ADMIN_PERMISSIONS = [
+  'dashboard.view',
+  ...Object.values(ROUTES).flatMap(({ permission }) => [
+    `${permission}.view`,
+    `${permission}.create`,
+    `${permission}.edit`,
+    `${permission}.delete`,
+  ]),
+  'settings.view', 'settings.edit',
+  'users.view', 'users.create', 'users.edit', 'users.delete',
+];
+
 const WORKER_FIELDS = {
   project: [
     'status', 'phase', 'productionNotes', 'notes', 'measurements',
@@ -64,13 +76,13 @@ const publicUser = (user) => ({
   isActive: user.isActive,
 });
 
-const publicActor = (user) => ({
-  id: String(user.id),
-  username: user.username,
-});
-
+const publicActor = (user) => ({ id: String(user.id), username: user.username });
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const hasAny = (object, keys) => keys.some((key) => hasOwn(object, key));
+const isLoopback = (req) => [
+  '127.0.0.1', '::1', '::ffff:127.0.0.1',
+].includes(req.socket.remoteAddress);
+
 const numeric = (value) => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
   const compact = String(value ?? '').trim().replace(/[\s€£$']/g, '');
@@ -88,6 +100,7 @@ const numeric = (value) => {
   const parsed = Number.parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
 const dateKey = (value) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
@@ -112,13 +125,12 @@ const redactFinancials = (value) => {
       .map(([key, nested]) => [key, redactFinancials(nested)]),
   );
 };
-
 const presentEntity = (user, type, item) => {
   if (item == null || canViewFinancials(user)) return item;
-  if (!['project', 'order', 'material', 'quote', 'invoice', 'client'].includes(type)) return item;
-  return redactFinancials(item);
+  return ['project', 'order', 'material', 'quote', 'invoice', 'client'].includes(type)
+    ? redactFinancials(item)
+    : item;
 };
-
 const presentAudit = (user, item) => ({
   ...item,
   previous: presentEntity(user, item.entityType, item.previous),
@@ -127,23 +139,18 @@ const presentAudit = (user, item) => ({
 
 const normalize = (type, raw = {}, { defaults = false } = {}) => {
   const data = { ...raw };
-
   for (const key of ['id', 'clientId', 'customerId', 'projectId', 'quoteId', 'materialId']) {
     if (data[key] != null && data[key] !== '') data[key] = String(data[key]);
   }
-
   if (Array.isArray(data.items)) {
     data.items = data.items.map((item) => ({
       ...item,
-      materialId: item.materialId == null || item.materialId === ''
-        ? null
-        : String(item.materialId),
+      materialId: item.materialId == null || item.materialId === '' ? null : String(item.materialId),
       quantity: numeric(item.quantity),
       unitPrice: numeric(item.unitPrice),
       taxRate: numeric(item.taxRate),
     }));
   }
-
   if (type === 'client') {
     if (defaults || hasAny(data, ['type', 'clientType'])) {
       const clientType = data.clientType
@@ -153,7 +160,6 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     }
     data.entityType = 'client';
   }
-
   if (type === 'material') {
     data.type = 'material';
     data.entityType = 'material';
@@ -174,7 +180,6 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
       data.minQuantity = minStockLevel;
     }
   }
-
   if (['order', 'project', 'quote', 'invoice'].includes(type)) {
     data.type = type;
     data.entityType = type;
@@ -189,7 +194,6 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     if (type === 'project' && hasOwn(data, 'budget')) data.budget = numeric(data.budget);
     if (hasAny(data, ['amount', 'total'])) data.amount = numeric(data.amount ?? data.total);
   }
-
   return data;
 };
 
@@ -198,15 +202,11 @@ const sanitizePatch = (user, type, input = {}) => {
   for (const key of [
     'id', 'type', 'entityType', 'createdAt', 'updatedAt',
     'version', 'operationId', 'expectedVersion',
-  ]) {
-    delete patch[key];
-  }
-
-  const entries = user.role === 'admin' || user.role === 'manager'
+  ]) delete patch[key];
+  const entries = ['admin', 'manager'].includes(user.role)
     ? Object.entries(patch)
     : Object.entries(patch).filter(([key]) => (WORKER_FIELDS[type] || []).includes(key));
-  if (!entries.length) return null;
-  return normalize(type, Object.fromEntries(entries));
+  return entries.length ? normalize(type, Object.fromEntries(entries)) : null;
 };
 
 const validateEntity = (type, payload) => {
@@ -229,6 +229,20 @@ const validateEntity = (type, payload) => {
     error.status = 400;
     throw error;
   }
+  if (type === 'material') {
+    for (const key of ['unitPrice', 'stockQuantity', 'minStockLevel']) {
+      if (payload[key] != null && numeric(payload[key]) < 0) {
+        const error = new Error(`${key} non può essere negativo`);
+        error.status = 400;
+        throw error;
+      }
+    }
+  }
+  if (type === 'project' && payload.budget != null && numeric(payload.budget) < 0) {
+    const error = new Error('Il budget non può essere negativo');
+    error.status = 400;
+    throw error;
+  }
 };
 
 const expectedVersionFrom = (req) => {
@@ -237,12 +251,10 @@ const expectedVersionFrom = (req) => {
   const parsed = Number(String(raw).replace(/"/g, ''));
   return Number.isFinite(parsed) ? parsed : null;
 };
-
 const operationIdFrom = (req, scope) => {
   const operationId = req.get('X-Operation-Id') || req.body?.operationId || null;
   return operationId ? `${scope}:${operationId}` : null;
 };
-
 const routeForType = (type) => Object.entries(ROUTES).find(([, config]) => config.type === type);
 const permissionForType = (type, action = 'view') => {
   const entry = routeForType(type);
@@ -255,7 +267,6 @@ const hasEntityPermission = (user, type, action) => {
 
 const createRealtime = (server) => {
   const wss = new WebSocket.Server({ server, path: '/ws' });
-
   wss.on('connection', (socket, request) => {
     try {
       const token = new URL(request.url, 'http://localhost').searchParams.get('token');
@@ -271,7 +282,6 @@ const createRealtime = (server) => {
     }
     return undefined;
   });
-
   const broadcast = (payload, requiredPermission = null) => {
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
@@ -287,7 +297,6 @@ const createRealtime = (server) => {
       client.send(JSON.stringify({ ...projected, timestamp: new Date().toISOString() }));
     }
   };
-
   return { wss, broadcast };
 };
 
@@ -296,7 +305,6 @@ async function createCrmServer(options = {}) {
   if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) {
     throw new Error('Porta server non valida');
   }
-
   const host = options.host || '0.0.0.0';
   const dataDir = options.dataDir || path.join(__dirname, 'data');
   const backupDir = options.backupDir || path.join(dataDir, 'backups');
@@ -350,7 +358,6 @@ async function createCrmServer(options = {}) {
       if (file.path && fs.existsSync(file.path)) fs.rmSync(file.path, { force: true });
     }
   };
-
   const respondError = (res, error) => {
     console.error(error);
     return res.status(error.status || 500).json({
@@ -358,7 +365,6 @@ async function createCrmServer(options = {}) {
       current: error.current || undefined,
     });
   };
-
   const runMaintenance = async (snapshotLabel, action) => {
     if (maintenanceMode) {
       const error = new Error('È già in corso un’operazione di manutenzione');
@@ -377,7 +383,7 @@ async function createCrmServer(options = {}) {
 
   app.get('/api/health', (req, res) => res.json({
     status: maintenanceMode ? 'maintenance' : 'ok',
-    version: '2.2.0',
+    version: '2.3.0',
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,
@@ -385,6 +391,7 @@ async function createCrmServer(options = {}) {
     timestamp: new Date().toISOString(),
     websocket: true,
     maintenance: maintenanceMode,
+    setupRequired: readUsers().length === 0,
   }));
   app.head('/api/health', (req, res) => res.sendStatus(200));
 
@@ -396,12 +403,53 @@ async function createCrmServer(options = {}) {
         return res.status(400).json({ error: 'Username e password richiesti' });
       }
 
+      if (readUsers().length === 0) {
+        if (!isLoopback(req)) {
+          return res.status(403).json({
+            error: 'La configurazione iniziale deve essere completata sul PC principale',
+          });
+        }
+        if (password.length < 10) {
+          return res.status(400).json({ error: 'La password iniziale deve contenere almeno 10 caratteri' });
+        }
+        const passwordHash = await hashPassword(password);
+        const firstUser = await mutateUsers(async (users) => {
+          if (users.length) {
+            const error = new Error('Configurazione iniziale già completata');
+            error.status = 409;
+            throw error;
+          }
+          const user = {
+            id: crypto.randomUUID(),
+            username,
+            email: String(req.body?.email || `${username}@crm.local`).trim(),
+            password: passwordHash,
+            firstName: String(req.body?.firstName || 'Amministratore').trim(),
+            lastName: String(req.body?.lastName || 'Sistema').trim(),
+            role: 'admin',
+            permissions: ADMIN_PERMISSIONS,
+            isActive: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          users.push(user);
+          return { value: user };
+        });
+        return res.status(201).json({ token: generateToken(firstUser), user: publicUser(firstUser) });
+      }
+
       const key = `${req.ip}|${username.toLowerCase()}`;
       const previous = loginAttempts.get(key);
       if (previous && Date.now() - previous.startedAt < LOGIN_WINDOW_MS && previous.count >= LOGIN_LIMIT) {
         return res.status(429).json({ error: 'Troppi tentativi di accesso. Riprovare più tardi.' });
       }
       if (previous && Date.now() - previous.startedAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
+      if (loginAttempts.size > 1000) {
+        const cutoff = Date.now() - LOGIN_WINDOW_MS;
+        for (const [attemptKey, value] of loginAttempts) {
+          if (value.startedAt < cutoff) loginAttempts.delete(attemptKey);
+        }
+      }
 
       const user = findUserByCredentials(username);
       if (!user || !(await verifyPassword(password, user.password))) {
@@ -412,7 +460,6 @@ async function createCrmServer(options = {}) {
         });
         return res.status(401).json({ error: 'Credenziali non valide' });
       }
-
       loginAttempts.delete(key);
       return res.json({ token: generateToken(user), user: publicUser(user) });
     } catch (error) {
@@ -420,20 +467,14 @@ async function createCrmServer(options = {}) {
     }
   });
 
-  app.post('/api/auth/logout', authenticateToken, (req, res) => {
-    res.json({ message: 'Logout effettuato' });
-  });
-
-  app.get('/api/auth/me', authenticateToken, (req, res) => {
-    res.json({ user: publicUser(req.user) });
-  });
+  app.post('/api/auth/logout', authenticateToken, (req, res) => res.json({ message: 'Logout effettuato' }));
+  app.get('/api/auth/me', authenticateToken, (req, res) => res.json({ user: publicUser(req.user) }));
 
   app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     try {
       const allowed = ['username', 'email', 'firstName', 'lastName'];
       const updates = Object.fromEntries(
-        allowed
-          .filter((key) => req.body[key] !== undefined)
+        allowed.filter((key) => req.body[key] !== undefined)
           .map((key) => [key, String(req.body[key]).trim()]),
       );
       if ((updates.username !== undefined && !updates.username)
@@ -471,9 +512,7 @@ async function createCrmServer(options = {}) {
 
   app.post('/api/users', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
-      const {
-        username, email, password, firstName, lastName, role, permissions,
-      } = req.body;
+      const { username, email, password, firstName, lastName, role, permissions } = req.body;
       if (!username || !email || !password || !firstName || !lastName || !role) {
         return res.status(400).json({ error: 'Tutti i campi sono richiesti' });
       }
@@ -520,9 +559,7 @@ async function createCrmServer(options = {}) {
       if (req.body.role && !['admin', 'manager', 'worker'].includes(String(req.body.role))) {
         return res.status(400).json({ error: 'Ruolo non valido' });
       }
-      const passwordHash = req.body.password
-        ? await hashPassword(String(req.body.password))
-        : null;
+      const passwordHash = req.body.password ? await hashPassword(String(req.body.password)) : null;
       const allowed = [
         'username', 'email', 'firstName', 'lastName',
         'role', 'permissions', 'isActive',
@@ -571,12 +608,11 @@ async function createCrmServer(options = {}) {
         .some((value) => String(value || '').toLowerCase().includes(query)))
       .map((item) => presentEntity(req.user, 'client', item)));
   });
-
   app.get('/api/clients/stats', authenticateToken, requirePermission('clients.view'), (req, res) => {
     const items = db.list('client');
     const byType = items.reduce((result, item) => {
-      const clientType = item.clientType || item.type || 'Privato';
-      result[clientType] = (result[clientType] || 0) + 1;
+      const type = item.clientType || item.type || 'Privato';
+      result[type] = (result[type] || 0) + 1;
       return result;
     }, {});
     res.json({
@@ -595,7 +631,6 @@ async function createCrmServer(options = {}) {
         .some((value) => String(value || '').toLowerCase().includes(query)))
       .map((item) => presentEntity(req.user, 'material', item)));
   });
-
   app.get('/api/materials/stats', authenticateToken, requirePermission('materials.view'), (req, res) => {
     const items = db.list('material');
     const byCategory = items.reduce((result, item) => {
@@ -619,11 +654,9 @@ async function createCrmServer(options = {}) {
         : null,
     });
   });
-
   app.get('/api/materials/categories', authenticateToken, requirePermission('materials.view'), (req, res) => {
     res.json([...new Set(db.list('material').map((item) => item.category || 'Altro'))]);
   });
-
   app.get('/api/materials/suppliers', authenticateToken, requirePermission('materials.view'), (req, res) => {
     res.json([...new Set(db.list('material').map((item) => item.supplier || 'Non specificato'))]);
   });
@@ -635,20 +668,16 @@ async function createCrmServer(options = {}) {
         .some((value) => String(value || '').toLowerCase().includes(query)))
       .map((item) => presentEntity(req.user, 'order', item)));
   });
-
   app.get('/api/orders/by-status/:status', authenticateToken, requirePermission('orders.view'), (req, res) => {
     res.json(db.list('order')
       .filter((item) => item.status === req.params.status)
       .map((item) => presentEntity(req.user, 'order', item)));
   });
-
   app.get('/api/orders/:id/status', authenticateToken, requirePermission('orders.view'), (req, res) => {
     const item = db.get('order', req.params.id);
     if (!item) return res.status(404).json({ error: 'Ordine non trovato' });
     const endDate = new Date(item.estimatedDelivery || item.endDate || item.deadline || '');
-    const delayed = Number.isFinite(endDate.getTime())
-      && endDate < new Date()
-      && item.status !== 'Completato';
+    const delayed = Number.isFinite(endDate.getTime()) && endDate < new Date() && item.status !== 'Completato';
     const completion = item.progress != null
       ? Math.max(0, Math.min(100, Number(item.progress) || 0))
       : ({ Preventivo: 0, 'In Attesa': 10, 'In Lavorazione': 50, Completato: 100, Annullato: 0 }[item.status] || 0);
@@ -664,117 +693,83 @@ async function createCrmServer(options = {}) {
       lastUpdate: item.updatedAt,
     });
   });
-
   const updateOrderStatus = (req, res) => {
     try {
       const patch = sanitizePatch(req.user, 'order', { status: req.body.status });
       if (!patch) return res.status(400).json({ error: 'Stato richiesto' });
       const result = db.update(
-        'order',
-        req.params.id,
-        patch,
-        expectedVersionFrom(req),
-        req.user,
+        'order', req.params.id, patch, expectedVersionFrom(req), req.user,
         operationIdFrom(req, `order:status:${req.params.id}`),
       );
       realtime.broadcast({
-        event: 'orders.updated',
-        entityType: 'order',
-        item: result.item,
-        actor: publicActor(req.user),
+        event: 'orders.updated', entityType: 'order', item: result.item, actor: publicActor(req.user),
       }, 'orders.view');
       return res.json(presentEntity(req.user, 'order', result.item));
     } catch (error) {
       return respondError(res, error);
     }
   };
-
   app.patch('/api/orders/:id/status', authenticateToken, requirePermission('orders.edit'), updateOrderStatus);
   app.put('/api/orders/:id/status', authenticateToken, requirePermission('orders.edit'), updateOrderStatus);
 
   for (const [route, config] of Object.entries(ROUTES)) {
     const base = `/api/${route}`;
-
     app.get(base, authenticateToken, requirePermission(`${config.permission}.view`), (req, res) => {
       res.json(db.list(config.type).map((item) => presentEntity(req.user, config.type, item)));
     });
-
     app.get(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.view`), (req, res) => {
       const item = db.get(config.type, req.params.id);
       if (!item) return res.status(404).json({ error: 'Elemento non trovato' });
       return res.json(presentEntity(req.user, config.type, item));
     });
-
     app.post(base, authenticateToken, requirePermission(`${config.permission}.create`), (req, res) => {
       try {
         const payload = req.user.role === 'worker'
           ? sanitizePatch(req.user, config.type, req.body)
           : normalize(config.type, req.body, { defaults: true });
-        if (!payload) {
-          return res.status(403).json({ error: 'Nessun campo modificabile per questo ruolo' });
-        }
+        if (!payload) return res.status(403).json({ error: 'Nessun campo modificabile per questo ruolo' });
         validateEntity(config.type, payload);
         const result = db.create(
-          config.type,
-          payload,
-          req.user,
-          operationIdFrom(req, `${config.type}:create`),
+          config.type, payload, req.user, operationIdFrom(req, `${config.type}:create`),
         );
         realtime.broadcast({
-          event: `${route}.created`,
-          entityType: config.type,
-          item: result.item,
-          actor: publicActor(req.user),
+          event: `${route}.created`, entityType: config.type, item: result.item, actor: publicActor(req.user),
         }, `${config.permission}.view`);
-        return res
-          .status(result.replayed ? 200 : 201)
+        return res.status(result.replayed ? 200 : 201)
           .json(presentEntity(req.user, config.type, result.item));
       } catch (error) {
         return respondError(res, error);
       }
     });
-
     const update = (req, res) => {
       try {
         const patch = sanitizePatch(req.user, config.type, req.body);
         if (!patch) return res.status(400).json({ error: 'Nessun campo valido da modificare' });
+        const current = db.get(config.type, req.params.id);
+        if (!current) return res.status(404).json({ error: 'Elemento non trovato' });
+        validateEntity(config.type, { ...current, ...patch });
         const result = db.update(
-          config.type,
-          req.params.id,
-          patch,
-          expectedVersionFrom(req),
-          req.user,
+          config.type, req.params.id, patch, expectedVersionFrom(req), req.user,
           operationIdFrom(req, `${config.type}:update:${req.params.id}`),
         );
         realtime.broadcast({
-          event: `${route}.updated`,
-          entityType: config.type,
-          item: result.item,
-          actor: publicActor(req.user),
+          event: `${route}.updated`, entityType: config.type, item: result.item, actor: publicActor(req.user),
         }, `${config.permission}.view`);
         return res.json(presentEntity(req.user, config.type, result.item));
       } catch (error) {
         return respondError(res, error);
       }
     };
-
     app.put(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.edit`), update);
     app.patch(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.edit`), update);
-
     app.delete(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.delete`), (req, res) => {
       try {
         const result = db.delete(
-          config.type,
-          req.params.id,
-          expectedVersionFrom(req),
-          req.user,
+          config.type, req.params.id, expectedVersionFrom(req), req.user,
           operationIdFrom(req, `${config.type}:delete:${req.params.id}`),
         );
         realtime.broadcast({
-          event: `${route}.deleted`,
-          entityType: config.type,
-          id: result.id,
-          actor: publicActor(req.user),
+          event: `${route}.deleted`, entityType: config.type, id: result.id, actor: publicActor(req.user),
         }, `${config.permission}.view`);
         return res.json(result);
       } catch (error) {
@@ -795,17 +790,15 @@ async function createCrmServer(options = {}) {
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
-    const nowDate = new Date();
+    const current = new Date();
     res.json({
       totalProjects: projects.length,
       totalClients: clients.length,
       totalMaterials: materials.length,
-      totalRevenue: canViewFinancials(req.user) ? invoiceRevenue(monthStart, nowDate) : null,
+      totalRevenue: canViewFinancials(req.user) ? invoiceRevenue(monthStart, current) : null,
       financialsVisible: canViewFinancials(req.user),
       pendingOrders: projects.filter((item) => item.status === 'In Attesa').length,
-      inProgressOrders: projects.filter(
-        (item) => ['In Corso', 'In Lavorazione'].includes(item.status),
-      ).length,
+      inProgressOrders: projects.filter((item) => ['In Corso', 'In Lavorazione'].includes(item.status)).length,
       completedOrders: projects.filter((item) => item.status === 'Completato').length,
       lowStockMaterials: materials.filter(
         (item) => Number(item.stockQuantity || 0) < Number(item.minStockLevel || 0),
@@ -823,25 +816,21 @@ async function createCrmServer(options = {}) {
     const dayStart = new Date(`${date}T00:00:00.000Z`);
     const dayEnd = new Date(`${date}T23:59:59.999Z`);
     if (Number.isNaN(dayStart.getTime())) return res.status(400).json({ error: 'Data non valida' });
-    const completed = work.filter(
-      (item) => item.status === 'Completato' && betweenDates(item.updatedAt, dayStart, dayEnd),
-    );
-    const deliveriesDue = work.filter(
-      (item) => dateKey(item.deadline || item.endDate || item.estimatedDelivery) === date,
-    );
     res.json({
       date,
-      ordersCompleted: completed.length,
-      deliveriesDue: deliveriesDue.length,
+      ordersCompleted: work.filter(
+        (item) => item.status === 'Completato' && betweenDates(item.updatedAt, dayStart, dayEnd),
+      ).length,
+      deliveriesDue: work.filter(
+        (item) => dateKey(item.deadline || item.endDate || item.estimatedDelivery) === date,
+      ).length,
       delays: work.filter((item) => {
         const due = new Date(item.deadline || item.endDate || item.estimatedDelivery || '');
         return Number.isFinite(due.getTime()) && due < dayEnd && item.status !== 'Completato';
       }).length,
       newOrders: work.filter((item) => betweenDates(item.createdAt, dayStart, dayEnd)).length,
       revenue: canViewFinancials(req.user) ? invoiceRevenue(dayStart, dayEnd) : 0,
-      activeProjects: work.filter(
-        (item) => ['In Corso', 'In Lavorazione'].includes(item.status),
-      ).length,
+      activeProjects: work.filter((item) => ['In Corso', 'In Lavorazione'].includes(item.status)).length,
       urgentTasks: work.filter((item) => item.priority === 'Urgente').length,
       clientsContacted: 0,
       materials: {
@@ -899,8 +888,7 @@ async function createCrmServer(options = {}) {
   });
 
   app.get('/api/analytics/performance/:period', authenticateToken, requirePermission('dashboard.view'), (req, res) => {
-    const allowed = { week: 7, month: 30, quarter: 90 };
-    const days = allowed[req.params.period];
+    const days = { week: 7, month: 30, quarter: 90 }[req.params.period];
     if (!days) return res.status(400).json({ error: 'Periodo non valido' });
     const end = new Date();
     const start = addDays(end, -days);
@@ -938,7 +926,6 @@ async function createCrmServer(options = {}) {
     if ((end.getTime() - start.getTime()) / 86400000 > 366) {
       return res.status(400).json({ error: 'Intervallo massimo: 366 giorni' });
     }
-
     const work = allWork();
     const clients = db.list('client');
     const invoices = db.list('invoice');
@@ -948,8 +935,7 @@ async function createCrmServer(options = {}) {
       const orders = work.filter((item) => dateKey(item.createdAt) === date).length;
       const clientCount = clients.filter((item) => dateKey(item.createdAt) === date).length;
       const revenue = canViewFinancials(req.user)
-        ? invoices
-          .filter((item) => dateKey(item.date || item.createdAt) === date)
+        ? invoices.filter((item) => dateKey(item.date || item.createdAt) === date)
           .reduce((sum, item) => sum + numeric(item.total ?? item.amount), 0)
         : 0;
       const row = {
@@ -974,13 +960,9 @@ async function createCrmServer(options = {}) {
   });
 
   app.get('/api/audit', authenticateToken, requirePermission('settings.view'), (req, res) => {
-    res.json(db.listAudit({
-      type: req.query.type,
-      id: req.query.id,
-      limit: req.query.limit,
-    }).map((item) => presentAudit(req.user, item)));
+    res.json(db.listAudit({ type: req.query.type, id: req.query.id, limit: req.query.limit })
+      .map((item) => presentAudit(req.user, item)));
   });
-
   app.get('/api/audit/:type/:id', authenticateToken, (req, res) => {
     if (!hasEntityPermission(req.user, req.params.type, 'view')) {
       return res.status(403).json({ error: 'Permessi insufficienti' });
@@ -1005,45 +987,32 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   };
-
-  app.get(
-    '/api/entity-attachments/:type/:id',
-    authenticateToken,
-    ensureAttachmentEntity('view'),
-    (req, res) => res.json(db.listAttachments(req.params.type, req.params.id)),
-  );
-
-  app.post(
-    '/api/entity-attachments/:type/:id',
-    authenticateToken,
-    ensureAttachmentEntity('edit'),
-    upload.array('files', 10),
-    (req, res) => {
-      try {
-        if (!req.files?.length) return res.status(400).json({ error: 'Nessun file ricevuto' });
-        const records = req.files.map((file) => ({
-          entityType: req.params.type,
-          entityId: req.params.id,
-          originalName: file.originalname,
-          storedName: file.filename,
-          mimeType: file.mimetype,
-          sizeBytes: file.size,
-        }));
-        const items = db.addAttachments(records, req.user);
-        realtime.broadcast({
-          event: 'attachments.changed',
-          entityType: req.params.type,
-          id: String(req.params.id),
-          actor: publicActor(req.user),
-        }, permissionForType(req.params.type, 'view'));
-        return res.status(201).json(items);
-      } catch (error) {
-        removeUploadedFiles(req.files);
-        return respondError(res, error);
-      }
-    },
-  );
-
+  app.get('/api/entity-attachments/:type/:id', authenticateToken, ensureAttachmentEntity('view'), (req, res) => {
+    res.json(db.listAttachments(req.params.type, req.params.id));
+  });
+  app.post('/api/entity-attachments/:type/:id', authenticateToken, ensureAttachmentEntity('edit'), upload.array('files', 10), (req, res) => {
+    try {
+      if (!req.files?.length) return res.status(400).json({ error: 'Nessun file ricevuto' });
+      const items = db.addAttachments(req.files.map((file) => ({
+        entityType: req.params.type,
+        entityId: req.params.id,
+        originalName: file.originalname,
+        storedName: file.filename,
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+      })), req.user);
+      realtime.broadcast({
+        event: 'attachments.changed',
+        entityType: req.params.type,
+        id: String(req.params.id),
+        actor: publicActor(req.user),
+      }, permissionForType(req.params.type, 'view'));
+      return res.status(201).json(items);
+    } catch (error) {
+      removeUploadedFiles(req.files);
+      return respondError(res, error);
+    }
+  });
   app.get('/api/attachments/file/:id', authenticateToken, (req, res) => {
     const attachment = db.getAttachment(req.params.id);
     if (!attachment || !fs.existsSync(attachment.absolutePath)) {
@@ -1054,7 +1023,6 @@ async function createCrmServer(options = {}) {
     }
     return res.download(attachment.absolutePath, attachment.originalName);
   });
-
   app.delete('/api/attachments/file/:id', authenticateToken, (req, res) => {
     try {
       const attachment = db.getAttachment(req.params.id);
@@ -1075,10 +1043,7 @@ async function createCrmServer(options = {}) {
     }
   });
 
-  app.get('/api/backup/export', authenticateToken, requirePermission('settings.view'), (req, res) => {
-    res.json(db.exportJson());
-  });
-
+  app.get('/api/backup/export', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.exportJson()));
   app.post('/api/backup/import', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
       await runMaintenance('pre-importazione', () => db.restoreJson(req.body, req.user));
@@ -1088,11 +1053,7 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-
-  app.get('/api/backup', authenticateToken, requirePermission('settings.view'), (req, res) => {
-    res.json(db.exportJson());
-  });
-
+  app.get('/api/backup', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.exportJson()));
   app.post('/api/backup/restore', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
       const backup = req.body?.data && !req.body.data.client && req.body.data.clients
@@ -1115,7 +1076,6 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-
   app.post('/api/backup/clear', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
       await runMaintenance('pre-cancellazione', () => db.restoreJson({
@@ -1127,11 +1087,7 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-
-  app.get('/api/backups', authenticateToken, requirePermission('settings.view'), (req, res) => {
-    res.json(db.listSnapshots());
-  });
-
+  app.get('/api/backups', authenticateToken, requirePermission('settings.view'), (req, res) => res.json(db.listSnapshots()));
   app.post('/api/backups', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
       await drainUserMutations();
@@ -1140,7 +1096,6 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
-
   app.post('/api/backups/:name/restore', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
       const snapshot = await runMaintenance(
@@ -1164,7 +1119,6 @@ async function createCrmServer(options = {}) {
     }
     return respondError(res, error);
   });
-
   app.use('*', (req, res) => res.status(404).json({ error: 'Endpoint non trovato' }));
 
   try {
@@ -1193,7 +1147,6 @@ async function createCrmServer(options = {}) {
       console.error('Backup automatico fallito:', error);
     }
   };
-
   await ensureDailyBackup();
   const backupTimer = setInterval(ensureDailyBackup, 60 * 60 * 1000);
 
