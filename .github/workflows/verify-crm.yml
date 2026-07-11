@@ -30,7 +30,24 @@ jobs:
             crm-marmeria/server/package-lock.json
 
       - name: Install Electron app dependencies
-        run: npm ci
+        id: root_install
+        continue-on-error: true
+        run: npm ci > npm-install-report.txt 2>&1
+
+      - name: Upload npm installation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-install-report
+          path: crm-marmeria/npm-install-report.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce Electron app installation
+        if: steps.root_install.outcome == 'failure'
+        run: |
+          cat npm-install-report.txt
+          exit 1
 
       - name: Install standalone server dependencies
         run: npm ci --prefix server
