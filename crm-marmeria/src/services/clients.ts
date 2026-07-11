@@ -35,6 +35,10 @@ export interface CreateClientRequest {
 const normalizeClient = (client: any): Client => ({
   ...client,
   id: String(client.id),
+  name: String(client.name || ''),
+  email: String(client.email || ''),
+  phone: String(client.phone || ''),
+  address: String(client.address || ''),
   type: client.clientType
     || (client.type === 'Azienda' || client.type === 'Privato' ? client.type : 'Privato'),
   clientType: client.clientType
@@ -119,10 +123,12 @@ class ClientsService {
       if ((error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED' || !error.response) && cached) {
         const normalized = cached.map(normalizeClient);
         const loweredQuery = query.toLowerCase();
-        return normalized.filter((client) => (
-          client.name.toLowerCase().includes(loweredQuery)
-          || client.email.toLowerCase().includes(loweredQuery)
-        ));
+        return normalized.filter((client) => [
+          client.name,
+          client.email,
+          client.phone,
+          client.address,
+        ].some((value) => String(value || '').toLowerCase().includes(loweredQuery)));
       }
       throw error;
     }
