@@ -14,8 +14,21 @@ const COMPROMISED_DEFAULT_HASHES = new Set([
   '$2b$10$xgjipj3RtM9D8nyR2J8RnOPAtJ.aAyxrVpPmAXDbFnJmbfrdQVTsG',
   '$2b$10$1rfGdxxl/DQDLqJn6lE0HuYAiBNC4f/KVSCUCQ1Gc6hgeOWTKrnJG',
 ]);
+const PUBLIC_DEFAULT_PASSWORDS = ['admin123', 'operaio123'];
 
 const usersFile = () => path.join(dataDirectory, 'users.json');
+
+const isCompromisedLegacyAccount = (user) => {
+  if (!user?.password) return false;
+  if (COMPROMISED_DEFAULT_HASHES.has(user.password)) return true;
+  try {
+    return PUBLIC_DEFAULT_PASSWORDS.some((password) => (
+      bcrypt.compareSync(password, user.password)
+    ));
+  } catch {
+    return false;
+  }
+};
 
 const readUsersRaw = () => {
   if (!fs.existsSync(usersFile())) return [];
@@ -31,11 +44,17 @@ const readUsers = () => readUsersRaw().filter(
 const writeUsers = (users) => {
   const filePath = usersFile();
   const temporary = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
+  let descriptor;
   try {
-    fs.writeFileSync(temporary, JSON.stringify(users, null, 2));
+    descriptor = fs.openSync(temporary, 'w');
+    fs.writeFileSync(descriptor, JSON.stringify(users, null, 2));
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
     fs.renameSync(temporary, filePath);
     return true;
   } catch (error) {
+    if (descriptor != null) fs.closeSync(descriptor);
     if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
     console.error('Errore scrittura utenti:', error);
     return false;
@@ -95,11 +114,11 @@ const configureAuth = ({ dataDir }) => {
   if (!jwtSecret) throw new Error('Segreto JWT non disponibile');
 
   let users = readUsersRaw();
-  const safeUsers = users.filter((user) => !COMPROMISED_DEFAULT_HASHES.has(user.password));
+  const safeUsers = users.filter((user) => !isCompromisedLegacyAccount(user));
   if (safeUsers.length !== users.length) {
     if (!writeUsers(safeUsers)) throw new Error('Rimozione account predefiniti non sicuri fallita');
     users = safeUsers;
-    console.warn('Account predefiniti rimossi: completare la configurazione iniziale sul PC principale.');
+    console.warn('Account con password predefinite pubbliche rimossi: completare la configurazione iniziale sul PC principale.');
   }
 
   let usersChanged = false;
