@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { getCurrentQueueScope, offlineQueue } from './offlineQueue';
 import type { QueueScope } from './offlineQueue';
 import { bindRequestToScope, queueScopesEqual } from './requestScope';
+import { buildOptimisticMutation } from './optimisticMutation';
 
 interface ReplayConfig extends AxiosRequestConfig {
   _replay?: boolean;
@@ -178,11 +179,7 @@ class ApiClient {
             toast('Modifica salvata in coda: verrà inviata quando il server torna disponibile.', {
               id: 'offline-queued',
             });
-            const optimistic = {
-              ...(typeof data === 'object' && data ? data : {}),
-              id: (data as any)?.id || url.split('/').filter(Boolean).pop(),
-              _queued: true,
-            };
+            const optimistic = buildOptimisticMutation(url, data);
             return {
               data: optimistic,
               status: 202,

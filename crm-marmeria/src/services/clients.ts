@@ -94,11 +94,20 @@ class ClientsService {
   }
 
   async updateClient(id: string, data: Partial<CreateClientRequest>): Promise<Client> {
+    const direct = await cacheService.get<Client>('customers', String(id));
+    const cachedList = direct ? null : await cacheService.get<Client[]>('customers', 'all');
+    const current = direct || cachedList?.find((item) => String(item.id) === String(id));
+    const requested = payloadWithClientType(data);
     const response = await api.put<Client>(`/clients/${String(id)}`, {
-      ...payloadWithClientType(data),
+      ...requested,
       expectedVersion: data.version,
     });
-    const client = normalizeClient(response.data);
+    const client = normalizeClient({
+      ...(current || {}),
+      ...requested,
+      ...response.data,
+      id: String(id),
+    });
     await cacheService.set('customers', String(id), client, this.CACHE_TTL);
     await cacheService.delete('customers', 'all');
     if (response.status !== 202) toast.success('Cliente aggiornato con successo');

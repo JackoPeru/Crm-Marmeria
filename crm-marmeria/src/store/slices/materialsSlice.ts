@@ -213,6 +213,9 @@ export const updateMaterial = createAsyncThunk<
   'materials/updateMaterial',
   async ({ id, data }, { rejectWithValue }) => {
     try {
+      const direct = await cacheService.get<Material>('materials', id);
+      const cachedList = direct ? null : await cacheService.get<Material[]>('materials', 'all');
+      const current = direct || cachedList?.find((item) => String(item.id) === String(id));
       const version = Number(data.version);
       if (!Number.isInteger(version) || version < 1) {
         throw new Error('Versione materiale non disponibile. Ricarica i dati.');
@@ -227,7 +230,12 @@ export const updateMaterial = createAsyncThunk<
       await cacheService.delete('materials', id);
       
       if (response.status !== 202) toast.success('Materiale aggiornato con successo');
-      return response.data;
+      return {
+        ...(current || {}),
+        ...data,
+        ...response.data,
+        id: String(id),
+      } as Material;
     } catch (error: any) {
       const message = error.response?.data?.message || error.message || 'Errore nell\'aggiornamento materiale';
       toast.error(message);
@@ -432,12 +440,12 @@ const materialsSlice = createSlice({
     updateMaterialInState: (state, action: PayloadAction<Material>) => {
       const index = state.items.findIndex(material => material.id === action.payload.id);
       if (index !== -1) {
-        state.items[index] = action.payload;
+        state.items[index] = { ...state.items[index], ...action.payload };
       }
       
       // Aggiorna anche il materiale selezionato se corrisponde
       if (state.selectedMaterial?.id === action.payload.id) {
-        state.selectedMaterial = action.payload;
+        state.selectedMaterial = { ...state.selectedMaterial, ...action.payload };
       }
     },
     
@@ -534,11 +542,11 @@ const materialsSlice = createSlice({
         
         const index = state.items.findIndex(material => material.id === action.payload.id);
         if (index !== -1) {
-          state.items[index] = action.payload;
+          state.items[index] = { ...state.items[index], ...action.payload };
         }
         
         if (state.selectedMaterial?.id === action.payload.id) {
-          state.selectedMaterial = action.payload;
+          state.selectedMaterial = { ...state.selectedMaterial, ...action.payload };
         }
         
         state.error = null;

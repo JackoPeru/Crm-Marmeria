@@ -1,6 +1,7 @@
 import api from './api';
 import { cacheService } from './cache';
 import toast from 'react-hot-toast';
+import { mergeOptimisticEntity } from './optimisticMutation';
 
 export interface Order {
   id: string;
@@ -172,12 +173,10 @@ class OrdersService {
 
   async updateOrder(id: string, orderData: Partial<CreateOrderRequest>): Promise<Order> {
     const version = await this.requiredVersion(id, orderData.version);
-    const response = await api.patch<Order>(`/orders/${encodeURIComponent(String(id))}`, {
-      ...orderData,
-      version,
-      expectedVersion: version,
-    });
-    const order = response.data;
+    const current = await this.cachedOrder(id);
+    const requested = { ...orderData, version, expectedVersion: version };
+    const response = await api.patch<Order>(`/orders/${encodeURIComponent(String(id))}`, requested);
+    const order = mergeOptimisticEntity<Order>(current, orderData, response.data, String(id));
     await cacheService.set('orders', String(id), order, this.CACHE_TTL);
     await this.invalidateCache();
     if (response.status !== 202) toast.success('Ordine aggiornato con successo');
@@ -190,11 +189,13 @@ class OrdersService {
     suppliedVersion?: number,
   ): Promise<Order> {
     const version = await this.requiredVersion(id, suppliedVersion);
+    const current = await this.cachedOrder(id);
+    const requested = { status, version, expectedVersion: version };
     const response = await api.patch<Order>(
       `/orders/${encodeURIComponent(String(id))}/status`,
-      { status, version, expectedVersion: version },
+      requested,
     );
-    const order = response.data;
+    const order = mergeOptimisticEntity<Order>(current, { status }, response.data, String(id));
     await cacheService.set('orders', String(id), order, this.CACHE_TTL);
     await this.invalidateCache();
     if (response.status !== 202) toast.success(`Stato ordine aggiornato a: ${status}`);

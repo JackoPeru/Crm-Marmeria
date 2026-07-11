@@ -1,8 +1,4 @@
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-
-(ROOT / 'src/services/optimisticMutation.ts').write_text(r'''const cleanMutationUrl = (value: string) => String(value || '').split(/[?#]/, 1)[0].replace(/\/$/, '');
+const cleanMutationUrl = (value: string) => String(value || '').split(/[?#]/, 1)[0].replace(/\/$/, '');
 
 const spreadable = (value: unknown): Record<string, unknown> => (
   value && typeof value === 'object' && !Array.isArray(value)
@@ -39,4 +35,3 @@ export const mergeOptimisticEntity = <T>(
   ...spreadable(response),
   id: String(id),
 } as unknown as T);
-''')
