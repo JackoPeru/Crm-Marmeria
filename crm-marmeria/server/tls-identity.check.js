@@ -15,6 +15,9 @@ async function run() {
     assert.ok(identity.cert.length > 0);
     assert.ok(identity.fingerprint);
     assert.equal((await readOrCreateTlsIdentity(root, 'ignored')).fingerprint, identity.fingerprint);
+    const webRoot = path.join(root, 'web');
+    fs.mkdirSync(webRoot);
+    fs.writeFileSync(path.join(webRoot, 'index.html'), '<!doctype html><title>CRM LAN</title>');
 
     const instance = await createCrmServer({
       port: 0,
@@ -23,6 +26,8 @@ async function run() {
       backupDir: path.join(root, 'backups'),
       serverId: '11111111-1111-4111-8111-111111111111',
       tls: identity,
+      webRoot,
+      webOrigins: ['https://127.0.0.1'],
     });
     server = instance;
     const fingerprint = await new Promise((resolve, reject) => {
@@ -41,6 +46,16 @@ async function run() {
       }).on('error', reject);
     });
     assert.equal(fingerprint.toLowerCase(), identity.fingerprint.toLowerCase());
+    const page = await new Promise((resolve, reject) => {
+      https.get(`https://127.0.0.1:${instance.port}/`, { rejectUnauthorized: false }, (response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => { body += chunk; });
+        response.on('end', () => resolve({ status: response.statusCode, body }));
+      }).on('error', reject);
+    });
+    assert.equal(page.status, 200);
+    assert.match(page.body, /CRM LAN/);
   } finally {
     if (server) await server.close();
     fs.rmSync(root, { recursive: true, force: true });

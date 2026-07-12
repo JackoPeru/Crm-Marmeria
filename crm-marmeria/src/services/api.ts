@@ -20,6 +20,12 @@ const SERVER_URL_KEY = 'crm_server_identity_url';
 const DATA_EPOCH_KEY = 'crm_data_epoch';
 const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
+const defaultApiBaseUrl = () => {
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    return `${window.location.origin}/api`;
+  }
+  return 'https://127.0.0.1:3001/api';
+};
 const currentUserId = () => {
   try {
     return String(JSON.parse(localStorage.getItem('crm_user_data') || 'null')?.id || '');
@@ -28,7 +34,7 @@ const currentUserId = () => {
   }
 };
 const clientContextFingerprint = () => [
-  normalizeBaseUrl(localStorage.getItem('crm_api_base_url') || import.meta.env.VITE_API_BASE_URL || 'https://127.0.0.1:3001/api'),
+  normalizeBaseUrl(localStorage.getItem('crm_api_base_url') || import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl()),
   localStorage.getItem(SERVER_ID_KEY) || '',
   localStorage.getItem(DATA_EPOCH_KEY) || '',
   currentUserId(),
@@ -51,7 +57,7 @@ class ApiClient {
     return normalizeBaseUrl(
       localStorage.getItem('crm_api_base_url')
         || import.meta.env.VITE_API_BASE_URL
-        || 'https://127.0.0.1:3001/api',
+        || defaultApiBaseUrl(),
     );
   }
 

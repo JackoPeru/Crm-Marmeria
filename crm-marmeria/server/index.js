@@ -17,6 +17,16 @@ const persistentSetupSecret = (dataDir) => {
   return configured || readOrCreateSetupSecret(path.join(dataDir, '.setup-secret'));
 };
 
+const configuredWebRoot = () => {
+  const candidate = process.env.CRM_WEB_ROOT || path.resolve(__dirname, '../dist');
+  return require('fs').existsSync(path.join(candidate, 'index.html')) ? path.resolve(candidate) : null;
+};
+
+const configuredWebOrigins = () => String(process.env.CRM_WEB_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
 const start = async () => {
   const dataDir = process.env.CRM_DATA_DIR || path.join(__dirname, 'data');
   const backupDir = process.env.CRM_BACKUP_DIR || path.join(dataDir, 'backups');
@@ -26,6 +36,8 @@ const start = async () => {
     path.join(dataDir, '.tls'),
     process.env.CRM_TLS_COMMON_NAME || `crm-marmeria-${serverId}`,
   );
+  const webRoot = configuredWebRoot();
+  const webOrigins = configuredWebOrigins();
 
   instance = await createCrmServer({
     port: Number(process.env.PORT || 3001),
@@ -36,6 +48,8 @@ const start = async () => {
     serverId,
     setupSecret,
     tls: tlsIdentity,
+    webRoot,
+    webOrigins,
   });
 
   const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
@@ -45,6 +59,11 @@ const start = async () => {
   console.log(`CRM Marmeria centrale HTTPS attivo su ${instance.host}:${instance.port}`);
   console.log(`ID server: ${serverId}`);
   console.log(`Impronta certificato TLS: ${tlsIdentity.fingerprint}`);
+  if (webRoot) {
+    console.log(`Interfaccia web disponibile per: ${webOrigins.join(', ') || 'localhost'}`);
+  } else {
+    console.warn('Interfaccia web non trovata: eseguire npm run build nella cartella principale.');
+  }
 
   if (!readUsers().some((user) => user.role === 'admin' && user.isActive)) {
     console.warn('Configurazione iniziale richiesta: crea il primo amministratore dal computer server.');

@@ -448,6 +448,12 @@ async function createCrmServer(options = {}) {
   const backupDir = options.backupDir || path.join(dataDir, 'backups');
   const attachmentsDir = options.attachmentsDir || path.join(dataDir, 'attachments');
   const setupSecret = options.setupSecret || process.env.CRM_SETUP_SECRET || null;
+  const webRoot = options.webRoot && fs.existsSync(path.join(options.webRoot, 'index.html'))
+    ? path.resolve(options.webRoot)
+    : null;
+  const webOrigins = new Set((Array.isArray(options.webOrigins) ? options.webOrigins : [])
+    .map((origin) => String(origin || '').replace(/\/$/, ''))
+    .filter(Boolean));
 
   configureAuth({ dataDir });
   const mutationBarrier = new MutationBarrier({ timeoutMs: 30000 });
@@ -461,7 +467,8 @@ async function createCrmServer(options = {}) {
       const allowed = !origin
         || origin === 'null'
         || /^file:\/\//i.test(origin)
-        || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin);
+        || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin)
+        || webOrigins.has(String(origin).replace(/\/$/, ''));
       if (allowed) return callback(null, true);
       const error = new Error('Origine web non autorizzata');
       error.status = 403;
@@ -1378,6 +1385,14 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
+
+  if (webRoot) {
+    app.use(express.static(webRoot, { index: 'index.html', fallthrough: true }));
+    app.get('*', (req, res, next) => {
+      if (req.path === '/ws' || req.path.startsWith('/api/')) return next();
+      return res.sendFile(path.join(webRoot, 'index.html'));
+    });
+  }
 
   app.use((error, req, res, next) => {
     if (error instanceof multer.MulterError) {

@@ -80,7 +80,9 @@ class RealtimeService {
   connectFromStorage(): void {
     const baseUrl = localStorage.getItem('crm_api_base_url')
       || import.meta.env.VITE_API_BASE_URL
-      || 'https://127.0.0.1:3001/api';
+      || (window.location.protocol === 'https:'
+        ? `${window.location.origin}/api`
+        : 'https://127.0.0.1:3001/api');
     this.connect(baseUrl, localStorage.getItem('crm_auth_token'));
   }
 
