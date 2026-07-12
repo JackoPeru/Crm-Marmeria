@@ -4,7 +4,7 @@ const path = require('path');
 
 const REPOSITORY = 'github.com/jackoperu/crm-marmeria';
 const applicationRoot = path.resolve(__dirname, '..');
-// Il checkout conserva il progetto web in crm-marmeria/, mentre Git è un livello sopra.
+// Checkout web in crm-marmeria/, Git un livello sopra.
 const repositoryRoot = path.resolve(applicationRoot, '..');
 const updateMarker = path.join(applicationRoot, '.crm-update-pending');
 const runtimeDataPath = path.relative(repositoryRoot, path.join(applicationRoot, 'server', 'data'))
@@ -12,14 +12,15 @@ const runtimeDataPath = path.relative(repositoryRoot, path.join(applicationRoot,
   .toLowerCase();
 let updateInProgress = false;
 
-const command = (args, timeout = 20000) => new Promise((resolve, reject) => {
+const command = (args, timeout = 20000, trim = true) => new Promise((resolve, reject) => {
   execFile('git', args, { cwd: repositoryRoot, timeout, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
     if (error) {
       error.message = String(stderr || error.message || 'Comando Git non riuscito').trim();
       reject(error);
       return;
     }
-    resolve(String(stdout || '').trim());
+    const output = String(stdout || '');
+    resolve(trim ? output.trim() : output);
   });
 });
 
@@ -48,7 +49,7 @@ const ensureRepository = async () => {
 };
 
 const workingTreeIsSafe = async () => {
-  const changes = (await command(['status', '--porcelain'])).split(/\r?\n/).filter(Boolean);
+  const changes = (await command(['status', '--porcelain'], 20000, false)).split(/\r?\n/).filter(Boolean);
   const unsafe = changes
     .map((line) => line.slice(3).replace(/^"|"$/g, '').replace(/\\/g, '/'))
     .filter((file) => !isRuntimeFile(file));
