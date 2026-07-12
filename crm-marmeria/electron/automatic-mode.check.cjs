@@ -4,7 +4,7 @@ const { resolveAutomaticMode } = require('./network-config.cjs');
 const prefs = {
   mode: 'auto',
   masterPort: 3001,
-  apiUrl: 'http://127.0.0.1:3001/api',
+  apiUrl: 'https://127.0.0.1:3001/api',
   backupPath: '',
 };
 
@@ -16,12 +16,14 @@ assert.throws(
 
 const master = {
   serverId: 'server-a',
-  apiUrl: 'http://192.168.1.20:3001/api',
+  apiUrl: 'https://192.168.1.20:3001/api',
+  tlsFingerprint: 'AA:BB:CC',
 };
 const resolved = resolveAutomaticMode(prefs, [master]);
 assert.equal(resolved.mode, 'client');
 assert.equal(resolved.apiUrl, master.apiUrl);
 assert.equal(resolved.discoveredServerId, master.serverId);
+assert.equal(resolved.tlsFingerprint, master.tlsFingerprint);
 
 assert.throws(
   () => resolveAutomaticMode(prefs, [master, { ...master, serverId: 'server-b' }]),

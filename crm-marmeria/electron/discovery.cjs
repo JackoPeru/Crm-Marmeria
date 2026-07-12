@@ -1,6 +1,7 @@
 const dgram = require('dgram');
 const os = require('os');
 const crypto = require('crypto');
+const https = require('https');
 
 const DISCOVERY_PORT = 41234;
 const BROADCAST_ADDRESS = '255.255.255.255';
@@ -26,15 +27,24 @@ const broadcastFor = (address, netmask) => {
 };
 
 const verifyMaster = async (master, timeoutMs = 1800) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${master.apiUrl}/health`, {
-      signal: controller.signal,
-      cache: 'no-store',
+    const health = await new Promise((resolve, reject) => {
+      const request = https.get(`${master.apiUrl}/health`, { rejectUnauthorized: false, timeout: timeoutMs }, (response) => {
+        let body = '';
+        const peerFingerprint = response.socket?.getPeerCertificate?.().fingerprint || '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => { body += chunk; });
+        response.on('end', () => {
+          if (!master.tlsFingerprint || peerFingerprint.toLowerCase() !== master.tlsFingerprint.toLowerCase()) {
+            return reject(new Error('Certificato server non corrispondente alla discovery'));
+          }
+          if (response.statusCode !== 200) return reject(new Error('Health server non valido'));
+          try { resolve(JSON.parse(body)); } catch (error) { reject(error); }
+        });
+      });
+      request.on('timeout', () => request.destroy(new Error('Timeout discovery')));
+      request.on('error', reject);
     });
-    if (!response.ok) return null;
-    const health = await response.json();
     if (
       health?.mode !== 'central-server'
       || !health?.serverId
@@ -50,16 +60,15 @@ const verifyMaster = async (master, timeoutMs = 1800) => {
     };
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 };
 
 class DiscoveryAdvertiser {
-  constructor({ port, serverId, name = 'CRM Marmeria' }) {
+  constructor({ port, serverId, tlsFingerprint, name = 'CRM Marmeria' }) {
     this.port = Number(port);
     this.serverId = serverId || crypto.randomUUID();
     this.name = name;
+    this.tlsFingerprint = tlsFingerprint || null;
     this.socket = null;
   }
 
@@ -89,6 +98,8 @@ class DiscoveryAdvertiser {
           port: this.port,
           hostname: os.hostname(),
           addresses: localAddresses(),
+          protocol: 'https',
+          tlsFingerprint: this.tlsFingerprint,
         }));
         socket.send(response, remote.port, remote.address, (error) => {
           if (error) console.warn('Risposta discovery non inviata:', error.message);
@@ -162,7 +173,8 @@ const discoverMasters = (timeoutMs = 1500) => new Promise((resolve) => {
         serverId: String(message.serverId),
         port,
         address,
-        apiUrl: `http://${address}:${port}/api`,
+        apiUrl: `https://${address}:${port}/api`,
+        tlsFingerprint: String(message.tlsFingerprint || ''),
       });
     } catch {
       // I pacchetti non validi vengono ignorati.

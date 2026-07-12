@@ -59,6 +59,7 @@ declare global {
     backupPath?: string;
     forceMaster?: boolean;
     discoveredServerId?: string;
+    tlsFingerprint?: string;
     lastServerError?: string;
   }
 
@@ -69,6 +70,7 @@ declare global {
     address: string;
     port: number;
     apiUrl: string;
+    tlsFingerprint?: string;
     health?: {
       mode?: string;
       serverId?: string;

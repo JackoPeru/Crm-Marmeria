@@ -3,14 +3,16 @@ const path = require('path');
 const defaultPrefs = () => ({
   mode: 'auto',
   masterPort: 3001,
-  apiUrl: 'http://127.0.0.1:3001/api',
+  apiUrl: 'https://127.0.0.1:3001/api',
   backupPath: '',
 });
 
+const isLoopbackHostname = (hostname) => ['localhost', '127.0.0.1', '[::1]'].includes(hostname);
+
 const normalizeApiUrl = (value) => {
   const parsed = new URL(String(value || '').trim());
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('L’indirizzo API deve usare http o https');
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname))) {
+    throw new Error('I server remoti devono usare https');
   }
   parsed.hash = '';
   parsed.search = '';
@@ -36,7 +38,7 @@ const validatePrefs = (incoming) => {
     backupPath: prefs.backupPath ? path.resolve(String(prefs.backupPath)) : '',
     apiUrl: prefs.mode === 'client'
       ? normalizeApiUrl(prefs.apiUrl)
-      : `http://127.0.0.1:${masterPort}/api`,
+      : `https://127.0.0.1:${masterPort}/api`,
   };
 };
 
@@ -58,6 +60,7 @@ const resolveAutomaticMode = (incomingPrefs, masters) => {
     mode: 'client',
     apiUrl: masters[0].apiUrl,
     discoveredServerId: masters[0].serverId,
+    tlsFingerprint: masters[0].tlsFingerprint,
   });
 };
 

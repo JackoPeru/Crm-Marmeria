@@ -28,7 +28,7 @@ const currentUserId = () => {
   }
 };
 const clientContextFingerprint = () => [
-  normalizeBaseUrl(localStorage.getItem('crm_api_base_url') || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3001/api'),
+  normalizeBaseUrl(localStorage.getItem('crm_api_base_url') || import.meta.env.VITE_API_BASE_URL || 'https://127.0.0.1:3001/api'),
   localStorage.getItem(SERVER_ID_KEY) || '',
   localStorage.getItem(DATA_EPOCH_KEY) || '',
   currentUserId(),
@@ -51,7 +51,7 @@ class ApiClient {
     return normalizeBaseUrl(
       localStorage.getItem('crm_api_base_url')
         || import.meta.env.VITE_API_BASE_URL
-        || 'http://127.0.0.1:3001/api',
+        || 'https://127.0.0.1:3001/api',
     );
   }
 

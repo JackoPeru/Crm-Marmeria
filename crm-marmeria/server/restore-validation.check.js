@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const bcrypt = require('bcrypt');
 const { CrmDatabase } = require('./database');
-const { validateDatabase, validateUsers } = require('./restore-safety');
+const { syncFile, validateDatabase, validateUsers } = require('./restore-safety');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-restore-validation-'));
 const dataDir = path.join(root, 'data');
@@ -14,6 +14,22 @@ const usersPath = path.join(dataDir, 'users.json');
 let db;
 
 try {
+  if (process.platform === 'win32') {
+    const syncPath = path.join(root, 'sync-fallback.txt');
+    fs.writeFileSync(syncPath, 'snapshot');
+    const originalFsync = fs.fsyncSync;
+    fs.fsyncSync = () => {
+      const error = new Error('Windows fsync unsupported for this copied file');
+      error.code = 'EPERM';
+      throw error;
+    };
+    try {
+      assert.doesNotThrow(() => syncFile(syncPath));
+    } finally {
+      fs.fsyncSync = originalFsync;
+    }
+  }
+
   db = new CrmDatabase({ dataDir, backupDir, attachmentsDir });
   const client = db.create('client', { id: 'cliente-1', name: 'Cliente' }, { id: 'admin', username: 'admin' }).item;
   db.close();

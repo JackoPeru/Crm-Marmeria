@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
 const { pathToFileURL } = require('url');
 const CentralCrmServer = require('./server.cjs');
 const { discoverMasters } = require('./discovery.cjs');
@@ -41,10 +42,10 @@ const isTrustedRendererUrl = createRendererTrustChecker({
   productionFile: productionEntryUrl(),
 });
 const serializeNetworkOperation = createSerializedExecutor();
-const probeApi = (apiUrl, expectedServerId = null) => probeCentralApi(
+const probeApi = (apiUrl, expectedServerId = null, expectedTlsFingerprint = null, trustOnFirstUse = false) => probeCentralApi(
   apiUrl,
   expectedServerId,
-  { normalizeApiUrl },
+  { normalizeApiUrl, expectedTlsFingerprint, trustOnFirstUse },
 );
 const assertTrustedSender = (event) => assertTrustedIpcSender(event, isTrustedRendererUrl);
 
@@ -78,6 +79,65 @@ const savePrefs = (prefs) => {
   fs.renameSync(temporary, filePath);
   try { fs.chmodSync(filePath, 0o600); } catch { /* Windows */ }
 };
+
+const postToLocalServer = (apiUrl, endpoint, payload, setupSecret, expectedTlsFingerprint) => new Promise((resolve, reject) => {
+  const target = new URL(`${apiUrl}${endpoint}`);
+  const body = JSON.stringify(payload || {});
+  const request = https.request(target, {
+    method: 'POST',
+    rejectUnauthorized: false,
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      'X-CRM-Setup-Secret': setupSecret,
+    },
+  }, (response) => {
+    let raw = '';
+    const received = String(response.socket?.getPeerCertificate?.().fingerprint || '').toLowerCase();
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { raw += chunk; });
+    response.on('end', () => {
+      if (!received || received !== String(expectedTlsFingerprint || '').toLowerCase()) {
+        return reject(new Error('Certificato del server locale non corrispondente'));
+      }
+      try { resolve({ ok: response.statusCode >= 200 && response.statusCode < 300, data: JSON.parse(raw) }); } catch (error) { reject(error); }
+    });
+  });
+  request.on('error', reject);
+  request.end(body);
+});
+
+const trustManualTlsServer = async (prefs) => {
+  const verified = await probeApi(prefs.apiUrl, prefs.discoveredServerId || null, null, true);
+  const choice = await dialog.showMessageBox({
+    type: 'warning',
+    title: 'Conferma server CRM',
+    message: 'Certificato del server da confermare',
+    detail: `Indirizzo: ${verified.apiUrl}\nID installazione: ${verified.data.serverId}\nImpronta certificato: ${verified.tlsFingerprint}\n\nConfronta impronta con PC principale. Conferma soltanto se coincide.`,
+    buttons: ['Conferma server', 'Annulla'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (choice.response !== 0) {
+    const error = new Error('Server non confermato');
+    error.code = 'TLS_NOT_CONFIRMED';
+    throw error;
+  }
+  return { ...prefs, apiUrl: verified.apiUrl, discoveredServerId: verified.data.serverId, tlsFingerprint: verified.tlsFingerprint };
+};
+
+app.on('certificate-error', (event, _webContents, url, _error, certificate, callback) => {
+  const prefs = readPrefs();
+  const configured = String(prefs.tlsFingerprint || '').replace(/:/g, '').toLowerCase();
+  const received = String(certificate?.fingerprint || '').replace(/:/g, '').toLowerCase();
+  if (url.startsWith('https:') && received && configured === received) {
+    event.preventDefault();
+    callback(true);
+    return;
+  }
+  callback(false);
+});
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
@@ -136,13 +196,18 @@ const applyNetworkMode = async (incomingPrefs) => {
       ...prefs,
       forceMaster: false,
       discoveredServerId: result.serverId,
-      apiUrl: result.localApiUrl || `http://127.0.0.1:${prefs.masterPort}/api`,
+      tlsFingerprint: result.tlsFingerprint,
+      apiUrl: result.localApiUrl || `https://127.0.0.1:${prefs.masterPort}/api`,
       backupPath: result.backupPath || prefs.backupPath || '',
     };
     return { success: true, ...result, prefs: resolvedPrefs };
   }
 
-  const verified = await probeApi(prefs.apiUrl, prefs.discoveredServerId || null);
+  const verified = await probeApi(
+    prefs.apiUrl,
+    prefs.discoveredServerId || null,
+    prefs.tlsFingerprint || null,
+  );
   if (
     centralServer.getStatus().isRunning
     && String(verified.data.serverId) === String(centralServer.getStatus().serverId)
@@ -160,6 +225,7 @@ const applyNetworkMode = async (incomingPrefs) => {
       ...prefs,
       apiUrl: verified.apiUrl,
       discoveredServerId: String(verified.data.serverId),
+      tlsFingerprint: prefs.tlsFingerprint || verified.data.tlsFingerprint || null,
       lastServerError: undefined,
     },
     health: verified.data,
@@ -176,6 +242,7 @@ const recoverClientByIdentity = async (prefs) => {
     mode: 'client',
     apiUrl: recovered.apiUrl,
     discoveredServerId: recovered.serverId,
+    tlsFingerprint: recovered.tlsFingerprint,
   });
 };
 
@@ -188,7 +255,7 @@ const configureFirstLaunch = async (prefs) => {
         type: 'question',
         title: 'Configurazione rete CRM Marmeria',
         message: 'Server principale trovato',
-        detail: `${master.name || master.hostname || 'CRM Marmeria'}\n${master.apiUrl}\nID installazione: ${master.serverId}\n\nConferma che questo sia il PC principale della marmeria.`,
+        detail: `${master.name || master.hostname || 'CRM Marmeria'}\n${master.apiUrl}\nID installazione: ${master.serverId}\nImpronta certificato: ${master.tlsFingerprint}\n\nConfronta impronta con PC principale, poi conferma.`,
         buttons: ['Connetti', 'Cerca di nuovo', 'Chiudi'],
         defaultId: 0,
         cancelId: 2,
@@ -269,6 +336,7 @@ const initializeNetwork = async () => {
       mode: 'client',
       apiUrl: fallbackMaster?.apiUrl || prefs.apiUrl,
       discoveredServerId: fallbackMaster?.serverId || prefs.discoveredServerId,
+      tlsFingerprint: fallbackMaster?.tlsFingerprint || prefs.tlsFingerprint,
       lastServerError: error.message,
     });
     savePrefs(fallback);
@@ -319,7 +387,11 @@ ipcMain.handle('network-save-prefs', (event, incoming) => {
   return serializeNetworkOperation(async () => {
     const previousPrefs = readPrefs();
     try {
-      const result = await applyNetworkMode({ ...previousPrefs, ...incoming });
+      let nextPrefs = validatePrefs({ ...previousPrefs, ...incoming });
+      if (nextPrefs.mode === 'client' && nextPrefs.apiUrl.startsWith('https:') && !nextPrefs.tlsFingerprint) {
+        nextPrefs = await trustManualTlsServer(nextPrefs);
+      }
+      const result = await applyNetworkMode(nextPrefs);
       savePrefs(result.prefs);
       return { success: true, prefs: result.prefs, server: result };
     } catch (error) {
@@ -381,7 +453,8 @@ ipcMain.handle('network-pick-backup-folder', async (event) => {
 ipcMain.handle('network-test-api', async (event, apiUrl, expectedServerId = null) => {
   assertTrustedSender(event);
   try {
-    const result = await probeApi(apiUrl, expectedServerId);
+    const prefs = readPrefs();
+    const result = await probeApi(apiUrl, expectedServerId, prefs.apiUrl === normalizeApiUrl(apiUrl) ? prefs.tlsFingerprint : null);
     return { success: true, data: result.data, apiUrl: result.apiUrl };
   } catch (error) {
     return { success: false, error: error.message, code: error.code };
@@ -395,18 +468,16 @@ ipcMain.handle('setup-first-admin', async (event, credentials) => {
     return { success: false, error: 'Il server principale locale non è attivo' };
   }
   try {
-    const response = await fetch(`${status.localApiUrl}/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CRM-Setup-Secret': centralServer.getSetupSecret(),
-      },
-      body: JSON.stringify(credentials || {}),
-    });
-    const data = await response.json();
+    const response = await postToLocalServer(
+      status.localApiUrl,
+      '/auth/login',
+      credentials,
+      centralServer.getSetupSecret(),
+      status.tlsFingerprint,
+    );
     return response.ok
-      ? { success: true, data }
-      : { success: false, error: data?.error || 'Configurazione iniziale non riuscita' };
+      ? { success: true, data: response.data }
+      : { success: false, error: response.data?.error || 'Configurazione iniziale non riuscita' };
   } catch (error) {
     return { success: false, error: error.message };
   }

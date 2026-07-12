@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -74,6 +75,8 @@ const FINANCIAL_FIELDS = new Set([
 
 const LOGIN_LIMIT = 5;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_ATTEMPT_MAX_ENTRIES = 1000;
+const LOGIN_IDENTITY_MAX_LENGTH = 128;
 const loginAttempts = new Map();
 
 const publicUser = (user) => ({
@@ -472,8 +475,13 @@ async function createCrmServer(options = {}) {
     maxAge: 600,
   };
   app.use(cors(corsOptions));
-  app.use(express.json({ limit: '25mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+  // Full database imports can be large, but must never be parsed for an
+  // unauthenticated network peer. Every other JSON request is deliberately
+  // small so concurrent anonymous bodies cannot exhaust the central server.
+  app.use('/api/backup', authenticateToken, requireRole('admin'), express.json({ limit: '25mb' }));
+  app.use('/api/backup', authenticateToken, requireRole('admin'), express.urlencoded({ extended: true, limit: '25mb' }));
+  app.use(express.json({ limit: '256kb' }));
+  app.use(express.urlencoded({ extended: true, limit: '64kb' }));
 
   const isMaintenanceControlRequest = (req) => {
     if (req.method !== 'POST') return false;
@@ -501,7 +509,9 @@ async function createCrmServer(options = {}) {
     return next();
   });
 
-  const server = http.createServer(app);
+  const server = options.tls?.key && options.tls?.cert
+    ? https.createServer({ key: options.tls.key, cert: options.tls.cert }, app)
+    : http.createServer(app);
   const realtime = createRealtime(server);
   const upload = multer({
     storage: multer.diskStorage({
@@ -546,6 +556,7 @@ async function createCrmServer(options = {}) {
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,
+    tlsFingerprint: options.tls?.fingerprint || null,
     port: server.address()?.port || requestedPort,
     timestamp: new Date().toISOString(),
     websocket: true,
@@ -559,6 +570,9 @@ async function createCrmServer(options = {}) {
     try {
       const username = String(req.body?.username || '').trim();
       const password = String(req.body?.password || '');
+      if (username.length > LOGIN_IDENTITY_MAX_LENGTH || password.length > 1024) {
+        return res.status(400).json({ error: 'Credenziali non valide' });
+      }
       if (!username || !password) {
         return res.status(400).json({ error: 'Username e password richiesti' });
       }
@@ -624,16 +638,24 @@ async function createCrmServer(options = {}) {
         return res.status(429).json({ error: 'Troppi tentativi di accesso. Riprovare più tardi.' });
       }
       if (previous && Date.now() - previous.startedAt >= LOGIN_WINDOW_MS) loginAttempts.delete(key);
-      if (loginAttempts.size > 1000) {
+      if (loginAttempts.size >= LOGIN_ATTEMPT_MAX_ENTRIES) {
         const cutoff = Date.now() - LOGIN_WINDOW_MS;
         for (const [attemptKey, value] of loginAttempts) {
           if (value.startedAt < cutoff) loginAttempts.delete(attemptKey);
+        }
+        while (loginAttempts.size >= LOGIN_ATTEMPT_MAX_ENTRIES) {
+          const oldest = loginAttempts.keys().next().value;
+          if (!oldest) break;
+          loginAttempts.delete(oldest);
         }
       }
 
       const user = findUserByCredentials(username);
       if (!user || !(await verifyPassword(password, user.password))) {
         const current = loginAttempts.get(key);
+        // Refresh insertion order so eviction removes the least recently used
+        // key while retaining normal per-user throttling behavior.
+        if (current) loginAttempts.delete(key);
         loginAttempts.set(key, {
           count: (current?.count || 0) + 1,
           startedAt: current?.startedAt || Date.now(),

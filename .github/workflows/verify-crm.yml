@@ -1,30 +1,21 @@
-name: Apply sixth core review
+name: Verify CRM
 
 on:
   pull_request:
     branches: [master]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: fix/core-reliability-2026-07
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Apply sixth-run core patches
-        run: |
-          python3 crm-marmeria/scripts/apply-sixth-network.py
-          python3 crm-marmeria/scripts/apply-sixth-access.py
-          python3 crm-marmeria/scripts/apply-sixth-restore.py
-          python3 crm-marmeria/scripts/apply-sixth-shutdown.py
 
       - name: Install clean dependencies
         working-directory: crm-marmeria
@@ -76,13 +67,3 @@ jobs:
           timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
           npm run build
           timeout 180s npx electron-builder --linux dir --publish never
-
-      - name: Commit verified sixth-run core fixes
-        run: |
-          git rm crm-marmeria/scripts/apply-sixth-network.py crm-marmeria/scripts/apply-sixth-access.py crm-marmeria/scripts/apply-sixth-restore.py crm-marmeria/scripts/apply-sixth-shutdown.py
-          git checkout -- .github/workflows/verify-crm.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "fix: close sixth-run network, access and recovery gaps"
-          git push origin HEAD:fix/core-reliability-2026-07

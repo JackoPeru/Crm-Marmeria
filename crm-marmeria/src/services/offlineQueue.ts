@@ -80,7 +80,7 @@ export const getCurrentQueueScope = (): QueueScope | null => {
   const apiBaseUrl = normalizeBaseUrl(
     localStorage.getItem('crm_api_base_url')
       || import.meta.env.VITE_API_BASE_URL
-      || 'http://127.0.0.1:3001/api',
+      || 'https://127.0.0.1:3001/api',
   );
   const serverId = String(localStorage.getItem('crm_server_id') || '').trim() || undefined;
   const dataEpoch = String(localStorage.getItem('crm_data_epoch') || '').trim() || undefined;

@@ -16,7 +16,7 @@ async function run() {
   fs.writeFileSync(path.join(root, 'network-prefs.json'), JSON.stringify({
     mode: 'client',
     masterPort: 3001,
-    apiUrl: 'http://127.0.0.1:3001/api',
+    apiUrl: 'https://127.0.0.1:3001/api',
     discoveredServerId: 'server-ci',
   }));
 
@@ -86,7 +86,7 @@ async function run() {
   try {
     global.fetch = async (url) => {
       fetchCalls += 1;
-      assert.equal(url, 'http://127.0.0.1:3001/api/health');
+      assert.equal(url, 'https://127.0.0.1:3001/api/health');
       return {
         ok: true,
         status: 200,

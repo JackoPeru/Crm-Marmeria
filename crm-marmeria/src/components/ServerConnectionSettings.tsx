@@ -7,8 +7,9 @@ const normalizeApiUrl = (value: string) => {
   const trimmed = value.trim();
   if (!trimmed) throw new Error('Inserisci l’indirizzo del PC principale');
   const parsed = new URL(trimmed);
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('L’indirizzo deve iniziare con http:// o https://');
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+    throw new Error('I server remoti devono usare https://');
   }
   parsed.hash = '';
   parsed.search = '';
@@ -76,7 +77,7 @@ const ServerConnectionSettings: React.FC = () => {
         masterPort: port,
         apiUrl: prefs.mode === 'client'
           ? normalizeApiUrl(prefs.apiUrl || '')
-          : `http://127.0.0.1:${port}/api`,
+          : `https://127.0.0.1:${port}/api`,
       };
 
       let applied = requested;
@@ -173,8 +174,9 @@ const ServerConnectionSettings: React.FC = () => {
                 ...previous,
                 apiUrl: event.target.value,
                 discoveredServerId: undefined,
+                tlsFingerprint: undefined,
               }))}
-              placeholder="http://192.168.1.20:3001/api"
+              placeholder="https://192.168.1.20:3001/api"
               className="mt-1 w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
             />
           </label>
@@ -222,12 +224,14 @@ const ServerConnectionSettings: React.FC = () => {
                     ...previous,
                     apiUrl: master.apiUrl,
                     discoveredServerId: master.serverId,
+                    tlsFingerprint: master.tlsFingerprint,
                   }))}
                   className="w-full text-left p-3 border rounded-md hover:bg-gray-50 dark:hover:bg-gray-800"
                 >
                   <strong>{master.name || master.hostname || 'CRM Marmeria'}</strong>
                   <span className="block text-sm text-gray-500">{master.apiUrl}</span>
                   <span className="block text-xs text-gray-400 break-all">ID server: {master.serverId}</span>
+                  {master.tlsFingerprint && <span className="block text-xs text-gray-400 break-all">TLS: {master.tlsFingerprint}</span>}
                 </button>
               ))}
             </div>
@@ -258,6 +262,9 @@ const ServerConnectionSettings: React.FC = () => {
           <span className="block break-all text-gray-500">{networkStatus.apiUrl}</span>
           {prefs.discoveredServerId && (
             <span className="block break-all text-xs text-gray-400 mt-1">ID: {prefs.discoveredServerId}</span>
+          )}
+          {prefs.tlsFingerprint && (
+            <span className="block break-all text-xs text-gray-400 mt-1">TLS: {prefs.tlsFingerprint}</span>
           )}
         </div>
         <div className="p-3 rounded-md bg-gray-50 dark:bg-gray-800">

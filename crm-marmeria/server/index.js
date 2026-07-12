@@ -3,6 +3,7 @@ const { createCrmServer } = require('./app');
 const { readUsers } = require('./middleware/auth');
 const { readOrCreateServerId, readOrCreateSetupSecret } = require('./runtime-files');
 const { upgradeLegacySnapshots } = require('./snapshot-compat');
+const { readOrCreateTlsIdentity } = require('./tls-identity');
 
 let instance = null;
 
@@ -21,6 +22,10 @@ const start = async () => {
   const backupDir = process.env.CRM_BACKUP_DIR || path.join(dataDir, 'backups');
   const serverId = persistentServerId(dataDir);
   const setupSecret = persistentSetupSecret(dataDir);
+  const tlsIdentity = await readOrCreateTlsIdentity(
+    path.join(dataDir, '.tls'),
+    process.env.CRM_TLS_COMMON_NAME || `crm-marmeria-${serverId}`,
+  );
 
   instance = await createCrmServer({
     port: Number(process.env.PORT || 3001),
@@ -30,14 +35,16 @@ const start = async () => {
     serverName: process.env.CRM_SERVER_NAME || 'crm-marmeria',
     serverId,
     setupSecret,
+    tls: tlsIdentity,
   });
 
   const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
   if (upgradedSnapshots > 0) {
     console.log(`Aggiornati ${upgradedSnapshots} snapshot legacy con gli account correnti`);
   }
-  console.log(`CRM Marmeria centrale attivo su ${instance.host}:${instance.port}`);
+  console.log(`CRM Marmeria centrale HTTPS attivo su ${instance.host}:${instance.port}`);
   console.log(`ID server: ${serverId}`);
+  console.log(`Impronta certificato TLS: ${tlsIdentity.fingerprint}`);
 
   if (!readUsers().some((user) => user.role === 'admin' && user.isActive)) {
     console.warn('Configurazione iniziale richiesta: crea il primo amministratore dal computer server.');

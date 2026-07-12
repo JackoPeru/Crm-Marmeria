@@ -18,7 +18,7 @@ async function run() {
             DiscoveryAdvertiser: class { start() {} stop() {} },
             discoverMasters: async () => [{
               serverId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-              apiUrl: 'http://192.168.1.20:3001/api',
+              apiUrl: 'https://192.168.1.20:3001/api',
               name: 'Clone CRM',
             }],
             localAddresses: () => ['192.168.1.10'],

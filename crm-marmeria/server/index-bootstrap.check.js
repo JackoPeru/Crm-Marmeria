@@ -45,6 +45,11 @@ async function run() {
         if (request === './snapshot-compat') {
           return { upgradeLegacySnapshots: () => 0 };
         }
+        if (request === './tls-identity') {
+          return {
+            readOrCreateTlsIdentity: async () => ({ key: 'test-key', cert: 'test-cert', fingerprint: 'test-fingerprint' }),
+          };
+        }
       }
       return originalLoad.call(this, request, parent, isMain);
     };
@@ -54,6 +59,7 @@ async function run() {
     assert.ok(receivedOptions, 'Il server standalone deve avviare createCrmServer');
     assert.match(receivedOptions.serverId, /^[0-9a-f-]{36}$/i);
     assert.match(receivedOptions.setupSecret, /^[0-9a-f]{96}$/i);
+    assert.equal(receivedOptions.tls.fingerprint, 'test-fingerprint');
     assert.equal(
       fs.readFileSync(path.join(root, '.setup-secret'), 'utf8').trim(),
       receivedOptions.setupSecret,

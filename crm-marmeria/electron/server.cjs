@@ -6,6 +6,7 @@ const { app } = require('electron');
 const { DiscoveryAdvertiser, discoverMasters, localAddresses } = require('./discovery.cjs');
 const { upgradeLegacySnapshots } = require('../server/snapshot-compat');
 const { readOrCreateServerId } = require('./server-identity.cjs');
+const { readOrCreateTlsIdentity } = require('../server/tls-identity');
 
 // Il progetto contiene due installazioni distinte: una ricompilata per Electron
 // e una per il server Node standalone. Durante l'esecuzione Electron i moduli
@@ -39,6 +40,7 @@ class CentralCrmServer {
     this.port = null;
     this.backupPath = null;
     this.serverId = null;
+    this.tlsIdentity = null;
     this.setupSecret = crypto.randomBytes(32).toString('hex');
   }
 
@@ -124,6 +126,10 @@ class CentralCrmServer {
     if (this.instance) await this.stop();
 
     const ownId = this.getServerId();
+    this.tlsIdentity = await readOrCreateTlsIdentity(
+      path.join(app.getPath('userData'), 'crm-server-tls'),
+      `crm-marmeria-${ownId}`,
+    );
     let otherMasters = await this.findOtherMasters();
 
     // Un secondo controllo con jitter riduce la possibilità che due PC,
@@ -156,6 +162,7 @@ class CentralCrmServer {
         backupDir,
         serverName: 'CRM Marmeria',
         serverId: ownId,
+        tls: this.tlsIdentity,
         setupSecret: this.setupSecret,
       });
       const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
@@ -167,6 +174,7 @@ class CentralCrmServer {
       this.discovery = new DiscoveryAdvertiser({
         port: this.port,
         serverId: ownId,
+        tlsFingerprint: this.tlsIdentity.fingerprint,
         name: 'CRM Marmeria',
       });
       this.discovery.start();
@@ -205,9 +213,10 @@ class CentralCrmServer {
       serverId: this.getServerId(),
       addresses,
       apiUrls: this.port
-        ? addresses.map((address) => `http://${address}:${this.port}/api`)
+        ? addresses.map((address) => `https://${address}:${this.port}/api`)
         : [],
-      localApiUrl: this.port ? `http://127.0.0.1:${this.port}/api` : null,
+      localApiUrl: this.port ? `https://127.0.0.1:${this.port}/api` : null,
+      tlsFingerprint: this.tlsIdentity?.fingerprint || null,
       backupPath: this.backupPath,
     };
   }

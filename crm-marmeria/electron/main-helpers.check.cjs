@@ -1,4 +1,7 @@
 const assert = require('assert');
+const fs = require('fs');
+const https = require('https');
+const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const {
@@ -8,6 +11,7 @@ const {
   probeApi,
 } = require('./main-helpers.cjs');
 const { normalizeApiUrl } = require('./network-config.cjs');
+const { readOrCreateTlsIdentity } = require('../server/tls-identity');
 
 async function run() {
   const productionFile = path.join(__dirname, '../dist/index.html');
@@ -55,6 +59,32 @@ async function run() {
     }),
     (error) => error.code === 'INVALID_CRM_SERVER',
   );
+
+  const tlsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-main-helper-tls-'));
+  let tlsServer;
+  try {
+    const identity = await readOrCreateTlsIdentity(tlsRoot, 'crm-main-helper-test');
+    tlsServer = https.createServer({ key: identity.key, cert: identity.cert }, (_request, response) => {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ mode: 'central-server', serverId: 'server-tls', dataEpoch: 'epoch-tls' }));
+    });
+    await new Promise((resolve) => tlsServer.listen(0, '127.0.0.1', resolve));
+    const tlsVerified = await probeApi(`https://127.0.0.1:${tlsServer.address().port}/api`, 'server-tls', {
+      normalizeApiUrl,
+      expectedTlsFingerprint: identity.fingerprint,
+    });
+    assert.equal(tlsVerified.tlsFingerprint.toLowerCase(), identity.fingerprint.toLowerCase());
+    await assert.rejects(
+      probeApi(`https://127.0.0.1:${tlsServer.address().port}/api`, 'server-tls', {
+        normalizeApiUrl,
+        expectedTlsFingerprint: '00:11:22',
+      }),
+      /Certificato server non corrispondente/,
+    );
+  } finally {
+    if (tlsServer) await new Promise((resolve) => tlsServer.close(resolve));
+    fs.rmSync(tlsRoot, { recursive: true, force: true });
+  }
 
   const serialize = createSerializedExecutor();
   const order = [];

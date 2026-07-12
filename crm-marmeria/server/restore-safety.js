@@ -35,10 +35,19 @@ const isCompromisedLegacyAccount = (user) => {
   }
 };
 
+const canIgnoreSyncError = (error) => process.platform === 'win32'
+  && ['EPERM', 'EINVAL', 'ENOTSUP'].includes(error?.code);
+
 const syncFile = (filePath) => {
   const descriptor = fs.openSync(filePath, 'r');
   try {
-    fs.fsyncSync(descriptor);
+    try {
+      fs.fsyncSync(descriptor);
+    } catch (error) {
+      // Windows can reject fsync for files copied by SQLite even though the
+      // backup has already been completed and closed by the SQLite driver.
+      if (!canIgnoreSyncError(error)) throw error;
+    }
   } finally {
     fs.closeSync(descriptor);
   }

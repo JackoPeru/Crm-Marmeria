@@ -1,4 +1,5 @@
 const { pathToFileURL } = require('url');
+const https = require('https');
 
 const normalizeUrlForComparison = (value) => {
   const parsed = new URL(String(value || ''));
@@ -39,7 +40,13 @@ const createSerializedExecutor = () => {
 const probeApi = async (
   apiUrl,
   expectedServerId = null,
-  { normalizeApiUrl, fetchImpl = global.fetch, timeoutMs = 5000 } = {},
+  {
+    normalizeApiUrl,
+    fetchImpl = global.fetch,
+    timeoutMs = 5000,
+    expectedTlsFingerprint = null,
+    trustOnFirstUse = false,
+  } = {},
 ) => {
   if (typeof normalizeApiUrl !== 'function') throw new Error('Normalizzatore API non disponibile');
   if (typeof fetchImpl !== 'function') throw new Error('Client HTTP non disponibile');
@@ -48,10 +55,32 @@ const probeApi = async (
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(`${normalized}/health`, {
-      signal: controller.signal,
-      cache: 'no-store',
-    });
+    const response = (expectedTlsFingerprint || trustOnFirstUse) && normalized.startsWith('https:')
+      ? await new Promise((resolve, reject) => {
+        const request = https.get(`${normalized}/health`, { rejectUnauthorized: false, timeout: timeoutMs }, (result) => {
+          let body = '';
+          const fingerprint = result.socket?.getPeerCertificate?.().fingerprint || '';
+          result.setEncoding('utf8');
+          result.on('data', (chunk) => { body += chunk; });
+          result.on('end', () => {
+            if (!fingerprint) return reject(new Error('Il server non ha presentato un certificato TLS'));
+            if (expectedTlsFingerprint && fingerprint.toLowerCase() !== String(expectedTlsFingerprint).toLowerCase()) {
+              return reject(new Error('Certificato server non corrispondente'));
+            }
+            try {
+              resolve({
+                ok: result.statusCode === 200,
+                status: result.statusCode,
+                tlsFingerprint: fingerprint,
+                json: async () => JSON.parse(body),
+              });
+            } catch (error) { reject(error); }
+          });
+        });
+        request.on('timeout', () => request.destroy(new Error('Timeout server')));
+        request.on('error', reject);
+      })
+      : await fetchImpl(`${normalized}/health`, { signal: controller.signal, cache: 'no-store' });
     if (!response.ok) {
       const error = new Error(`Il server ha risposto con stato ${response.status}`);
       error.code = 'SERVER_UNREACHABLE';
@@ -70,7 +99,7 @@ const probeApi = async (
       error.actualServerId = String(data.serverId);
       throw error;
     }
-    return { apiUrl: normalized, data };
+    return { apiUrl: normalized, data, tlsFingerprint: response.tlsFingerprint || null };
   } catch (error) {
     if (error?.name === 'AbortError') {
       const timeoutError = new Error('Timeout durante la verifica del server centrale');
