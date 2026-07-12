@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
 import {
   setTheme,
@@ -55,6 +55,10 @@ const useUI = () => {
   const userPreferences = useAppSelector(selectPreferences);
   const globalSearch = useAppSelector(selectGlobalSearch);
   const breadcrumbs = useAppSelector(selectBreadcrumb);
+
+  useEffect(() => {
+    if (theme === 'light' || theme === 'dark') localStorage.setItem('crm_theme', theme);
+  }, [theme]);
 
   // Gestione tema
   const changeTheme = useCallback((newTheme: AppTheme) => {

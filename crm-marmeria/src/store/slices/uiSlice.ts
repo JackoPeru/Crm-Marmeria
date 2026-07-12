@@ -108,9 +108,18 @@ interface UIState {
   }>;
 }
 
+const savedTheme = (): 'light' | 'dark' => {
+  if (typeof window === 'undefined') return 'light';
+  try {
+    return window.localStorage.getItem('crm_theme') === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
+};
+
 // Stato iniziale
 const initialState: UIState = {
-  theme: 'auto',
+  theme: savedTheme(),
   isDarkMode: false,
   fontSize: 'medium',
   compactMode: false,

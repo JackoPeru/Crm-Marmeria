@@ -46,6 +46,7 @@ const AppContent = () => {
     userPreferences,
     updatePreferences,
     toggleSidebar,
+    closeSidebar,
   } = useUI();
   const { isAuthenticated, isLoading, user, hasPermission } = useAuth();
 
@@ -89,6 +90,10 @@ const AppContent = () => {
 
   const currentItem = allowedNavItems.find((item) => item.id === currentPage) || allowedNavItems[0];
   const CurrentPageComponent = currentItem?.component || DashboardPage;
+  const handleNavigation = (pageId) => {
+    updatePreferences({ currentPage: pageId });
+    if (window.innerWidth < 1024) closeSidebar();
+  };
 
   return (
     <BusinessDataProvider>
@@ -97,7 +102,7 @@ const AppContent = () => {
           navItems={allowedNavItems}
           isSidebarOpen={isSidebarOpen}
           currentPage={currentPage}
-          handleNavigation={(pageId) => updatePreferences({ currentPage: pageId })}
+          handleNavigation={handleNavigation}
           currentUser={user}
           appId="crm-marmeria"
           onClose={toggleSidebar}

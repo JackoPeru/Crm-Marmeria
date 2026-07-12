@@ -35,7 +35,7 @@ const AnimatedSwitch = ({ id, checked, onChange, label }) => (
 );
 
 const Section = ({ icon: Icon, title, iconClass, children }) => (
-  <section className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
+  <section className="mb-10 p-6 bg-light-card dark:bg-dark-card text-light-text dark:text-dark-text border border-light-border dark:border-dark-border rounded-lg shadow-md">
     <h3 className="text-xl font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center">
       <Icon size={24} className={`mr-3 ${iconClass}`} /> {title}
     </h3>

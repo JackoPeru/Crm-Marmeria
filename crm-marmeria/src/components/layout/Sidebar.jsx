@@ -20,12 +20,20 @@ const Sidebar = ({
     )}
 
     <aside
-      className={`fixed inset-y-0 left-0 z-40 flex flex-col w-64 bg-light-primary text-white dark:bg-dark-primary dark:text-dark-text transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+      className={`fixed inset-y-0 left-0 z-40 flex flex-col w-64 bg-light-primary text-white dark:bg-dark-primary dark:text-dark-text transform transition-transform duration-300 ease-in-out ${
         isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}
     >
-      <div className="p-4 border-b border-light-accent dark:border-dark-accent">
+      <div className="p-4 border-b border-light-accent dark:border-dark-accent flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">CRM Marmeria</h1>
+        <button
+          type="button"
+          onClick={onClose}
+          className="lg:hidden p-2 -mr-2 rounded-md hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white"
+          aria-label="Chiudi menu navigazione"
+        >
+          <X className="w-5 h-5" />
+        </button>
       </div>
 
       <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
