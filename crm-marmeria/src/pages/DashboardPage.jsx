@@ -9,6 +9,7 @@ import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
+import { createId } from '../utils/ids';
 import { observeServerScope, stableServerKey } from '../utils/serverScope';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
@@ -148,7 +149,7 @@ const DashboardPage = () => {
     if (!text) return;
     setNotes((current) => [
       ...current,
-      { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() },
+      { id: createId(), text, createdAt: new Date().toISOString() },
     ]);
     setNewNote('');
   };

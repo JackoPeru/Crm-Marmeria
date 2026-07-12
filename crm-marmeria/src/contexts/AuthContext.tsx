@@ -13,6 +13,7 @@ interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isInitialized: boolean;
   login: (credentials: LoginCredentials) => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (profile: ProfileUpdate) => Promise<User>;
@@ -25,7 +26,9 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 let accountStateQueue: Promise<void> = Promise.resolve();
 
 const clearAccountScopedState = (): Promise<void> => {
-  accountStateQueue = accountStateQueue.then(async () => {
+  accountStateQueue = accountStateQueue.catch((error) => {
+    console.error('Pulizia stato account precedente fallita:', error);
+  }).then(async () => {
     store.dispatch(resetClientsState());
     store.dispatch(resetMaterialsState());
     store.dispatch(resetOrdersState());
@@ -38,6 +41,7 @@ const clearAccountScopedState = (): Promise<void> => {
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -61,7 +65,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         console.error('Errore inizializzazione auth:', error);
         if (mounted) setUser(null);
       } finally {
-        if (mounted) setIsLoading(false);
+        if (mounted) {
+          setIsLoading(false);
+          setIsInitialized(true);
+        }
       }
     };
 
@@ -101,8 +108,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const login = async (credentials: LoginCredentials): Promise<void> => {
     setIsLoading(true);
     try {
-      await clearAccountScopedState();
       const response = await authService.login(credentials);
+      try {
+        await clearAccountScopedState();
+      } catch (error) {
+        console.error('Pulizia cache dopo login fallita:', error);
+      }
       setUser(response.user);
       realtimeService.connectFromStorage();
       window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: response.user }));
@@ -143,6 +154,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       user,
       isAuthenticated: Boolean(user),
       isLoading,
+      isInitialized,
       login,
       logout,
       updateUser,

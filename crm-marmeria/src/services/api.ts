@@ -4,6 +4,7 @@ import { getCurrentQueueScope, offlineQueue } from './offlineQueue';
 import type { QueueScope } from './offlineQueue';
 import { bindRequestToScope, queueScopesEqual } from './requestScope';
 import { buildOptimisticMutation } from './optimisticMutation';
+import { createId } from '../utils/ids';
 
 interface ReplayConfig extends AxiosRequestConfig {
   _replay?: boolean;
@@ -18,7 +19,7 @@ const AUTH_ACTION = /^\/auth\/(login|logout)\/?$/;
 const SERVER_ID_KEY = 'crm_server_id';
 const SERVER_URL_KEY = 'crm_server_identity_url';
 const DATA_EPOCH_KEY = 'crm_data_epoch';
-const operationId = () => crypto.randomUUID();
+const operationId = () => createId();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 const browserApiBaseUrl = () => {
   if (typeof window === 'undefined' || !['http:', 'https:'].includes(window.location.protocol) || window.location.port !== '3001') {
@@ -129,7 +130,7 @@ class ApiClient {
           && config.data
           && !(config.data instanceof FormData)
         ) {
-          config.data = { ...config.data, id: config.data.id || crypto.randomUUID() };
+          config.data = { ...config.data, id: config.data.id || createId() };
         }
       }
       return config;
@@ -138,7 +139,10 @@ class ApiClient {
     this.axiosInstance.interceptors.response.use(
       (response) => {
         const requestContext = (response.config as ReplayConfig)._crmContext;
-        if (requestContext && requestContext !== clientContextFingerprint()) {
+        const healthCheck = /\/health\/?$/.test(String(response.config.url || ''));
+        // Health aggiorna serverId/dataEpoch: in StrictMode due controlli paralleli
+        // possono avere impronte diverse senza che il server sia realmente cambiato.
+        if (!healthCheck && requestContext && requestContext !== clientContextFingerprint()) {
           const error = new Error('Risposta ignorata perché account o server sono cambiati');
           (error as any).code = 'STALE_CONTEXT_RESPONSE';
           return Promise.reject(error);
