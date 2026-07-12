@@ -48,7 +48,7 @@ const AppContent = () => {
     toggleSidebar,
     closeSidebar,
   } = useUI();
-  const { isAuthenticated, isLoading, user, hasPermission } = useAuth();
+  const { isAuthenticated, isLoading, isInitialized, user, hasPermission } = useAuth();
 
   useEffect(() => {
     cacheService.init().catch((error) => console.error('Errore inizializzazione cache:', error));
@@ -69,7 +69,7 @@ const AppContent = () => {
     }
   }, [isAuthenticated, currentPage, requestedPage, updatePreferences]);
 
-  if (isLoading) {
+  if (!isInitialized) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
         <div className="text-center">

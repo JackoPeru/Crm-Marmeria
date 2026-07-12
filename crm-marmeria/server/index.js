@@ -63,6 +63,7 @@ const start = async () => {
     webRoot,
     webOrigins,
     bootstrapAdmin: defaultAdmin(),
+    onUpdateApplied: () => void shutdown(),
   });
 
   const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });

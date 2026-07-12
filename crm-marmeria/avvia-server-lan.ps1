@@ -41,6 +41,9 @@ $env:CRM_SIMPLE_DEFAULT_ADMIN = '1'
 
 $existingPids = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty OwningProcess -Unique)
+Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -match 'avvia-server-lan-runner\.cmd' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 foreach ($existingPid in $existingPids) {
   $process = Get-CimInstance Win32_Process -Filter "ProcessId = $existingPid"
   if ($process.Name -ne 'node.exe' -or $process.CommandLine -notmatch 'index\.js') {
@@ -48,7 +51,7 @@ foreach ($existingPid in $existingPids) {
   }
   Stop-Process -Id $existingPid -Force
 }
-Start-Process npm.cmd -WorkingDirectory $root -WindowStyle Hidden -ArgumentList 'run', 'server' | Out-Null
+Start-Process cmd.exe -WorkingDirectory $root -WindowStyle Hidden -ArgumentList '/d', '/c', 'avvia-server-lan-runner.cmd' | Out-Null
 
 Write-Host ''
 Write-Host 'CRM pronto. Apri da telefono o browser:' -ForegroundColor Green

@@ -13,6 +13,7 @@ import DataManager from '../components/DataManager';
 import UserManagement from '../components/UserManagement';
 import ServerConnectionSettings from '../components/ServerConnectionSettings';
 import AppUpdatePanel from '../components/AppUpdatePanel';
+import ServerUpdatePanel from '../components/ServerUpdatePanel';
 import useUI from '../hooks/useUI';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -159,6 +160,7 @@ const SettingsPage = () => {
       </Section>
 
       {user?.role === 'admin' && <ServerConnectionSettings />}
+      {user?.role === 'admin' && <ServerUpdatePanel />}
       {user?.role === 'admin' && <AppUpdatePanel />}
       {user?.role === 'admin' && <UserManagement />}
 

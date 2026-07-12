@@ -25,6 +25,7 @@ const {
   getAuthEpoch,
 } = require('./middleware/auth');
 const { MutationBarrier } = require('./mutation-barrier');
+const { checkForServerUpdate, applyServerUpdate } = require('./self-update');
 const { gracefulShutdown } = require('./shutdown-runtime');
 const {
   canViewFinancials,
@@ -1287,6 +1288,33 @@ async function createCrmServer(options = {}) {
       id: req.params.id,
       limit: req.query.limit,
     }).map((item) => presentAudit(req.user, item)));
+  });
+
+  app.get('/api/system/update/status', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+    try {
+      return res.json(await checkForServerUpdate());
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.post('/api/system/update/check', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+    try {
+      return res.json(await checkForServerUpdate({ refresh: true }));
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.post('/api/system/update/apply', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+    try {
+      const result = await applyServerUpdate();
+      res.json(result);
+      if (result.restartRequired && typeof options.onUpdateApplied === 'function') {
+        setTimeout(() => options.onUpdateApplied(), 750);
+      }
+      return undefined;
+    } catch (error) {
+      return respondError(res, error);
+    }
   });
 
   const ensureAttachmentEntity = (action) => (req, res, next) => {
