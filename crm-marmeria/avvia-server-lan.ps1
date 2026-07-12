@@ -46,13 +46,17 @@ $env:CRM_WEB_ORIGINS = (($addresses | ForEach-Object { "http://$($_):$port" }) -
 $env:CRM_DISABLE_TLS = '1'
 $env:CRM_SIMPLE_DEFAULT_ADMIN = '1'
 
+$runners = @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -match 'avvia-server-lan-runner\.cmd' })
+foreach ($runner in $runners) {
+  taskkill.exe /PID $runner.ProcessId /T /F | Out-Null
+}
+if ($runners.Count) { Start-Sleep -Milliseconds 500 }
 $existingPids = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty OwningProcess -Unique)
-Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.CommandLine -match 'avvia-server-lan-runner\.cmd' } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 foreach ($existingPid in $existingPids) {
   $process = Get-CimInstance Win32_Process -Filter "ProcessId = $existingPid"
+  if (-not $process) { continue }
   if ($process.Name -ne 'node.exe' -or $process.CommandLine -notmatch 'index\.js') {
     throw "La porta $port e usata da un altro programma. Chiudilo, poi riapri questo file."
   }
