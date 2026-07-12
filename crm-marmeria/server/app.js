@@ -92,6 +92,37 @@ const publicUser = (user) => ({
 
 const publicActor = (user) => ({ id: String(user.id), username: user.username });
 const hasActiveAdmin = () => readUsers().some((user) => user.role === 'admin' && user.isActive);
+const createBootstrapAdmin = async (credentials) => {
+  if (!credentials || hasActiveAdmin()) return false;
+  const username = String(credentials.username || '').trim();
+  const password = String(credentials.password || '');
+  const email = String(credentials.email || '').trim();
+  const firstName = String(credentials.firstName || '').trim();
+  const lastName = String(credentials.lastName || '').trim();
+  if (!username || password.length < 10 || !validEmail(email) || !firstName || !lastName) {
+    throw new Error('Credenziali amministratore iniziale non valide');
+  }
+  const passwordHash = await hashPassword(password);
+  await mutateUsers(async (users) => {
+    if (users.some((user) => user.role === 'admin' && user.isActive)) return { write: false };
+    users.push({
+      id: crypto.randomUUID(),
+      username,
+      email,
+      password: passwordHash,
+      firstName,
+      lastName,
+      role: 'admin',
+      permissions: ADMIN_PERMISSIONS,
+      isActive: true,
+      sessionVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    return { value: true };
+  });
+  return true;
+};
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const hasAny = (object, keys) => keys.some((key) => hasOwn(object, key));
 const isLoopback = (req) => [
@@ -456,6 +487,7 @@ async function createCrmServer(options = {}) {
     .filter(Boolean));
 
   configureAuth({ dataDir });
+  await createBootstrapAdmin(options.bootstrapAdmin || null);
   const mutationBarrier = new MutationBarrier({ timeoutMs: 30000 });
   const db = new CrmDatabase({ dataDir, backupDir, attachmentsDir });
   db.migrateLegacy(dataDir);
@@ -570,6 +602,9 @@ async function createCrmServer(options = {}) {
     maintenance: mutationBarrier.isMaintenance,
     dataEpoch: getAuthEpoch(),
     setupRequired: !hasActiveAdmin(),
+    defaultAdmin: options.bootstrapAdmin
+      ? { username: options.bootstrapAdmin.username, password: options.bootstrapAdmin.password }
+      : null,
   }));
   app.head('/api/health', (req, res) => res.sendStatus(200));
 

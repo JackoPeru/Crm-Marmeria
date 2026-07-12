@@ -27,15 +27,27 @@ const configuredWebOrigins = () => String(process.env.CRM_WEB_ORIGINS || '')
   .map((origin) => origin.trim().replace(/\/$/, ''))
   .filter(Boolean);
 
+const defaultAdmin = () => process.env.CRM_SIMPLE_DEFAULT_ADMIN === '1'
+  ? {
+    username: 'admin',
+    password: 'marmo2026!',
+    email: 'admin@crm.local',
+    firstName: 'Amministratore',
+    lastName: 'CRM',
+  }
+  : null;
+
 const start = async () => {
   const dataDir = process.env.CRM_DATA_DIR || path.join(__dirname, 'data');
   const backupDir = process.env.CRM_BACKUP_DIR || path.join(dataDir, 'backups');
   const serverId = persistentServerId(dataDir);
   const setupSecret = persistentSetupSecret(dataDir);
-  const tlsIdentity = await readOrCreateTlsIdentity(
-    path.join(dataDir, '.tls'),
-    process.env.CRM_TLS_COMMON_NAME || `crm-marmeria-${serverId}`,
-  );
+  const tlsIdentity = process.env.CRM_DISABLE_TLS === '1'
+    ? null
+    : await readOrCreateTlsIdentity(
+      path.join(dataDir, '.tls'),
+      process.env.CRM_TLS_COMMON_NAME || `crm-marmeria-${serverId}`,
+    );
   const webRoot = configuredWebRoot();
   const webOrigins = configuredWebOrigins();
 
@@ -50,15 +62,17 @@ const start = async () => {
     tls: tlsIdentity,
     webRoot,
     webOrigins,
+    bootstrapAdmin: defaultAdmin(),
   });
 
   const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
   if (upgradedSnapshots > 0) {
     console.log(`Aggiornati ${upgradedSnapshots} snapshot legacy con gli account correnti`);
   }
-  console.log(`CRM Marmeria centrale HTTPS attivo su ${instance.host}:${instance.port}`);
+  console.log(`CRM Marmeria centrale ${tlsIdentity ? 'HTTPS' : 'HTTP'} attivo su ${instance.host}:${instance.port}`);
   console.log(`ID server: ${serverId}`);
-  console.log(`Impronta certificato TLS: ${tlsIdentity.fingerprint}`);
+  if (tlsIdentity) console.log(`Impronta certificato TLS: ${tlsIdentity.fingerprint}`);
+  if (defaultAdmin()) console.log('Accesso base: admin / marmo2026!');
   if (webRoot) {
     console.log(`Interfaccia web disponibile per: ${webOrigins.join(', ') || 'localhost'}`);
   } else {

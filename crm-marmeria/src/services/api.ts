@@ -21,7 +21,7 @@ const DATA_EPOCH_KEY = 'crm_data_epoch';
 const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
 const defaultApiBaseUrl = () => {
-  if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+  if (typeof window !== 'undefined' && ['http:', 'https:'].includes(window.location.protocol) && window.location.port === '3001') {
     return `${window.location.origin}/api`;
   }
   return 'https://127.0.0.1:3001/api';
