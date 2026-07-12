@@ -5,6 +5,12 @@ declare global {
     electronAPI?: {
       platform: string;
       version: string;
+      updates: {
+        getStatus: () => Promise<AppUpdateState>;
+        check: () => Promise<AppUpdateState>;
+        download: () => Promise<AppUpdateState>;
+        install: () => Promise<{ success: boolean; error?: string }>;
+      };
       network: {
         getPreferences: () => Promise<{
           success: boolean;
@@ -61,6 +67,15 @@ declare global {
     discoveredServerId?: string;
     tlsFingerprint?: string;
     lastServerError?: string;
+  }
+
+  interface AppUpdateState {
+    status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'up-to-date' | 'unsupported' | 'error';
+    currentVersion: string;
+    version?: string | null;
+    releaseNotes?: string;
+    percent?: number;
+    message?: string;
   }
 
   interface DiscoveredMaster {

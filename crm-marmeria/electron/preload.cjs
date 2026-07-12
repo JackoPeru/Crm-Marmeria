@@ -3,6 +3,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   version: process.versions.electron,
+  updates: {
+    getStatus: () => ipcRenderer.invoke('app-update-status'),
+    check: () => ipcRenderer.invoke('app-update-check'),
+    download: () => ipcRenderer.invoke('app-update-download'),
+    install: () => ipcRenderer.invoke('app-update-install'),
+  },
   network: {
     getPreferences: () => ipcRenderer.invoke('network-get-prefs'),
     saveNetworkPrefs: (prefs) => ipcRenderer.invoke('network-save-prefs', prefs),

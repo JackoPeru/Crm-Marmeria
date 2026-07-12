@@ -1,6 +1,6 @@
 {
   "name": "crm-marmeria",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Sistema CRM professionale per la gestione di marmerie e lavorazioni in pietra",
   "author": "CRM Marmeria Team",
   "private": true,
@@ -21,6 +21,7 @@
     "server": "npm --prefix server start",
     "server:dev": "npm --prefix server run dev",
     "server:test": "npm --prefix server test",
+    "release:win": "npm run build:win -- --publish always",
     "dev:full": "concurrently \"npm run server:dev\" \"npm run dev\"",
     "test": "vitest --configLoader native",
     "test:ui": "vitest --ui"
@@ -32,6 +33,7 @@
     "better-sqlite3": "^12.11.1",
     "chart.js": "^4.5.0",
     "cors": "^2.8.5",
+    "electron-updater": "^6.3.9",
     "express": "^4.22.2",
     "idb": "^8.0.3",
     "jsonwebtoken": "^9.0.2",
@@ -88,7 +90,14 @@
     ],
     "win": {
       "target": "nsis"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JackoPeru",
+        "repo": "Crm-Marmeria"
+      }
+    ]
   },
   "overrides": {
     "lodash": "4.18.1",

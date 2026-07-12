@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -25,6 +26,14 @@ const isDev = process.env.NODE_ENV === 'development';
 let centralServer = null;
 let mainWindow = null;
 let quitAfterServerStop = false;
+let updateState = {
+  status: 'idle',
+  currentVersion: app.getVersion(),
+  version: null,
+  releaseNotes: '',
+  percent: 0,
+  message: '',
+};
 
 const lock = app.requestSingleInstanceLock();
 if (!lock) app.quit();
@@ -48,6 +57,67 @@ const probeApi = (apiUrl, expectedServerId = null, expectedTlsFingerprint = null
   { normalizeApiUrl, expectedTlsFingerprint, trustOnFirstUse },
 );
 const assertTrustedSender = (event) => assertTrustedIpcSender(event, isTrustedRendererUrl);
+
+const setUpdateState = (patch) => {
+  updateState = { ...updateState, ...patch };
+  mainWindow?.webContents.send('app-update-state', updateState);
+  return updateState;
+};
+
+const checkForAppUpdate = async () => {
+  if (!app.isPackaged) {
+    return setUpdateState({
+      status: 'unsupported',
+      message: 'Gli aggiornamenti automatici funzionano nella versione installata.',
+    });
+  }
+  try {
+    setUpdateState({ status: 'checking', message: 'Controllo aggiornamenti...', percent: 0 });
+    await autoUpdater.checkForUpdates();
+    return updateState;
+  } catch (error) {
+    return setUpdateState({ status: 'error', message: error.message || 'Controllo aggiornamenti non riuscito' });
+  }
+};
+
+const configureAppUpdater = () => {
+  if (!app.isPackaged) {
+    setUpdateState({
+      status: 'unsupported',
+      message: 'Gli aggiornamenti automatici funzionano nella versione installata.',
+    });
+    return;
+  }
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.on('update-available', (info) => setUpdateState({
+    status: 'available',
+    version: info.version,
+    releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : '',
+    message: `Versione ${info.version} disponibile`,
+  }));
+  autoUpdater.on('update-not-available', () => setUpdateState({
+    status: 'up-to-date',
+    version: app.getVersion(),
+    message: 'App giÃ  aggiornata',
+  }));
+  autoUpdater.on('download-progress', (progress) => setUpdateState({
+    status: 'downloading',
+    percent: Math.round(progress.percent || 0),
+    message: 'Download aggiornamento in corso...',
+  }));
+  autoUpdater.on('update-downloaded', (info) => setUpdateState({
+    status: 'downloaded',
+    version: info.version,
+    percent: 100,
+    message: 'Aggiornamento pronto: riavvia per installarlo.',
+  }));
+  autoUpdater.on('error', (error) => setUpdateState({
+    status: 'error',
+    message: error.message || 'Aggiornamento non riuscito',
+  }));
+  setTimeout(() => { void checkForAppUpdate(); }, 10000);
+};
 
 const readPrefs = () => {
   try {
@@ -346,7 +416,10 @@ const initializeNetwork = async () => {
 app.whenReady().then(async () => {
   centralServer = new CentralCrmServer();
   await initializeNetwork();
-  if (!app.isQuiting) createWindow();
+  if (!app.isQuiting) {
+    createWindow();
+    configureAppUpdater();
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -380,6 +453,34 @@ app.on('activate', async () => {
 ipcMain.handle('network-get-prefs', (event) => {
   assertTrustedSender(event);
   return { success: true, prefs: readPrefs() };
+});
+
+ipcMain.handle('app-update-status', (event) => {
+  assertTrustedSender(event);
+  return updateState;
+});
+ipcMain.handle('app-update-check', (event) => {
+  assertTrustedSender(event);
+  return checkForAppUpdate();
+});
+ipcMain.handle('app-update-download', async (event) => {
+  assertTrustedSender(event);
+  if (!app.isPackaged) return checkForAppUpdate();
+  try {
+    setUpdateState({ status: 'downloading', percent: 0, message: 'Avvio download aggiornamento...' });
+    await autoUpdater.downloadUpdate();
+    return updateState;
+  } catch (error) {
+    return setUpdateState({ status: 'error', message: error.message || 'Download aggiornamento non riuscito' });
+  }
+});
+ipcMain.handle('app-update-install', (event) => {
+  assertTrustedSender(event);
+  if (updateState.status !== 'downloaded') {
+    return { success: false, error: 'Nessun aggiornamento pronto da installare' };
+  }
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  return { success: true };
 });
 
 ipcMain.handle('network-save-prefs', (event, incoming) => {
