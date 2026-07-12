@@ -23,6 +23,13 @@ if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
 }
 if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) { throw 'Node.js non trovato. Riavvia questo file.' }
 
+if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
+  Write-Host 'Installo Git per gli aggiornamenti del server...'
+  winget install --id Git.Git --exact --source winget --accept-package-agreements --accept-source-agreements
+  $env:Path = "C:\Program Files\Git\cmd;$env:Path"
+}
+if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw 'Git non trovato. Riavvia questo file.' }
+
 if (-not (Test-Path 'node_modules\vite')) { npm.cmd ci --ignore-scripts }
 if (-not (Test-Path 'server\node_modules\better-sqlite3')) { npm.cmd ci --prefix server }
 if (-not (Test-Path 'dist\index.html')) { npm.cmd run build }
