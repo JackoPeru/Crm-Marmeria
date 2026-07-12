@@ -42,12 +42,10 @@ const start = async () => {
   const backupDir = process.env.CRM_BACKUP_DIR || path.join(dataDir, 'backups');
   const serverId = persistentServerId(dataDir);
   const setupSecret = persistentSetupSecret(dataDir);
-  const tlsIdentity = process.env.CRM_DISABLE_TLS === '1'
-    ? null
-    : await readOrCreateTlsIdentity(
-      path.join(dataDir, '.tls'),
-      process.env.CRM_TLS_COMMON_NAME || `crm-marmeria-${serverId}`,
-    );
+  const tlsIdentity = await readOrCreateTlsIdentity(
+    path.join(dataDir, '.tls'),
+    process.env.CRM_TLS_COMMON_NAME || `crm-marmeria-${serverId}`,
+  );
   const webRoot = configuredWebRoot();
   const webOrigins = configuredWebOrigins();
 
@@ -69,7 +67,7 @@ const start = async () => {
   if (upgradedSnapshots > 0) {
     console.log(`Aggiornati ${upgradedSnapshots} snapshot legacy con gli account correnti`);
   }
-  console.log(`CRM Marmeria centrale ${tlsIdentity ? 'HTTPS' : 'HTTP'} attivo su ${instance.host}:${instance.port}`);
+  console.log(`CRM Marmeria centrale HTTPS attivo su ${instance.host}:${instance.port}`);
   console.log(`ID server: ${serverId}`);
   if (tlsIdentity) console.log(`Impronta certificato TLS: ${tlsIdentity.fingerprint}`);
   if (defaultAdmin()) console.log('Accesso base: admin / marmo2026!');

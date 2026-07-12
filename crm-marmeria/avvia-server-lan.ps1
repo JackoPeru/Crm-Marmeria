@@ -35,15 +35,23 @@ $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinu
   Where-Object { $_.IPAddress -notmatch '^127\.' -and $_.IPAddress -notmatch '^169\.254\.' } |
   Select-Object -ExpandProperty IPAddress -Unique)
 $env:CRM_WEB_ROOT = (Join-Path $root 'dist')
-$env:CRM_WEB_ORIGINS = (($addresses | ForEach-Object { "http://$($_):$port" }) -join ',')
-$env:CRM_DISABLE_TLS = '1'
+$env:CRM_WEB_ORIGINS = (($addresses | ForEach-Object { "https://$($_):$port" }) -join ',')
+Remove-Item Env:CRM_DISABLE_TLS -ErrorAction SilentlyContinue
 $env:CRM_SIMPLE_DEFAULT_ADMIN = '1'
 
-if (-not (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet)) {
-  Start-Process cmd.exe -ArgumentList '/d', '/k', "cd /d `"$root`" && npm.cmd run server" | Out-Null
+$existingPids = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique)
+foreach ($existingPid in $existingPids) {
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId = $existingPid"
+  if ($process.Name -ne 'node.exe' -or $process.CommandLine -notmatch 'index\.js') {
+    throw "La porta $port e usata da un altro programma. Chiudilo, poi riapri questo file."
+  }
+  Stop-Process -Id $existingPid -Force
 }
+Start-Process npm.cmd -WorkingDirectory $root -WindowStyle Hidden -ArgumentList 'run', 'server' | Out-Null
 
 Write-Host ''
 Write-Host 'CRM pronto. Apri da telefono o browser:' -ForegroundColor Green
-if ($addresses.Count) { $addresses | ForEach-Object { Write-Host "  http://$($_):$port" } } else { Write-Host "  http://IP-DEL-PC:$port" }
+if ($addresses.Count) { $addresses | ForEach-Object { Write-Host "  https://$($_):$port" } } else { Write-Host "  https://IP-DEL-PC:$port" }
+Write-Host 'Se Chrome apre HTTPS, scegli Avanzate e Continua: certificato locale del PC server.' -ForegroundColor DarkYellow
 Write-Host 'Login: admin / marmo2026!' -ForegroundColor Yellow
