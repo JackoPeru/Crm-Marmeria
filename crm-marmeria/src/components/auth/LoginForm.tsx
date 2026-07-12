@@ -31,6 +31,7 @@ const LoginForm: React.FC = () => {
   const [serverReachable, setServerReachable] = useState(true);
   const [defaultAdmin, setDefaultAdmin] = useState<{ username: string; password: string } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [submitError, setSubmitError] = useState('');
 
   const checkServer = useCallback(async () => {
     setCheckingServer(true);
@@ -73,6 +74,7 @@ const LoginForm: React.FC = () => {
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = event.target;
     setFormData((previous) => ({ ...previous, [name]: value }));
+    if (submitError) setSubmitError('');
     if (errors[name]) setErrors((previous) => ({ ...previous, [name]: '' }));
   };
 
@@ -99,6 +101,7 @@ const LoginForm: React.FC = () => {
     event.preventDefault();
     if (setupRequired && !setupAllowedHere) return;
     if (!validate()) return;
+    setSubmitError('');
 
     try {
       await login({
@@ -112,8 +115,8 @@ const LoginForm: React.FC = () => {
           }
           : {}),
       });
-    } catch {
-      // Il contesto mostra l'errore restituito dal server.
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Accesso non riuscito');
     }
   };
 
@@ -168,6 +171,12 @@ const LoginForm: React.FC = () => {
           {defaultAdmin && (
             <div className="mb-5 p-3 rounded-lg bg-yellow-50 text-yellow-900 border border-yellow-300 text-sm dark:bg-yellow-900/20 dark:text-yellow-100 dark:border-yellow-700">
               <strong>Accesso base:</strong> username <code>{defaultAdmin.username}</code> — password <code>{defaultAdmin.password}</code>
+            </div>
+          )}
+
+          {submitError && (
+            <div className="mb-5 p-3 rounded-lg bg-red-50 text-red-800 border border-red-200 text-sm dark:bg-red-900/20 dark:text-red-200 dark:border-red-800" role="alert">
+              {submitError}
             </div>
           )}
 

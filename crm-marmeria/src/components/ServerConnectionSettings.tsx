@@ -7,9 +7,8 @@ const normalizeApiUrl = (value: string) => {
   const trimmed = value.trim();
   if (!trimmed) throw new Error('Inserisci l’indirizzo del PC principale');
   const parsed = new URL(trimmed);
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
-    throw new Error('I server remoti devono usare https://');
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('L\'indirizzo deve iniziare con http:// o https://');
   }
   parsed.hash = '';
   parsed.search = '';
@@ -176,7 +175,7 @@ const ServerConnectionSettings: React.FC = () => {
                 discoveredServerId: undefined,
                 tlsFingerprint: undefined,
               }))}
-              placeholder="https://192.168.1.20:3001/api"
+              placeholder="http://192.168.1.20:3001/api"
               className="mt-1 w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
             />
           </label>

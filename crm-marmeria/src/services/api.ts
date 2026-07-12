@@ -20,11 +20,29 @@ const SERVER_URL_KEY = 'crm_server_identity_url';
 const DATA_EPOCH_KEY = 'crm_data_epoch';
 const operationId = () => crypto.randomUUID();
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
-const defaultApiBaseUrl = () => {
-  if (typeof window !== 'undefined' && ['http:', 'https:'].includes(window.location.protocol) && window.location.port === '3001') {
-    return `${window.location.origin}/api`;
+const browserApiBaseUrl = () => {
+  if (typeof window === 'undefined' || !['http:', 'https:'].includes(window.location.protocol) || window.location.port !== '3001') {
+    return null;
   }
-  return 'https://127.0.0.1:3001/api';
+  return `${window.location.origin}/api`;
+};
+const initialApiBaseUrl = () => {
+  const browserUrl = browserApiBaseUrl();
+  const storedUrl = localStorage.getItem('crm_api_base_url');
+  if (browserUrl && storedUrl) {
+    try {
+      const current = new URL(browserUrl);
+      const stored = new URL(storedUrl);
+      // Stesso PC/porta, protocollo cambiato dal launcher: usa sempre la pagina aperta.
+      if (stored.host === current.host) {
+        localStorage.setItem('crm_api_base_url', browserUrl);
+        return browserUrl;
+      }
+    } catch {
+      localStorage.removeItem('crm_api_base_url');
+    }
+  }
+  return storedUrl || import.meta.env.VITE_API_BASE_URL || browserUrl || 'https://127.0.0.1:3001/api';
 };
 const currentUserId = () => {
   try {
@@ -34,7 +52,7 @@ const currentUserId = () => {
   }
 };
 const clientContextFingerprint = () => [
-  normalizeBaseUrl(localStorage.getItem('crm_api_base_url') || import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl()),
+  normalizeBaseUrl(initialApiBaseUrl()),
   localStorage.getItem(SERVER_ID_KEY) || '',
   localStorage.getItem(DATA_EPOCH_KEY) || '',
   currentUserId(),
@@ -46,7 +64,7 @@ class ApiClient {
 
   constructor() {
     this.axiosInstance = axios.create({
-      baseURL: this.getBaseURL(),
+      baseURL: normalizeBaseUrl(initialApiBaseUrl()),
       timeout: 12000,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -57,7 +75,8 @@ class ApiClient {
     return normalizeBaseUrl(
       localStorage.getItem('crm_api_base_url')
         || import.meta.env.VITE_API_BASE_URL
-        || defaultApiBaseUrl(),
+        || browserApiBaseUrl()
+        || 'https://127.0.0.1:3001/api',
     );
   }
 
