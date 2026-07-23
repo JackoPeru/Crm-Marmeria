@@ -35,7 +35,10 @@ if (-not (Test-Path $dependencyCheck)) { throw 'File verifica-dipendenze.cjs non
 & node.exe $dependencyCheck
 if ($LASTEXITCODE -ne 0) { throw 'Controllo o installazione delle dipendenze non riuscito.' }
 
-if (-not (Test-Path 'dist\index.html')) { npm.cmd run build }
+if (-not (Test-Path 'dist\index.html')) {
+  npm.cmd run build
+  if ($LASTEXITCODE -ne 0) { throw 'Build dell interfaccia web non riuscita.' }
+}
 
 if (-not (Get-NetFirewallRule -DisplayName 'CRM Marmeria LAN' -ErrorAction SilentlyContinue)) {
   New-NetFirewallRule -DisplayName 'CRM Marmeria LAN' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -Profile Private | Out-Null
