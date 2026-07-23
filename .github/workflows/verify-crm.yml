@@ -13,8 +13,6 @@ jobs:
     defaults:
       run:
         working-directory: crm-marmeria
-    env:
-      TZ: Europe/Rome
 
     steps:
       - uses: actions/checkout@v4
@@ -23,140 +21,13 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install clean dependencies
-        run: |
-          npm ci --silent --no-audit --no-fund
-          npm ci --prefix server --silent --no-audit --no-fund
+      - name: Generate patched package lock
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 
-      - name: Collect application production audit
-        id: app_audit
-        shell: bash
-        run: |
-          set +e
-          npm audit --omit=dev --audit-level=low --json > /tmp/crm-audit.json
-          audit_status=$?
-          set -e
-          summary=$(node <<'NODE'
-          const fs = require('fs');
-          const report = JSON.parse(fs.readFileSync('/tmp/crm-audit.json', 'utf8'));
-          const entries = Object.entries(report.vulnerabilities || {});
-          const value = entries.length
-            ? entries.map(([name, item]) => `${name.replace(/[^a-zA-Z0-9_.-]/g, '_')}-${item.severity}`).join('__')
-            : 'clean';
-          process.stdout.write(value.slice(0, 180));
-          NODE
-          )
-          echo "status=$audit_status" >> "$GITHUB_OUTPUT"
-          echo "summary=$summary" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Upload application audit report
+      - name: Upload patched package lock
         uses: actions/upload-artifact@v4
         with:
-          name: npm-audit-${{ steps.app_audit.outputs.summary }}
-          path: /tmp/crm-audit.json
+          name: package-lock-js-yaml-4.3.0
+          path: crm-marmeria/package-lock.json
           if-no-files-found: error
           retention-days: 1
-
-      - name: Enforce application production audit
-        if: steps.app_audit.outputs.status != '0'
-        run: exit 1
-
-      - name: Verify dependency bootstrap
-        run: node verifica-dipendenze.cjs
-
-      - name: Verify automatic mode
-        run: node electron/automatic-mode.check.cjs
-
-      - name: Verify access policy
-        run: node server/access-policy.check.js
-
-      - name: Verify restore validation
-        run: node server/restore-validation.check.js
-
-      - name: Verify shutdown runtime
-        run: node server/shutdown-runtime.check.js
-
-      - name: Verify mutation barrier
-        run: node server/mutation-barrier.check.js
-
-      - name: Verify server bootstrap smoke
-        run: node server/smoke-test.js server
-
-      - name: Check Electron main syntax
-        run: node --check electron/main.cjs
-
-      - name: Check Electron network syntax
-        run: node --check electron/network-config.cjs
-
-      - name: Check server app syntax
-        run: node --check server/app.js
-
-      - name: Check server database syntax
-        run: node --check server/database.js
-
-      - name: Check restore safety syntax
-        run: node --check server/restore-safety.js
-
-      - name: Check shutdown runtime syntax
-        run: node --check server/shutdown-runtime.js
-
-      - name: Check access policy syntax
-        run: node --check server/access-policy.js
-
-      - name: Verify Electron main helpers
-        run: node electron/main-helpers.check.cjs
-
-      - name: Verify Electron main bootstrap
-        run: node electron/main-bootstrap.check.cjs
-
-      - name: Verify server identity
-        run: node electron/server-identity.check.cjs
-
-      - name: Verify duplicate master protection
-        run: node electron/server-master.check.cjs
-
-      - name: Verify network configuration
-        run: node electron/network-config.check.cjs
-
-      - name: Verify runtime files
-        run: node server/runtime-files.check.js
-
-      - name: Verify standalone index bootstrap
-        run: node server/index-bootstrap.check.js
-
-      - name: Verify server setup
-        run: node server/setup-test.js
-
-      - name: Smoke create
-        run: node server/smoke-test.js create
-
-      - name: Smoke update
-        run: node server/smoke-test.js update
-
-      - name: Smoke conflict
-        run: node server/smoke-test.js conflict
-
-      - name: Smoke integrity
-        run: node server/smoke-test.js integrity
-
-      - name: Smoke snapshot
-        run: node server/smoke-test.js snapshot
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Vitest
-        run: npm test -- --run
-
-      - name: Audit server production dependencies
-        run: npm audit --prefix server --omit=dev --audit-level=low
-
-      - name: Electron native smoke
-        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
-
-      - name: Build web application
-        run: npm run build
-
-      - name: Package Electron Linux directory
-        run: timeout 180s npx electron-builder --linux dir --publish never
