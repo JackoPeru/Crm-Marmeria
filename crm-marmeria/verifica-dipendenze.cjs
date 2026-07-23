@@ -12,7 +12,7 @@ const forceRepair = process.argv.includes('--force');
 
 const dependencySets = [
   {
-    label: 'app web/Electron',
+    label: 'frontend web (build)',
     directory: root,
     ignoreScripts: true,
     runtimeModules: [],
@@ -104,14 +104,10 @@ function verifyRuntimeModules(directory, modules) {
   return run(nodeCommand, ['-e', script, JSON.stringify(modules)], directory);
 }
 
-function verifyDependencySet(config, expectedFingerprint) {
+function verifyInstalledTree(config) {
   const nodeModules = path.join(config.directory, 'node_modules');
   if (!fs.existsSync(nodeModules)) {
     return { ok: false, reason: 'cartella node_modules assente' };
-  }
-
-  if (readStamp(config.directory) !== expectedFingerprint) {
-    return { ok: false, reason: 'package.json o package-lock.json modificato' };
   }
 
   const npmTree = run(npmCommand, ['ls', '--depth=0', '--silent'], config.directory);
@@ -156,19 +152,31 @@ function ensureDependencySet(config) {
   }
 
   const fingerprint = dependencyFingerprint(config.directory);
-  const verification = forceRepair
-    ? { ok: false, reason: 'riparazione forzata' }
-    : verifyDependencySet(config, fingerprint);
+  const currentStamp = readStamp(config.directory);
+  let verification;
+
+  if (forceRepair) {
+    verification = { ok: false, reason: 'riparazione forzata' };
+  } else if (currentStamp && currentStamp !== fingerprint) {
+    verification = { ok: false, reason: 'package.json o package-lock.json modificato' };
+  } else {
+    verification = verifyInstalledTree(config);
+  }
 
   if (verification.ok) {
-    console.log(`[OK] Dipendenze ${config.label} valide.`);
+    if (!currentStamp) {
+      fs.writeFileSync(stampPath(config.directory), `${fingerprint}\n`, 'utf8');
+      console.log(`[OK] Dipendenze ${config.label} valide; stato iniziale registrato.`);
+    } else {
+      console.log(`[OK] Dipendenze ${config.label} valide.`);
+    }
     return;
   }
 
   console.log(`[DIPENDENZE] ${config.label}: ${verification.reason}.`);
   installDependencySet(config, fingerprint);
 
-  const finalVerification = verifyDependencySet(config, fingerprint);
+  const finalVerification = verifyInstalledTree(config);
   if (!finalVerification.ok) {
     throw new Error(`Verifica finale fallita per ${config.label}: ${finalVerification.reason}`);
   }
