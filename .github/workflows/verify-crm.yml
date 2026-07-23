@@ -10,6 +10,12 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
+    env:
+      TZ: Europe/Rome
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,53 +24,108 @@ jobs:
           node-version: '22'
 
       - name: Install clean dependencies
-        working-directory: crm-marmeria
         run: |
           npm ci
           npm ci --prefix server
 
-      - name: Verify newly discovered regressions
-        working-directory: crm-marmeria
-        env:
-          TZ: Europe/Rome
-        run: |
-          node verifica-dipendenze.cjs
-          node electron/automatic-mode.check.cjs
-          node server/access-policy.check.js
-          node server/restore-validation.check.js
-          node server/shutdown-runtime.check.js
-          node server/mutation-barrier.check.js
-          node server/smoke-test.js server
+      - name: Verify dependency bootstrap
+        run: node verifica-dipendenze.cjs
 
-      - name: Verify complete application
-        working-directory: crm-marmeria
-        env:
-          TZ: Europe/Rome
-        run: |
-          node --check electron/main.cjs
-          node --check electron/network-config.cjs
-          node --check server/app.js
-          node --check server/database.js
-          node --check server/restore-safety.js
-          node --check server/shutdown-runtime.js
-          node --check server/access-policy.js
-          node electron/main-helpers.check.cjs
-          node electron/main-bootstrap.check.cjs
-          node electron/server-identity.check.cjs
-          node electron/server-master.check.cjs
-          node electron/network-config.check.cjs
-          node server/runtime-files.check.js
-          node server/index-bootstrap.check.js
-          node server/setup-test.js
-          node server/smoke-test.js create
-          node server/smoke-test.js update
-          node server/smoke-test.js conflict
-          node server/smoke-test.js integrity
-          node server/smoke-test.js snapshot
-          npm run typecheck
-          npm test -- --run
-          npm audit --omit=dev --audit-level=low
-          npm audit --prefix server --omit=dev --audit-level=low
-          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
-          npm run build
-          timeout 180s npx electron-builder --linux dir --publish never
+      - name: Verify automatic mode
+        run: node electron/automatic-mode.check.cjs
+
+      - name: Verify access policy
+        run: node server/access-policy.check.js
+
+      - name: Verify restore validation
+        run: node server/restore-validation.check.js
+
+      - name: Verify shutdown runtime
+        run: node server/shutdown-runtime.check.js
+
+      - name: Verify mutation barrier
+        run: node server/mutation-barrier.check.js
+
+      - name: Verify server bootstrap smoke
+        run: node server/smoke-test.js server
+
+      - name: Check Electron main syntax
+        run: node --check electron/main.cjs
+
+      - name: Check Electron network syntax
+        run: node --check electron/network-config.cjs
+
+      - name: Check server app syntax
+        run: node --check server/app.js
+
+      - name: Check server database syntax
+        run: node --check server/database.js
+
+      - name: Check restore safety syntax
+        run: node --check server/restore-safety.js
+
+      - name: Check shutdown runtime syntax
+        run: node --check server/shutdown-runtime.js
+
+      - name: Check access policy syntax
+        run: node --check server/access-policy.js
+
+      - name: Verify Electron main helpers
+        run: node electron/main-helpers.check.cjs
+
+      - name: Verify Electron main bootstrap
+        run: node electron/main-bootstrap.check.cjs
+
+      - name: Verify server identity
+        run: node electron/server-identity.check.cjs
+
+      - name: Verify duplicate master protection
+        run: node electron/server-master.check.cjs
+
+      - name: Verify network configuration
+        run: node electron/network-config.check.cjs
+
+      - name: Verify runtime files
+        run: node server/runtime-files.check.js
+
+      - name: Verify standalone index bootstrap
+        run: node server/index-bootstrap.check.js
+
+      - name: Verify server setup
+        run: node server/setup-test.js
+
+      - name: Smoke create
+        run: node server/smoke-test.js create
+
+      - name: Smoke update
+        run: node server/smoke-test.js update
+
+      - name: Smoke conflict
+        run: node server/smoke-test.js conflict
+
+      - name: Smoke integrity
+        run: node server/smoke-test.js integrity
+
+      - name: Smoke snapshot
+        run: node server/smoke-test.js snapshot
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Vitest
+        run: npm test -- --run
+
+      - name: Audit application production dependencies
+        run: npm audit --omit=dev --audit-level=low
+
+      - name: Audit server production dependencies
+        run: npm audit --prefix server --omit=dev --audit-level=low
+
+      - name: Electron native smoke
+        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+
+      - name: Build web application
+        run: npm run build
+
+      - name: Package Electron Linux directory
+        run: timeout 180s npx electron-builder --linux dir --publish never
