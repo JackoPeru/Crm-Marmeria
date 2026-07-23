@@ -30,8 +30,11 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
 }
 if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { throw 'Git non trovato. Riavvia questo file.' }
 
-if (-not (Test-Path 'node_modules\vite')) { npm.cmd ci --ignore-scripts }
-if (-not (Test-Path 'server\node_modules\better-sqlite3')) { npm.cmd ci --prefix server }
+$dependencyCheck = Join-Path $root 'verifica-dipendenze.cjs'
+if (-not (Test-Path $dependencyCheck)) { throw 'File verifica-dipendenze.cjs non trovato.' }
+& node.exe $dependencyCheck
+if ($LASTEXITCODE -ne 0) { throw 'Controllo o installazione delle dipendenze non riuscito.' }
+
 if (-not (Test-Path 'dist\index.html')) { npm.cmd run build }
 
 if (-not (Get-NetFirewallRule -DisplayName 'CRM Marmeria LAN' -ErrorAction SilentlyContinue)) {
