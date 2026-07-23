@@ -9,10 +9,10 @@ if not errorlevel 1 (
 )
 if exist ".crm-update-pending" (
   echo Aggiornamento trovato. Verifico le dipendenze...
+  call node.exe verifica-dipendenze.cjs
+  if errorlevel 1 goto retry
+  del ".crm-update-pending"
 )
-call node.exe verifica-dipendenze.cjs
-if errorlevel 1 goto retry
-if exist ".crm-update-pending" del ".crm-update-pending"
 call npm.cmd run server
 call :port_in_use
 if not errorlevel 1 (
