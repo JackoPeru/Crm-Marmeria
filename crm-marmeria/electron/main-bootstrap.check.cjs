@@ -22,6 +22,8 @@ async function run() {
 
   const fakeApp = {
     isQuiting: false,
+    isPackaged: false,
+    getVersion: () => '1.1.2-test',
     requestSingleInstanceLock: () => true,
     on: (name, callback) => appEvents.set(name, callback),
     whenReady: () => ({
@@ -44,6 +46,7 @@ async function run() {
         on: (name, callback) => this.webEvents.set(name, callback),
         openDevTools: () => undefined,
         getURL: () => pathToFileURL(path.join(__dirname, '../dist/index.html')).toString(),
+        send: () => undefined,
       };
       windows.push(this);
     }
@@ -81,6 +84,15 @@ async function run() {
     shell: { openExternal: async () => undefined },
   };
 
+  const fakeAutoUpdater = {
+    autoDownload: false,
+    autoInstallOnAppQuit: false,
+    on: () => undefined,
+    checkForUpdates: async () => undefined,
+    downloadUpdate: async () => undefined,
+    quitAndInstall: () => undefined,
+  };
+
   const previousFetch = global.fetch;
   const originalLoad = Module._load;
   try {
@@ -100,6 +112,7 @@ async function run() {
 
     Module._load = function loadWithMainMocks(request, parent, isMain) {
       if (request === 'electron') return fakeElectron;
+      if (request === 'electron-updater') return { autoUpdater: fakeAutoUpdater };
       if (parent?.filename?.endsWith(`${path.sep}electron${path.sep}main.cjs`)) {
         if (request === './server.cjs') return FakeCentralServer;
         if (request === './discovery.cjs') {
