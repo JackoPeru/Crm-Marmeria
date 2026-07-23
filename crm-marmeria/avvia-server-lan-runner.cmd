@@ -8,10 +8,8 @@ if not errorlevel 1 (
   exit /b 0
 )
 if exist ".crm-update-pending" (
-  echo Aggiornamento trovato. Installo dipendenze...
-  call npm.cmd ci --ignore-scripts
-  if errorlevel 1 goto retry
-  call npm.cmd ci --prefix server
+  echo Aggiornamento trovato. Verifico le dipendenze...
+  call node.exe verifica-dipendenze.cjs
   if errorlevel 1 goto retry
   del ".crm-update-pending"
 )
@@ -25,7 +23,7 @@ timeout /t 2 /nobreak >nul
 goto run
 
 :retry
-echo Installazione aggiornamento non riuscita. Riprovo tra 5 secondi...
+echo Controllo o installazione dipendenze non riuscito. Riprovo tra 5 secondi...
 timeout /t 5 /nobreak >nul
 goto run
 

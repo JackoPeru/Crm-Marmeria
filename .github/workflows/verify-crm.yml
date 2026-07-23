@@ -28,6 +28,7 @@ jobs:
         env:
           TZ: Europe/Rome
         run: |
+          node verifica-dipendenze.cjs
           node electron/automatic-mode.check.cjs
           node server/access-policy.check.js
           node server/restore-validation.check.js
