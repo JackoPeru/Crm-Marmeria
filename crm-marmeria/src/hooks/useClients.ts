@@ -1,24 +1,34 @@
-import { useEffect, useCallback } from 'react';
-import { useAppDispatch, useAppSelector, selectAllClients, selectClientsLoading, selectClientsError, selectSelectedClient, selectClientsPagination, selectClientsFilters, selectClientsStats } from '../store';
+import { useCallback, useEffect } from 'react';
+import toast from 'react-hot-toast';
+import {
+  useAppDispatch,
+  useAppSelector,
+  selectAllClients,
+  selectClientsLoading,
+  selectClientsError,
+  selectClientsPagination,
+  selectClientsFilters,
+  selectClientsStats,
+} from '../store';
 import {
   fetchClients,
   createClient,
   updateClient,
-  deleteClient as removeClientAction,
   searchClients,
   fetchClientsStats,
   setClientsFilters,
   setClientsPagination,
   clearClientsError,
+  resetClientsState,
 } from '../store/slices/clientsSlice';
 import type { Client, ClientsFilters } from '../store/slices/clientsSlice';
+import { clientsService } from '../services/clients';
+import { useAuth } from '../contexts/AuthContext';
 
-/**
- * Hook personalizzato per gestire i clienti
- * Fornisce metodi CRUD e stato per la gestione dei clienti
- */
 export const useClients = () => {
   const dispatch = useAppDispatch();
+  const { hasPermission, user } = useAuth();
+  const canView = hasPermission('clients.view');
   const clients = useAppSelector(selectAllClients);
   const loading = useAppSelector(selectClientsLoading);
   const error = useAppSelector(selectClientsError);
@@ -26,130 +36,102 @@ export const useClients = () => {
   const filters = useAppSelector(selectClientsFilters);
   const stats = useAppSelector(selectClientsStats);
 
-  // Carica i clienti all'avvio
-  useEffect(() => {
-    console.log('🔍 [useClients] useEffect iniziale - caricamento dati clienti');
+  const refetch = useCallback(() => {
+    if (!canView) {
+      dispatch(resetClientsState());
+      return;
+    }
     dispatch(fetchClients());
     dispatch(fetchClientsStats());
-  }, [dispatch]);
+  }, [canView, dispatch]);
 
-  /**
-   * Ricarica i clienti con i filtri correnti
-   */
-  const refetch = useCallback(() => {
-    dispatch(fetchClients());
-  }, [dispatch]);
+  useEffect(() => {
+    refetch();
+    return () => {
+      if (!canView) dispatch(resetClientsState());
+    };
+  }, [canView, dispatch, refetch, user?.id]);
 
-  /**
-   * Aggiunge un nuovo cliente
-   */
-  const addClient = useCallback(async (clientData: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>) => {
-    console.log('➕ [useClients] Aggiunta cliente:', clientData.name);
-    const result = await dispatch(createClient(clientData));
-    if (result.meta.requestStatus === 'fulfilled') {
-      console.log('✅ [useClients] Cliente aggiunto con successo');
-      // PROBLEMA: Queste chiamate causano un loop infinito!
-      // dispatch(fetchClients());
-      // dispatch(fetchClientsStats());
-      return true;
+  useEffect(() => {
+    if (!canView) return undefined;
+    const refresh = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail;
+      if (String(detail?.event || '').startsWith('clients.') || detail?.event === 'database.restored') {
+        refetch();
+      }
+    };
+    const requested = () => refetch();
+    window.addEventListener('crm-realtime', refresh);
+    window.addEventListener('crm-data-refresh-requested', requested);
+    return () => {
+      window.removeEventListener('crm-realtime', refresh);
+      window.removeEventListener('crm-data-refresh-requested', requested);
+    };
+  }, [canView, refetch]);
+
+  const addClient = useCallback(async (
+    data: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>,
+  ) => {
+    if (!hasPermission('clients.create')) return false;
+    return (await dispatch(createClient(data))).meta.requestStatus === 'fulfilled';
+  }, [dispatch, hasPermission]);
+
+  const updateClientData = useCallback(async (id: string, data: Partial<Client>) => {
+    if (!hasPermission('clients.edit')) return false;
+    const current = clients.find((client) => client.id === String(id));
+    const result = await dispatch(updateClient({
+      id: String(id),
+      data: { ...data, version: data.version ?? current?.version } as any,
+    }));
+    if (result.meta.requestStatus !== 'fulfilled' && String(result.payload || '').includes('modificato')) {
+      refetch();
     }
-    console.log('❌ [useClients] Errore aggiunta cliente');
-    return false;
-  }, [dispatch]);
-
-  /**
-   * Aggiorna un cliente esistente
-   */
-  const updateClientData = useCallback(async (id: string, clientData: Partial<Client>) => {
-    console.log('✏️ [useClients] Aggiornamento cliente:', id);
-    const result = await dispatch(updateClient({ id, data: clientData }));
-    if (result.meta.requestStatus === 'fulfilled') {
-      console.log('✅ [useClients] Cliente aggiornato con successo');
-      // PROBLEMA: Queste chiamate causano un loop infinito!
-      // dispatch(fetchClients());
-      // dispatch(fetchClientsStats());
-      return true;
-    }
-    console.log('❌ [useClients] Errore aggiornamento cliente');
-    return false;
-  }, [dispatch]);
-
-  /**
-   * Elimina un cliente
-   */
-  const removeClient = useCallback(async (id: string) => {
-    console.log('🗑️ [useClients] Eliminazione cliente:', id);
-    const result = await dispatch(removeClientAction(id));
-    if (result.meta.requestStatus === 'fulfilled') {
-      console.log('✅ [useClients] Cliente eliminato con successo');
-      // PROBLEMA: Queste chiamate causano un loop infinito!
-      // dispatch(fetchClients());
-      // dispatch(fetchClientsStats());
-      return true;
-    }
-    console.log('❌ [useClients] Errore eliminazione cliente');
-    return false;
-  }, [dispatch]);
-
-  /**
-   * Cerca clienti
-   */
-  const searchClientData = useCallback(async (query: string) => {
-    const result = await dispatch(searchClients(query));
     return result.meta.requestStatus === 'fulfilled';
-  }, [dispatch]);
+  }, [clients, dispatch, hasPermission, refetch]);
 
-  /**
-   * Imposta i filtri per i clienti
-   */
-  const setFilter = useCallback((filter: Partial<ClientsFilters>) => {
-    console.log('🔍 [useClients] Impostazione filtri:', filter);
-    dispatch(setClientsFilters(filter));
-    // PROBLEMA: Questa chiamata può causare troppe richieste API
-    // dispatch(fetchClients());
-  }, [dispatch]);
-
-  /**
-   * Cambia pagina
-   */
-  const setPage = useCallback((page: number) => {
-    dispatch(setClientsPagination({ page }));
-    dispatch(fetchClients());
-  }, [dispatch]);
-
-  /**
-   * Pulisce gli errori
-   */
-  const clearError = useCallback(() => {
-    dispatch(clearClientsError());
-  }, [dispatch]);
-
-  /**
-   * Trova un cliente per ID
-   */
-  const getClientById = useCallback((id: string) => {
-    return clients.find(client => client.id === id);
-  }, [clients]);
+  const removeClient = useCallback(async (id: string) => {
+    if (!hasPermission('clients.delete')) return false;
+    const current = clients.find((client) => client.id === String(id));
+    try {
+      await clientsService.deleteClient(String(id), current?.version);
+      refetch();
+      return true;
+    } catch (deleteError: any) {
+      if (deleteError.response?.status === 409) refetch();
+      toast.error(deleteError.response?.data?.error || 'Eliminazione cliente non riuscita');
+      return false;
+    }
+  }, [clients, hasPermission, refetch]);
 
   return {
-    // Stato
-    clients,
+    clients: canView ? clients : [],
     loading,
     error,
     pagination,
     filters,
     stats,
-    
-    // Azioni
     refetch,
     addClient,
     updateClient: updateClientData,
     removeClient,
-    searchClients: searchClientData,
-    setFilter,
-    setPage,
-    clearError,
-    getClientById,
+    searchClients: useCallback(async (query: string) => {
+      if (!canView) return false;
+      return (await dispatch(searchClients(query))).meta.requestStatus === 'fulfilled';
+    }, [canView, dispatch]),
+    setFilter: useCallback(
+      (filter: Partial<ClientsFilters>) => dispatch(setClientsFilters(filter)),
+      [dispatch],
+    ),
+    setPage: useCallback((page: number) => {
+      if (!canView) return;
+      dispatch(setClientsPagination({ page }));
+      dispatch(fetchClients());
+    }, [canView, dispatch]),
+    clearError: useCallback(() => dispatch(clearClientsError()), [dispatch]),
+    getClientById: useCallback(
+      (id: string) => (canView ? clients.find((client) => client.id === String(id)) : undefined),
+      [canView, clients],
+    ),
   };
 };
 

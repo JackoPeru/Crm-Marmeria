@@ -1,0 +1,69 @@
+name: Verify CRM
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clean dependencies
+        working-directory: crm-marmeria
+        run: |
+          npm ci
+          npm ci --prefix server
+
+      - name: Verify newly discovered regressions
+        working-directory: crm-marmeria
+        env:
+          TZ: Europe/Rome
+        run: |
+          node electron/automatic-mode.check.cjs
+          node server/access-policy.check.js
+          node server/restore-validation.check.js
+          node server/shutdown-runtime.check.js
+          node server/mutation-barrier.check.js
+          node server/smoke-test.js server
+
+      - name: Verify complete application
+        working-directory: crm-marmeria
+        env:
+          TZ: Europe/Rome
+        run: |
+          node --check electron/main.cjs
+          node --check electron/network-config.cjs
+          node --check server/app.js
+          node --check server/database.js
+          node --check server/restore-safety.js
+          node --check server/shutdown-runtime.js
+          node --check server/access-policy.js
+          node electron/main-helpers.check.cjs
+          node electron/main-bootstrap.check.cjs
+          node electron/server-identity.check.cjs
+          node electron/server-master.check.cjs
+          node electron/network-config.check.cjs
+          node server/runtime-files.check.js
+          node server/index-bootstrap.check.js
+          node server/setup-test.js
+          node server/smoke-test.js create
+          node server/smoke-test.js update
+          node server/smoke-test.js conflict
+          node server/smoke-test.js integrity
+          node server/smoke-test.js snapshot
+          npm run typecheck
+          npm test -- --run
+          npm audit --omit=dev --audit-level=low
+          npm audit --prefix server --omit=dev --audit-level=low
+          timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
+          npm run build
+          timeout 180s npx electron-builder --linux dir --publish never

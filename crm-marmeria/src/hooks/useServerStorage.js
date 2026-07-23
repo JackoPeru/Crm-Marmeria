@@ -25,7 +25,8 @@ const useServerStorage = (collectionName, networkPrefs = null) => {
         if (serverStatus.isRunning) {
           // Usa le API del server per caricare i dati
           try {
-            const response = await fetch(`http://localhost:${serverStatus.port}/api/${collectionName}`);
+            const baseUrl = serverStatus.localApiUrl || `https://localhost:${serverStatus.port}/api`;
+            const response = await fetch(`${baseUrl}/${collectionName}`);
             if (response.ok) {
               const serverData = await response.json();
               setData(serverData);
@@ -64,7 +65,8 @@ const useServerStorage = (collectionName, networkPrefs = null) => {
         
         if (serverStatus.isRunning) {
           try {
-            const response = await fetch(`http://localhost:${serverStatus.port}/api/${collectionName}`, {
+            const baseUrl = serverStatus.localApiUrl || `https://localhost:${serverStatus.port}/api`;
+            const response = await fetch(`${baseUrl}/${collectionName}`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',

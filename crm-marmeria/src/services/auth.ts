@@ -13,6 +13,16 @@ export interface User {
 export interface LoginCredentials {
   username: string;
   password: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+}
+
+export interface ProfileUpdate {
+  username?: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
 }
 
 export interface AuthResponse {
@@ -23,71 +33,75 @@ export interface AuthResponse {
 class AuthService {
   private readonly TOKEN_KEY = 'crm_auth_token';
   private readonly USER_KEY = 'crm_user_data';
-  private validationPromise: Promise<boolean> | null = null; // Cache per evitare chiamate multiple
+  private validationPromise: Promise<boolean> | null = null;
 
-  // Login utente
   async login(credentials: LoginCredentials): Promise<AuthResponse> {
     try {
-      const response = await apiClient.post('/auth/login', credentials);
-      const data: AuthResponse = response.data;
-      
-      // Salva token e dati utente
+      let data: AuthResponse;
+      const isInitialSetup = Boolean(
+        credentials.firstName
+        && credentials.lastName
+        && credentials.email,
+      );
+      if (isInitialSetup && window.electronAPI?.network.setupFirstAdmin) {
+        const result = await window.electronAPI.network.setupFirstAdmin(credentials);
+        if (!result.success || !result.data) {
+          throw new Error(result.error || 'Configurazione iniziale non riuscita');
+        }
+        data = result.data as AuthResponse;
+      } else {
+        data = (await apiClient.post('/auth/login', credentials)).data;
+      }
       this.setToken(data.token);
       this.setUser(data.user);
-      
       return data;
     } catch (error: any) {
-      console.error('Errore login:', error);
-      // Gestisci errori di rete o del server
-      if (error?.response?.data?.error) {
-        throw new Error(error.response.data.error);
-      } else if (error?.message) {
-        throw new Error(error.message);
-      } else {
-        throw new Error('Errore durante il login');
-      }
+      const message = error?.response?.data?.error
+        || error?.message
+        || 'Errore durante il login';
+      throw new Error(message);
     }
   }
 
-  // Logout utente
   async logout(): Promise<void> {
     try {
-      const token = this.getToken();
-      if (token) {
-        await apiClient.post('/auth/logout');
-      }
+      if (this.getToken()) await apiClient.post('/auth/logout');
     } catch (error) {
       console.error('Errore logout:', error);
     } finally {
-      // Rimuovi sempre i dati locali
       this.clearAuth();
     }
   }
 
-  // Verifica se l'utente è autenticato
-  isAuthenticated(): boolean {
-    const hasToken = !!this.getToken();
-    const hasUser = !!this.getUser();
-    return hasToken && hasUser;
+  async updateProfile(profile: ProfileUpdate): Promise<User> {
+    try {
+      const response = await apiClient.put('/auth/profile', profile);
+      const user: User = response.data.user;
+      this.setUser(user);
+      return user;
+    } catch (error: any) {
+      const message = error?.response?.data?.error
+        || error?.message
+        || 'Errore durante l’aggiornamento del profilo';
+      throw new Error(message);
+    }
   }
 
-  // Ottieni token corrente
+  isAuthenticated(): boolean {
+    return Boolean(this.getToken() && this.getUser());
+  }
+
   getToken(): string | null {
     return localStorage.getItem(this.TOKEN_KEY);
   }
 
-  // Salva token
   setToken(token: string): void {
     localStorage.setItem(this.TOKEN_KEY, token);
   }
 
-  // Ottieni dati utente corrente
   getUser(): User | null {
     const userData = localStorage.getItem(this.USER_KEY);
-    if (!userData) {
-      return null;
-    }
-    
+    if (!userData) return null;
     try {
       return JSON.parse(userData);
     } catch (error) {
@@ -96,96 +110,65 @@ class AuthService {
     }
   }
 
-  // Salva dati utente
   setUser(user: User): void {
     localStorage.setItem(this.USER_KEY, JSON.stringify(user));
   }
 
-  // Pulisci tutti i dati di autenticazione
   clearAuth(): void {
     localStorage.removeItem(this.TOKEN_KEY);
     localStorage.removeItem(this.USER_KEY);
-    // Pulisci anche la cache di validazione
     this.validationPromise = null;
   }
 
-  // Verifica se l'utente ha un permesso specifico
   hasPermission(permission: string): boolean {
-    const user = this.getUser();
-    if (!user) return false;
-    return user.permissions.includes(permission);
+    return this.getUser()?.permissions.includes(permission) ?? false;
   }
 
-  // Verifica se l'utente ha un ruolo specifico
   hasRole(role: string): boolean {
-    const user = this.getUser();
-    if (!user) return false;
-    return user.role === role;
+    return this.getUser()?.role === role;
   }
 
-  // Verifica se l'utente ha uno dei ruoli specificati
   hasAnyRole(roles: string[]): boolean {
-    const user = this.getUser();
-    if (!user) return false;
-    return roles.includes(user.role);
+    const role = this.getUser()?.role;
+    return Boolean(role && roles.includes(role));
   }
 
-  // Ottieni header di autorizzazione per le richieste API
   getAuthHeaders(): Record<string, string> {
     const token = this.getToken();
-    if (!token) return {};
-    
-    return {
-      'Authorization': `Bearer ${token}`,
-    };
+    return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
-  // Verifica validità del token (chiamata al server)
   async validateToken(): Promise<boolean> {
-    // Se c'è già una validazione in corso, restituisci quella promise
-    if (this.validationPromise) {
-      return this.validationPromise;
-    }
-
-    // Crea una nuova promise di validazione
+    if (this.validationPromise) return this.validationPromise;
     this.validationPromise = this.performTokenValidation();
-    
     try {
-      const result = await this.validationPromise;
-      return result;
+      return await this.validationPromise;
     } finally {
-      // Pulisci la promise dopo 1 secondo per permettere nuove validazioni
-      setTimeout(() => {
+      window.setTimeout(() => {
         this.validationPromise = null;
       }, 1000);
     }
   }
 
-  // Metodo privato che esegue effettivamente la validazione
   private async performTokenValidation(): Promise<boolean> {
+    if (!this.getToken()) return false;
     try {
-      const token = this.getToken();
-      if (!token) {
+      const response = await apiClient.get('/auth/me');
+      if (!response.data?.user) return false;
+      this.setUser(response.data.user);
+      return true;
+    } catch (error: any) {
+      if (error?.response?.status === 401 || error?.response?.status === 403) {
+        this.clearAuth();
         return false;
       }
-
-      const response = await apiClient.get('/auth/me');
-      
-      // Aggiorna i dati utente solo se la risposta è valida
-      if (response.data?.user) {
-        this.setUser(response.data.user);
-        return true;
+      if (
+        error?.code === 'ERR_NETWORK'
+        || error?.code === 'ECONNABORTED'
+        || !error?.response
+      ) {
+        return Boolean(this.getUser());
       }
-      
-      return false;
-    } catch (error: any) {
-      console.error('Errore durante validazione token:', error);
-      
-      // Se è un errore di autenticazione (401), cancella i dati
-      if (error?.response?.status === 401) {
-        this.clearAuth();
-      }
-      
       return false;
     }
   }

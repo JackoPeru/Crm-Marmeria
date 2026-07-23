@@ -1,92 +1,74 @@
 import React from 'react';
-import { Users, Briefcase, Layers, DollarSign, TrendingUp } from 'lucide-react';
+import { Briefcase, DollarSign, Layers, TrendingUp, Users } from 'lucide-react';
 import useUI from '../hooks/useUI';
 
-const StatCard = ({ title, value, icon: Icon, bgColor, textColor, targetPage, filters }) => {
+const StatCard = ({ title, value, icon: Icon, className, targetPage }) => {
   const { updatePreferences } = useUI();
-
-  const handleClick = () => {
-    if (filters) {
-      // TODO: Implementare filtri se necessario
-    }
-    updatePreferences({ currentPage: targetPage });
-  };
-
   return (
-    <div
-      className={`p-6 rounded-lg shadow-sm cursor-pointer transition-all hover:shadow-md ${bgColor} ${textColor}`}
-      onClick={handleClick}
+    <button
+      type="button"
+      onClick={() => targetPage && updatePreferences({ currentPage: targetPage })}
+      disabled={!targetPage}
+      className={`p-6 rounded-lg shadow-sm text-left transition-all hover:shadow-md disabled:cursor-default ${className}`}
     >
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-lg font-medium">{title}</h3>
-        {Icon && <Icon className="w-7 h-7 opacity-80" />}
+        <Icon className="w-7 h-7 opacity-80" />
       </div>
       <p className="text-3xl font-semibold">{value}</p>
-    </div>
+    </button>
   );
 };
 
 const DashboardStats = ({ stats }) => {
   if (!stats) return null;
 
-  const statItems = [
+  const items = [
     {
       title: 'Clienti Attivi',
       value: stats.customers,
       icon: Users,
-      bgColor: 'bg-blue-500 dark:bg-blue-600',
-      textColor: 'text-white',
+      className: 'bg-blue-500 dark:bg-blue-600 text-white',
       targetPage: 'customers',
+      visible: stats.customersVisible,
     },
     {
       title: 'Progetti Totali',
       value: stats.projects,
       icon: Briefcase,
-      bgColor: 'bg-purple-500 dark:bg-purple-600',
-      textColor: 'text-white',
+      className: 'bg-purple-500 dark:bg-purple-600 text-white',
       targetPage: 'projects',
+      visible: stats.projectsVisible,
     },
     {
       title: 'Progetti in Corso',
       value: stats.projectsInProgress,
-      icon: TrendingUp, // Icona diversa per i progetti in corso
-      bgColor: 'bg-yellow-500 dark:bg-yellow-600',
-      textColor: 'text-white',
+      icon: TrendingUp,
+      className: 'bg-yellow-500 dark:bg-yellow-600 text-white',
       targetPage: 'projects',
-      filters: { status: 'In Corso' }, // Filtro per stato
+      visible: stats.projectsVisible,
     },
     {
       title: 'Materiali Registrati',
       value: stats.materials,
       icon: Layers,
-      bgColor: 'bg-green-500 dark:bg-green-600',
-      textColor: 'text-white',
+      className: 'bg-green-500 dark:bg-green-600 text-white',
       targetPage: 'materials',
+      visible: stats.materialsVisible,
     },
     {
-      title: 'Fatturato (Mese)',
+      title: 'Fatturato del mese',
       value: stats.revenue,
       icon: DollarSign,
-      bgColor: 'bg-pink-500 dark:bg-pink-600',
-      textColor: 'text-white',
-      targetPage: 'invoices', // Esempio, potrebbe non avere filtri specifici
+      className: 'bg-pink-500 dark:bg-pink-600 text-white',
+      targetPage: 'invoices',
+      visible: stats.revenueVisible,
     },
-  ];
+  ].filter((item) => item.visible);
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 md:gap-6">
-      {statItems.map((item) => (
-        <StatCard
-          key={item.title}
-          title={item.title}
-          value={item.value}
-          icon={item.icon}
-          bgColor={item.bgColor}
-          textColor={item.textColor}
-          targetPage={item.targetPage}
-          filters={item.filters}
-        />
-      ))}
+      {items.map((item) => <StatCard key={item.title} {...item} />)}
     </div>
   );
 };

@@ -1,210 +1,287 @@
-import React, { useState, useEffect } from 'react';
-import { Eye, Edit, Trash, Search, Plus, Filter, X } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Edit, Eye, Filter, Plus, Search, Trash, X } from 'lucide-react';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
+import { useAuth } from '../contexts/AuthContext';
+import AttachmentsPanel from '../components/AttachmentsPanel';
+import { formatEuro, parseLocaleNumber } from '../utils/numbers';
+
+const emptyProject = {
+  name: '',
+  clientId: '',
+  startDate: '',
+  deadline: '',
+  budget: '',
+  status: 'In Attesa',
+  phase: '',
+  productionNotes: '',
+};
+
+const ProjectForm = ({ value, setValue, customers, operationalOnly = false }) => (
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+    {!operationalOnly && (
+      <>
+        <label className="block">
+          <span className="block text-sm font-medium mb-1">Nome progetto *</span>
+          <input
+            value={value.name || ''}
+            onChange={(event) => setValue({ ...value, name: event.target.value })}
+            required
+            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+          />
+        </label>
+        <label className="block">
+          <span className="block text-sm font-medium mb-1">Cliente *</span>
+          <select
+            value={String(value.clientId || '')}
+            onChange={(event) => {
+              const clientId = String(event.target.value);
+              const client = customers.find((item) => String(item.id) === clientId);
+              setValue({
+                ...value,
+                clientId,
+                client: client?.name || 'Cliente non specificato',
+              });
+            }}
+            required
+            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+          >
+            <option value="">Seleziona cliente</option>
+            {customers.map((customer) => (
+              <option key={customer.id} value={String(customer.id)}>{customer.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="block text-sm font-medium mb-1">Data inizio *</span>
+          <input
+            type="date"
+            value={value.startDate || ''}
+            onChange={(event) => setValue({ ...value, startDate: event.target.value })}
+            required
+            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+          />
+        </label>
+        <label className="block">
+          <span className="block text-sm font-medium mb-1">Scadenza *</span>
+          <input
+            type="date"
+            value={value.deadline || ''}
+            onChange={(event) => setValue({ ...value, deadline: event.target.value })}
+            required
+            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+          />
+        </label>
+        <label className="block">
+          <span className="block text-sm font-medium mb-1">Budget (€) *</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={value.budget ?? ''}
+            onChange={(event) => setValue({ ...value, budget: event.target.value })}
+            required
+            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+          />
+        </label>
+      </>
+    )}
+    <label className="block">
+      <span className="block text-sm font-medium mb-1">Stato</span>
+      <select
+        value={value.status || 'In Attesa'}
+        onChange={(event) => setValue({ ...value, status: event.target.value })}
+        className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+      >
+        <option>In Attesa</option>
+        <option>In Corso</option>
+        <option>In Lavorazione</option>
+        <option>Completato</option>
+        <option>Annullato</option>
+      </select>
+    </label>
+    <label className="block">
+      <span className="block text-sm font-medium mb-1">Fase di lavorazione</span>
+      <input
+        value={value.phase || ''}
+        onChange={(event) => setValue({ ...value, phase: event.target.value })}
+        placeholder="Taglio, lucidatura, posa..."
+        className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+      />
+    </label>
+    <label className="block md:col-span-2">
+      <span className="block text-sm font-medium mb-1">Note di produzione</span>
+      <textarea
+        value={value.productionNotes || ''}
+        onChange={(event) => setValue({ ...value, productionNotes: event.target.value })}
+        rows={4}
+        className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
+      />
+    </label>
+  </div>
+);
+
+const Modal = ({ title, onClose, children, wide = false }) => (
+  <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50">
+    <div className={`bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-h-[92vh] overflow-y-auto ${wide ? 'max-w-3xl' : 'max-w-lg'}`}>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-semibold">{title}</h2>
+        <button type="button" onClick={onClose} className="p-1 text-gray-500">
+          <X className="w-6 h-6" />
+        </button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
 
 const ProjectsPage = () => {
-  const { 
-    isModalOpen, 
-    showModal, 
-    hideModal, 
-    tableFilters, 
-    setTableFilter, 
-    setBreadcrumbs 
-  } = useUI();
-  const { projects, customers, addProject, updateProject, deleteProject } = useData();
+  const { isModalOpen, showModal, hideModal, setBreadcrumbs } = useUI();
+  const { projects = [], customers = [], addProject, updateProject, deleteProject } = useData();
+  const { user, hasPermission } = useAuth();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [form, setForm] = useState(emptyProject);
+  const [selected, setSelected] = useState(null);
+  const [deleteId, setDeleteId] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const canCreate = hasPermission('projects.create');
+  const canEdit = hasPermission('projects.edit');
+  const canDelete = hasPermission('projects.delete');
+  const canViewFinancials = ['admin', 'manager'].includes(user?.role || '');
+  const operationalOnly = !canViewFinancials;
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Progetti' }]);
   }, [setBreadcrumbs]);
 
-  const [searchTerm, setSearchTerm] = useState('');
-  const [currentProject, setCurrentProject] = useState(null);
-  const [projectToView, setProjectToView] = useState(null);
-  const [projectToDeleteId, setProjectToDeleteId] = useState(null);
-  const [showFilters, setShowFilters] = useState(false);
-  const [statusFilter, setStatusFilter] = useState('');
-  const [startDateFilter, setStartDateFilter] = useState('');
-  const [endDateFilter, setEndDateFilter] = useState('');
-  const [newProject, setNewProject] = useState({
-    name: '',
-    clientId: '',
-    startDate: '',
-    deadline: '',
-    budget: '',
-    status: 'In Attesa',
-  });
+  const filtered = useMemo(() => projects.filter((project) => {
+    const query = searchTerm.trim().toLowerCase();
+    const matchesSearch = !query
+      || String(project.name || '').toLowerCase().includes(query)
+      || String(project.client || project.clientName || '').toLowerCase().includes(query);
+    return matchesSearch && (!statusFilter || project.status === statusFilter);
+  }), [projects, searchTerm, statusFilter]);
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setNewProject((prev) => ({ ...prev, [name]: value }));
+  const openAdd = () => {
+    setForm(emptyProject);
+    showModal({ id: 'addProject', type: 'add' });
   };
 
-  const handleAddProject = (e) => {
-    e.preventDefault();
-    const selectedCustomer = customers.find(c => c.id === parseInt(newProject.clientId));
-    const projectToAdd = {
-      ...newProject,
-      client: selectedCustomer ? selectedCustomer.name : 'Cliente non specificato',
-      budget: `€ ${parseFloat(newProject.budget).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-    };
-    addProject(projectToAdd);
-    hideModal('addProject');
-    setNewProject({
-      name: '',
-      clientId: '',
-      startDate: '',
-      deadline: '',
-      budget: '',
-      status: 'In Attesa',
+  const openEdit = (project) => {
+    setSelected(project);
+    setForm({
+      ...project,
+      clientId: String(project.clientId || ''),
+      budget: parseLocaleNumber(project.budget),
     });
-  };
-
-  const handleEditProject = (project) => {
-    // Pre-popola il form di modifica con i dati del progetto, convertendo il budget in numero
-    const budgetValue = project.budget ? parseFloat(project.budget.replace('€', '').replace(/\./g, '').replace(',', '.')) : '';
-    setCurrentProject({ ...project, budget: budgetValue });
     showModal({ id: 'editProject', type: 'edit' });
   };
 
-  const handleUpdateProject = (e) => {
-    e.preventDefault();
-    const updatedProject = { ...currentProject, budget: `€ ${parseFloat(currentProject.budget).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` };
-    updateProject(currentProject.id, updatedProject);
-    hideModal('editProject');
-    setCurrentProject(null);
-  };
-
-  const openConfirmDeleteModal = (projectId) => {
-    setProjectToDeleteId(projectId);
-    showModal({ id: 'confirmDelete', type: 'delete' });
-  };
-
-  const handleDeleteProject = () => {
-    if (projectToDeleteId) {
-      deleteProject(projectToDeleteId);
-      hideModal('confirmDelete');
-      setProjectToDeleteId(null);
-    }
-  };
-
-  const handleViewProject = (project) => {
-    setProjectToView(project);
+  const openView = (project) => {
+    setSelected(project);
     showModal({ id: 'viewProject', type: 'view' });
   };
 
-  // Calcola i progetti filtrati
-  const currentFilteredProjects = React.useMemo(() => {
-    let projectsToDisplay = projects || [];
-
-    if (statusFilter) {
-      projectsToDisplay = projectsToDisplay.filter(p => p.status === statusFilter);
+  const submitAdd = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const customer = customers.find((item) => String(item.id) === String(form.clientId));
+      const success = await addProject({
+        ...form,
+        clientId: String(form.clientId),
+        client: customer?.name || 'Cliente non specificato',
+        budget: parseLocaleNumber(form.budget),
+      });
+      if (success) hideModal('addProject');
+    } finally {
+      setSaving(false);
     }
+  };
 
-    if (startDateFilter) {
-      projectsToDisplay = projectsToDisplay.filter(p => new Date(p.startDate) >= new Date(startDateFilter));
+  const submitEdit = async (event) => {
+    event.preventDefault();
+    if (!selected) return;
+    setSaving(true);
+    try {
+      const payload = operationalOnly
+        ? {
+          status: form.status,
+          phase: form.phase,
+          productionNotes: form.productionNotes,
+          version: selected.version,
+        }
+        : {
+          ...form,
+          clientId: String(form.clientId),
+          budget: parseLocaleNumber(form.budget),
+          version: selected.version,
+        };
+      const success = await updateProject(String(selected.id), payload);
+      if (success) {
+        hideModal('editProject');
+        setSelected(null);
+      }
+    } finally {
+      setSaving(false);
     }
+  };
 
-    if (endDateFilter) {
-      projectsToDisplay = projectsToDisplay.filter(p => new Date(p.deadline) <= new Date(endDateFilter));
+  const confirmDelete = async () => {
+    if (!deleteId) return;
+    setSaving(true);
+    try {
+      const success = await deleteProject(String(deleteId));
+      if (success) {
+        hideModal('confirmDelete');
+        setDeleteId(null);
+      }
+    } finally {
+      setSaving(false);
     }
-
-    if (searchTerm) {
-      projectsToDisplay = projectsToDisplay.filter(
-        (project) =>
-          project.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          (project.client && project.client.toLowerCase().includes(searchTerm.toLowerCase()))
-      );
-    }
-    return projectsToDisplay;
-  }, [searchTerm, projects, statusFilter, startDateFilter, endDateFilter]);
-
-  const resetFilters = () => {
-    setStatusFilter('');
-    setStartDateFilter('');
-    setEndDateFilter('');
-    setSearchTerm('');
   };
 
   return (
     <div className="p-6 bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-semibold">Progetti</h1>
-        <button 
-          onClick={() => showModal({ id: 'addProject', type: 'add' })}
-          className="px-4 py-2 bg-light-primary hover:bg-light-primary/90 dark:bg-dark-primary dark:hover:bg-dark-primary/90 text-white rounded-md flex items-center gap-2"
-        >
-          <Plus className="w-5 h-5" />
-          Nuovo Progetto
-        </button>
+        {canCreate && (
+          <button onClick={openAdd} className="px-4 py-2 bg-light-primary text-white rounded-md flex items-center gap-2">
+            <Plus size={19} /> Nuovo progetto
+          </button>
+        )}
       </div>
 
       <div className="bg-white dark:bg-dark-card rounded-lg shadow-sm">
         <div className="p-4 border-b border-light-border dark:border-dark-border">
-          <div className="flex gap-4">
+          <div className="flex gap-3">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 w-5 h-5" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={19} />
               <input
-                type="text"
-                placeholder="Cerca progetto..."
-                className="w-full pl-10 pr-4 py-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary"
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Cerca progetto o cliente..."
+                className="w-full pl-10 pr-4 py-2 border rounded-md bg-light-bg dark:bg-dark-input"
               />
             </div>
-            <button onClick={() => setShowFilters(!showFilters)} className="px-4 py-2 border border-light-border dark:border-dark-border rounded-md flex items-center gap-2 hover:bg-light-bg dark:hover:bg-dark-bg">
-              <Filter className="w-5 h-5" />
-              {showFilters ? 'Nascondi' : 'Mostra'} Filtri
+            <button onClick={() => setShowFilters((value) => !value)} className="px-4 py-2 border rounded-md flex items-center gap-2">
+              <Filter size={18} /> Filtri
             </button>
           </div>
           {showFilters && (
-            <div className="p-4 border-t border-light-border dark:border-dark-border">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div>
-                  <label htmlFor="statusFilter" className="block text-sm font-medium mb-1">Stato</label>
-                  <select 
-                    id="statusFilter" 
-                    value={statusFilter} 
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary"
-                  >
-                    <option value="">Tutti</option>
-                    <option value="In Attesa">In Attesa</option>
-                    <option value="In Corso">In Corso</option>
-                    <option value="Completato">Completato</option>
-                    <option value="Annullato">Annullato</option>
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="startDateFilter" className="block text-sm font-medium mb-1">Da Data Inizio</label>
-                  <input 
-                    type="date" 
-                    id="startDateFilter" 
-                    value={startDateFilter} 
-                    onChange={(e) => setStartDateFilter(e.target.value)}
-                    className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="endDateFilter" className="block text-sm font-medium mb-1">A Data Scadenza</label>
-                  <input 
-                    type="date" 
-                    id="endDateFilter" 
-                    value={endDateFilter} 
-                    onChange={(e) => setEndDateFilter(e.target.value)}
-                    className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1 invisible">Reset</label>
-                  <button 
-                    onClick={resetFilters}
-                    className="w-full px-4 py-2 border border-light-border dark:border-dark-border rounded-md hover:bg-light-bg dark:hover:bg-dark-bg flex items-center justify-center gap-2"
-                  >
-                    Resetta Filtri
-                  </button>
-                </div>
-              </div>
+            <div className="mt-4 max-w-xs">
+              <label className="block text-sm font-medium mb-1">Stato</label>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input">
+                <option value="">Tutti</option>
+                <option>In Attesa</option>
+                <option>In Corso</option>
+                <option>In Lavorazione</option>
+                <option>Completato</option>
+                <option>Annullato</option>
+              </select>
             </div>
           )}
         </div>
@@ -213,56 +290,47 @@ const ProjectsPage = () => {
           <table className="w-full">
             <thead className="bg-light-bg dark:bg-dark-bg">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Nome</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Cliente</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Data Inizio</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Scadenza</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Budget</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Stato</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Azioni</th>
+                <th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Nome</th>
+                <th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Cliente</th>
+                <th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Scadenza</th>
+                <th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Fase</th>
+                <th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Stato</th>
+                <th className="px-5 py-3 text-right text-xs uppercase text-gray-500">Azioni</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-light-border dark:divide-dark-border">
-              {currentFilteredProjects.length > 0 ? currentFilteredProjects.map((project) => (
-                <tr key={project.id} className="hover:bg-light-bg/50 dark:hover:bg-dark-bg/50">
-                  <td className="px-6 py-4 whitespace-nowrap">{project.name}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{project.client}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{project.startDate}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{project.deadline}</td>
-                  <td className="px-6 py-4 whitespace-nowrap font-medium">{project.budget}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${ 
-                      project.status === 'Completato'
-                        ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-                        : project.status === 'In Corso'
-                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400'
-                        : project.status === 'In Attesa'
-                        ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400'
-                        : 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
-                    }`}>
-                      {project.status}
-                    </span>
+              {filtered.map((project) => (
+                <tr key={project.id}>
+                  <td className="px-5 py-4 font-medium">{project.name}</td>
+                  <td className="px-5 py-4">{project.client || project.clientName || '-'}</td>
+                  <td className="px-5 py-4">{project.deadline || '-'}</td>
+                  <td className="px-5 py-4">{project.phase || '-'}</td>
+                  <td className="px-5 py-4">
+                    <span className="px-2.5 py-1 rounded-full text-xs bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">{project.status}</span>
+                    {project._queued && <span className="ml-2 text-xs text-orange-600">in coda</span>}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right">
+                  <td className="px-5 py-4">
                     <div className="flex justify-end gap-2">
-                      <button onClick={() => handleViewProject(project)} className="p-1 text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 rounded">
-                        <Eye className="w-5 h-5" />
-                      </button>
-                      <button onClick={() => handleEditProject(project)} className="p-1 text-yellow-600 hover:bg-yellow-50 dark:text-yellow-400 dark:hover:bg-yellow-900/20 rounded">
-                        <Edit className="w-5 h-5" />
-                      </button>
-                      <button onClick={() => openConfirmDeleteModal(project.id)} className="p-1 text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded">
-                        <Trash className="w-5 h-5" />
-                      </button>
+                      <button onClick={() => openView(project)} className="p-1.5 text-blue-600" title="Visualizza"><Eye size={19} /></button>
+                      {canEdit && <button onClick={() => openEdit(project)} className="p-1.5 text-yellow-600" title="Modifica"><Edit size={19} /></button>}
+                      {canDelete && (
+                        <button
+                          onClick={() => {
+                            setDeleteId(project.id);
+                            showModal({ id: 'confirmDelete', type: 'delete' });
+                          }}
+                          className="p-1.5 text-red-600"
+                          title="Elimina"
+                        >
+                          <Trash size={19} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
-              )) : (
-                <tr>
-                  <td colSpan="7" className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
-                    Nessun progetto trovato.
-                  </td>
-                </tr>
+              ))}
+              {!filtered.length && (
+                <tr><td colSpan="6" className="px-6 py-12 text-center text-gray-500">Nessun progetto trovato.</td></tr>
               )}
             </tbody>
           </table>
@@ -270,212 +338,55 @@ const ProjectsPage = () => {
       </div>
 
       {isModalOpen('addProject') && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">Nuovo Progetto</h2>
-              <button onClick={() => hideModal('addProject')} className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-full">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <form onSubmit={handleAddProject}>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div>
-                  <label htmlFor="name" className="block text-sm font-medium mb-1">Nome Progetto *</label>
-                  <input type="text" name="name" id="name" value={newProject.name} onChange={handleInputChange} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="clientId" className="block text-sm font-medium mb-1">Cliente *</label>
-                  <select name="clientId" id="clientId" value={newProject.clientId} onChange={handleInputChange} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary">
-                    <option value="">Seleziona Cliente</option>
-                    {customers?.map(customer => (
-                      <option key={customer.id} value={customer.id}>{customer.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="startDate" className="block text-sm font-medium mb-1">Data Inizio *</label>
-                  <input type="date" name="startDate" id="startDate" value={newProject.startDate} onChange={handleInputChange} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="deadline" className="block text-sm font-medium mb-1">Scadenza *</label>
-                  <input type="date" name="deadline" id="deadline" value={newProject.deadline} onChange={handleInputChange} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="budget" className="block text-sm font-medium mb-1">Budget (€) *</label>
-                  <input type="number" name="budget" id="budget" step="0.01" value={newProject.budget} onChange={handleInputChange} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="status" className="block text-sm font-medium mb-1">Stato</label>
-                  <select name="status" id="status" value={newProject.status} onChange={handleInputChange} className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary">
-                    <option value="In Attesa">In Attesa</option>
-                    <option value="In Corso">In Corso</option>
-                    <option value="Completato">Completato</option>
-                    <option value="Annullato">Annullato</option>
-                  </select>
-                </div>
-              </div>
-              <div className="flex justify-end gap-3">
-                <button type="button" onClick={() => hideModal('addProject')} className="px-4 py-2 border border-light-border dark:border-dark-border rounded-md hover:bg-light-bg dark:hover:bg-dark-bg">
-                  Annulla
-                </button>
-                <button type="submit" className="px-4 py-2 bg-light-primary hover:bg-light-primary/90 dark:bg-dark-primary dark:hover:bg-dark-primary/90 text-white rounded-md">
-                  Aggiungi Progetto
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {isModalOpen('viewProject') && projectToView && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">Dettagli Progetto</h2>
-              <button onClick={() => hideModal('viewProject')} className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-full">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Nome Progetto</p>
-                <p className="text-lg">{projectToView.name}</p>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Cliente</p>
-                <p className="text-lg">{projectToView.client}</p>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Data Inizio</p>
-                <p className="text-lg">{projectToView.startDate}</p>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Scadenza</p>
-                <p className="text-lg">{projectToView.deadline}</p>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Budget</p>
-                <p className="text-lg font-medium">{projectToView.budget}</p>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Stato</p>
-                <p className="text-lg">
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${ 
-                    projectToView.status === 'Completato'
-                      ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-                      : projectToView.status === 'In Corso'
-                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400'
-                      : projectToView.status === 'In Attesa'
-                      ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400'
-                      : 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
-                  }`}>
-                    {projectToView.status}
-                  </span>
-                </p>
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                onClick={() => hideModal('viewProject')}
-                className="px-4 py-2 border border-light-border dark:border-dark-border rounded-md hover:bg-light-bg dark:hover:bg-dark-bg"
-              >
-                Chiudi
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isModalOpen('editProject') && currentProject && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">Modifica Progetto</h2>
-              <button onClick={() => { hideModal('editProject'); setCurrentProject(null); }} className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-full">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <form onSubmit={handleUpdateProject}>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div>
-                  <label htmlFor="edit-project-name" className="block text-sm font-medium mb-1">Nome Progetto *</label>
-                  <input type="text" name="name" id="edit-project-name" value={currentProject.name} onChange={(e) => setCurrentProject({...currentProject, name: e.target.value})} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="edit-project-clientId" className="block text-sm font-medium mb-1">Cliente *</label>
-                  <select name="clientId" id="edit-project-clientId" value={currentProject.clientId} onChange={(e) => setCurrentProject({...currentProject, clientId: e.target.value, client: customers.find(c => c.id === parseInt(e.target.value))?.name || ''})} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary">
-                    <option value="">Seleziona Cliente</option>
-                    {customers?.map(customer => (
-                      <option key={customer.id} value={customer.id}>{customer.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="edit-project-startDate" className="block text-sm font-medium mb-1">Data Inizio *</label>
-                  <input type="date" name="startDate" id="edit-project-startDate" value={currentProject.startDate} onChange={(e) => setCurrentProject({...currentProject, startDate: e.target.value})} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="edit-project-deadline" className="block text-sm font-medium mb-1">Scadenza *</label>
-                  <input type="date" name="deadline" id="edit-project-deadline" value={currentProject.deadline} onChange={(e) => setCurrentProject({...currentProject, deadline: e.target.value})} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="edit-project-budget" className="block text-sm font-medium mb-1">Budget (€) *</label>
-                  <input type="number" name="budget" id="edit-project-budget" step="0.01" value={currentProject.budget} onChange={(e) => setCurrentProject({...currentProject, budget: e.target.value})} required className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary" />
-                </div>
-                <div>
-                  <label htmlFor="edit-project-status" className="block text-sm font-medium mb-1">Stato</label>
-                  <select name="status" id="edit-project-status" value={currentProject.status} onChange={(e) => setCurrentProject({...currentProject, status: e.target.value})} className="w-full p-2 border border-light-border dark:border-dark-border rounded-md bg-light-bg dark:bg-dark-input focus:outline-none focus:ring-2 focus:ring-light-primary dark:focus:ring-dark-primary">
-                    <option value="In Attesa">In Attesa</option>
-                    <option value="In Corso">In Corso</option>
-                    <option value="Completato">Completato</option>
-                    <option value="Annullato">Annullato</option>
-                  </select>
-                </div>
-              </div>
-              <div className="flex justify-end gap-3">
-                <button type="button" onClick={() => { hideModal('editProject'); setCurrentProject(null); }} className="px-4 py-2 border border-light-border dark:border-dark-border rounded-md hover:bg-light-bg dark:hover:bg-dark-bg">
-                  Annulla
-                </button>
-                <button type="submit" className="px-4 py-2 bg-light-primary hover:bg-light-primary/90 dark:bg-dark-primary dark:hover:bg-dark-primary/90 text-white rounded-md">
-                  Salva Modifiche
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modale Conferma Eliminazione Progetto */}
-      {isModalOpen('confirmDelete') && (
-        <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-md">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">Conferma Eliminazione</h2>
-              <button onClick={() => hideModal('confirmDelete')} className="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-full">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <p className="mb-6 text-light-text dark:text-dark-text">
-              Sei sicuro di voler eliminare questo progetto? L'azione è irreversibile.
-            </p>
+        <Modal title="Nuovo progetto" onClose={() => hideModal('addProject')}>
+          <form onSubmit={submitAdd}>
+            <ProjectForm value={form} setValue={setForm} customers={customers} />
             <div className="flex justify-end gap-3">
-              <button 
-                onClick={() => hideModal('confirmDelete')} 
-                className="px-4 py-2 border border-light-border dark:border-dark-border rounded-md hover:bg-light-bg dark:hover:bg-dark-bg text-light-text dark:text-dark-text"
-              >
-                Annulla
-              </button>
-              <button 
-                onClick={handleDeleteProject} 
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md"
-              >
-                Elimina
-              </button>
+              <button type="button" onClick={() => hideModal('addProject')} className="px-4 py-2 border rounded-md">Annulla</button>
+              <button disabled={saving} className="px-4 py-2 bg-light-primary text-white rounded-md disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Crea'}</button>
             </div>
+          </form>
+        </Modal>
+      )}
+
+      {isModalOpen('editProject') && selected && (
+        <Modal title={operationalOnly ? 'Aggiorna lavorazione' : 'Modifica progetto'} onClose={() => hideModal('editProject')}>
+          <form onSubmit={submitEdit}>
+            <ProjectForm value={form} setValue={setForm} customers={customers} operationalOnly={operationalOnly} />
+            <div className="flex justify-end gap-3">
+              <button type="button" onClick={() => hideModal('editProject')} className="px-4 py-2 border rounded-md">Annulla</button>
+              <button disabled={saving} className="px-4 py-2 bg-light-primary text-white rounded-md disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {isModalOpen('viewProject') && selected && (
+        <Modal title="Dettagli progetto" onClose={() => hideModal('viewProject')} wide>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div><span className="text-gray-500">Nome</span><p className="font-medium text-base">{selected.name}</p></div>
+            <div><span className="text-gray-500">Cliente</span><p className="font-medium text-base">{selected.client || selected.clientName || '-'}</p></div>
+            <div><span className="text-gray-500">Inizio</span><p>{selected.startDate || '-'}</p></div>
+            <div><span className="text-gray-500">Scadenza</span><p>{selected.deadline || '-'}</p></div>
+            {canViewFinancials && selected.budget != null && (
+              <div><span className="text-gray-500">Budget</span><p>{formatEuro(selected.budget)}</p></div>
+            )}
+            <div><span className="text-gray-500">Stato / fase</span><p>{selected.status} {selected.phase ? `· ${selected.phase}` : ''}</p></div>
+            <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selected.productionNotes || '-'}</p></div>
           </div>
-        </div>
+          <AttachmentsPanel entityType="project" entityId={String(selected.id)} />
+          <div className="mt-6 flex justify-end"><button onClick={() => hideModal('viewProject')} className="px-4 py-2 border rounded-md">Chiudi</button></div>
+        </Modal>
+      )}
+
+      {isModalOpen('confirmDelete') && (
+        <Modal title="Conferma eliminazione" onClose={() => hideModal('confirmDelete')}>
+          <p className="mb-6">Eliminare definitivamente questo progetto?</p>
+          <div className="flex justify-end gap-3">
+            <button onClick={() => hideModal('confirmDelete')} className="px-4 py-2 border rounded-md">Annulla</button>
+            <button onClick={() => void confirmDelete()} disabled={saving} className="px-4 py-2 bg-red-600 text-white rounded-md disabled:bg-gray-400">Elimina</button>
+          </div>
+        </Modal>
       )}
     </div>
   );

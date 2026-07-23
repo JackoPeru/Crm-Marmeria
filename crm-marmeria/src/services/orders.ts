@@ -1,12 +1,8 @@
-/**
- * Servizio per la gestione degli ordini
- * Implementa CRUD operations con API REST e funzioni specifiche per voice-bot
- */
 import api from './api';
 import { cacheService } from './cache';
 import toast from 'react-hot-toast';
+import { mergeOptimisticEntity } from './optimisticMutation';
 
-// Interfacce TypeScript
 export interface Order {
   id: string;
   clientId: string;
@@ -24,6 +20,8 @@ export interface Order {
   amount: number;
   materials: OrderMaterial[];
   notes?: string;
+  version?: number;
+  _queued?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -51,17 +49,17 @@ export interface CreateOrderRequest {
   amount: number;
   materials: Omit<OrderMaterial, 'id'>[];
   notes?: string;
+  version?: number;
 }
 
 export interface UpdateOrderRequest extends Partial<CreateOrderRequest> {
   id: string;
 }
 
-// Interfacce specifiche per voice-bot
 export interface OrderStatus {
   id: string;
   status: Order['status'];
-  eta: string | null; // Estimated time of arrival
+  eta: string | null;
   clientName: string;
   title: string;
   priority: Order['priority'];
@@ -70,326 +68,208 @@ export interface OrderStatus {
   lastUpdate: string;
 }
 
+const isNetworkFailure = (error: any) => (
+  error?.code === 'ERR_NETWORK'
+  || error?.code === 'ECONNABORTED'
+  || !error?.response
+);
+
+const safeText = (value: unknown) => String(value ?? '').toLowerCase();
+
 class OrdersService {
+  private readonly CACHE_TTL = 3 * 60 * 1000;
 
-  private readonly CACHE_TTL = 3 * 60 * 1000; // 3 minuti per dati più dinamici
+  private notifyOfflineReadOnly() {
+    const previous = Number(localStorage.getItem('lastOfflineToast') || 0);
+    if (Date.now() - previous <= 30000) return;
+    toast.error('Sei offline – dati in sola lettura', {
+      duration: 5000,
+      id: 'offline-mode',
+    });
+    localStorage.setItem('lastOfflineToast', String(Date.now()));
+  }
 
-  /**
-   * Recupera tutti gli ordini
-   */
+  private async cachedOrder(id: string): Promise<Order | null> {
+    const direct = await cacheService.get<Order>('orders', String(id));
+    if (direct) return direct;
+    const all = await cacheService.get<Order[]>('orders', 'all');
+    return all?.find((order) => String(order.id) === String(id)) || null;
+  }
+
+  private async requiredVersion(id: string, supplied?: number): Promise<number> {
+    if (Number.isFinite(supplied)) return Number(supplied);
+    const cached = await this.cachedOrder(id);
+    if (Number.isFinite(cached?.version)) return Number(cached?.version);
+
+    try {
+      const current = await this.getOrder(id);
+      if (Number.isFinite(current.version)) return Number(current.version);
+    } catch {
+      // Il messaggio seguente spiega l'azione necessaria anche in modalità offline.
+    }
+    throw new Error('Versione ordine non disponibile. Ricarica l’ordine prima di modificarlo.');
+  }
+
   async getOrders(): Promise<Order[]> {
     try {
       const response = await api.get<Order[]>('/orders');
-      const orders = response.data;
-      
-      // Salva nel cache per uso offline
+      const orders = response.data || [];
       await cacheService.set('orders', 'all', orders, this.CACHE_TTL);
-      
+      await Promise.all(orders.map((order) => (
+        cacheService.set('orders', String(order.id), order, this.CACHE_TTL)
+      )));
       return orders;
     } catch (error: any) {
-      console.error('Errore nel recupero ordini:', error);
-      
-      // Fallback al cache se errore di rete
-      if (error.code === 'ERR_NETWORK') {
-        const cachedOrders = await cacheService.get<Order[]>('orders', 'all');
-        if (cachedOrders) {
-          // Notifica ridotta per evitare spam
-          const lastOfflineToast = localStorage.getItem('lastOfflineToast');
-          const now = Date.now();
-          
-          if (!lastOfflineToast || (now - parseInt(lastOfflineToast)) > 30000) {
-            toast.error('Sei offline – dati in sola lettura', {
-              duration: 5000,
-              id: 'offline-mode'
-            });
-            localStorage.setItem('lastOfflineToast', now.toString());
-          }
-          return cachedOrders;
-        }
+      const cached = await cacheService.get<Order[]>('orders', 'all');
+      if (isNetworkFailure(error) && cached) {
+        this.notifyOfflineReadOnly();
+        return cached;
       }
-      
       throw error;
     }
   }
 
-  /**
-   * Recupera un ordine specifico per ID
-   */
   async getOrder(id: string): Promise<Order> {
+    const encodedId = encodeURIComponent(String(id));
     try {
-      const response = await api.get<Order>(`/orders/${id}`);
-      const order = response.data;
-      
-      // Salva nel cache
-      await cacheService.set('orders', id, order, this.CACHE_TTL);
-      
-      return order;
+      const response = await api.get<Order>(`/orders/${encodedId}`);
+      await cacheService.set('orders', String(id), response.data, this.CACHE_TTL);
+      return response.data;
     } catch (error: any) {
-      console.error(`Errore nel recupero ordine ${id}:`, error);
-      
-      // Fallback al cache se errore di rete
-      if (error.code === 'ERR_NETWORK') {
-        const cachedOrder = await cacheService.get<Order>('orders', id);
-        if (cachedOrder) {
-          // Usa la stessa logica di throttling per le notifiche
-          const lastOfflineToast = localStorage.getItem('lastOfflineToast');
-          const now = Date.now();
-          
-          if (!lastOfflineToast || (now - parseInt(lastOfflineToast)) > 30000) {
-            toast.error('Sei offline – dati in sola lettura', {
-              duration: 5000,
-              id: 'offline-mode'
-            });
-            localStorage.setItem('lastOfflineToast', now.toString());
-          }
-          return cachedOrder;
-        }
+      const cached = await this.cachedOrder(id);
+      if (isNetworkFailure(error) && cached) {
+        this.notifyOfflineReadOnly();
+        return cached;
       }
-      
       throw error;
     }
   }
 
-  /**
-   * VOICE-BOT FUNCTION: Ottiene lo stato di un ordine specifico
-   * Utilizzata da micro-servizi esterni per il voice-bot
-   * @param orderId ID dell'ordine
-   * @returns Stato dettagliato dell'ordine per voice-bot
-   */
   async getOrderStatus(orderId: string): Promise<OrderStatus> {
+    const encodedId = encodeURIComponent(String(orderId));
     try {
-      const response = await api.get<OrderStatus>(`/orders/${orderId}/status`);
-      const orderStatus = response.data;
-      
-      // Salva nel cache con TTL ridotto per dati real-time
-      await cacheService.set('orders', `status_${orderId}`, orderStatus, 60000); // 1 minuto
-      
-      return orderStatus;
+      const response = await api.get<OrderStatus>(`/orders/${encodedId}/status`);
+      await cacheService.set('orders', `status_${orderId}`, response.data, 60000);
+      return response.data;
     } catch (error: any) {
-      console.error(`Errore nel recupero stato ordine ${orderId}:`, error);
-      
-      // Fallback al cache se errore di rete
-      if (error.code === 'ERR_NETWORK') {
+      if (isNetworkFailure(error)) {
         const cachedStatus = await cacheService.get<OrderStatus>('orders', `status_${orderId}`);
-        if (cachedStatus) {
-          return cachedStatus;
-        }
-        
-        // Fallback ulteriore: calcola stato da ordine completo in cache
-        const cachedOrder = await cacheService.get<Order>('orders', orderId);
-        if (cachedOrder) {
-          return this.calculateOrderStatusFromOrder(cachedOrder);
-        }
+        if (cachedStatus) return cachedStatus;
+        const cachedOrder = await this.cachedOrder(orderId);
+        if (cachedOrder) return this.calculateOrderStatusFromOrder(cachedOrder);
       }
-      
       throw error;
     }
   }
 
-  /**
-   * Crea un nuovo ordine
-   */
   async createOrder(orderData: CreateOrderRequest): Promise<Order> {
-    try {
-      const response = await api.post<Order>('/orders', orderData);
-      const newOrder = response.data;
-      
-      // Aggiorna il cache
-      await this.invalidateCache();
-      
-      toast.success('Ordine creato con successo');
-      return newOrder;
-    } catch (error: any) {
-      console.error('Errore nella creazione ordine:', error);
-      
-      if (error.code === 'ERR_NETWORK') {
-        toast.error('Impossibile creare l\'ordine offline');
-      }
-      
-      throw error;
-    }
+    const response = await api.post<Order>('/orders', orderData);
+    const order = response.data;
+    await this.invalidateCache();
+    await cacheService.set('orders', String(order.id), order, this.CACHE_TTL);
+    if (response.status !== 202) toast.success('Ordine creato con successo');
+    return order;
   }
 
-  /**
-   * Aggiorna un ordine esistente
-   */
   async updateOrder(id: string, orderData: Partial<CreateOrderRequest>): Promise<Order> {
-    try {
-      const response = await api.patch<Order>(`/orders/${id}`, orderData);
-      const updatedOrder = response.data;
-      
-      // Aggiorna il cache
-      await cacheService.set('orders', id, updatedOrder, this.CACHE_TTL);
-      await this.invalidateCache(); // Invalida la lista completa
-      
-      toast.success('Ordine aggiornato con successo');
-      return updatedOrder;
-    } catch (error: any) {
-      console.error(`Errore nell'aggiornamento ordine ${id}:`, error);
-      
-      if (error.code === 'ERR_NETWORK') {
-        toast.error('Impossibile aggiornare l\'ordine offline');
-      }
-      
-      throw error;
-    }
+    const version = await this.requiredVersion(id, orderData.version);
+    const current = await this.cachedOrder(id);
+    const requested = { ...orderData, version, expectedVersion: version };
+    const response = await api.patch<Order>(`/orders/${encodeURIComponent(String(id))}`, requested);
+    const order = mergeOptimisticEntity<Order>(current, orderData, response.data, String(id));
+    await cacheService.set('orders', String(id), order, this.CACHE_TTL);
+    await this.invalidateCache();
+    if (response.status !== 202) toast.success('Ordine aggiornato con successo');
+    return order;
   }
 
-  /**
-   * Aggiorna solo lo stato di un ordine
-   */
-  async updateOrderStatus(id: string, status: Order['status']): Promise<Order> {
-    try {
-      const response = await api.patch<Order>(`/orders/${id}/status`, { status });
-      const updatedOrder = response.data;
-      
-      // Aggiorna il cache
-      await cacheService.set('orders', id, updatedOrder, this.CACHE_TTL);
-      await this.invalidateCache();
-      
-      toast.success(`Stato ordine aggiornato a: ${status}`);
-      return updatedOrder;
-    } catch (error: any) {
-      console.error(`Errore nell'aggiornamento stato ordine ${id}:`, error);
-      
-      if (error.code === 'ERR_NETWORK') {
-        toast.error('Impossibile aggiornare lo stato offline');
-      }
-      
-      throw error;
-    }
+  async updateOrderStatus(
+    id: string,
+    status: Order['status'],
+    suppliedVersion?: number,
+  ): Promise<Order> {
+    const version = await this.requiredVersion(id, suppliedVersion);
+    const current = await this.cachedOrder(id);
+    const requested = { status, version, expectedVersion: version };
+    const response = await api.patch<Order>(
+      `/orders/${encodeURIComponent(String(id))}/status`,
+      requested,
+    );
+    const order = mergeOptimisticEntity<Order>(current, { status }, response.data, String(id));
+    await cacheService.set('orders', String(id), order, this.CACHE_TTL);
+    await this.invalidateCache();
+    if (response.status !== 202) toast.success(`Stato ordine aggiornato a: ${status}`);
+    return order;
   }
 
-  /**
-   * Elimina un ordine
-   */
-  async deleteOrder(id: string): Promise<void> {
-    try {
-      await api.delete(`/orders/${id}`);
-      
-      // Rimuove dal cache
-      await cacheService.delete('orders', id);
-      await cacheService.delete('orders', `status_${id}`);
-      await this.invalidateCache();
-      
-      toast.success('Ordine eliminato con successo');
-    } catch (error: any) {
-      console.error(`Errore nell'eliminazione ordine ${id}:`, error);
-      
-      if (error.code === 'ERR_NETWORK') {
-        toast.error('Impossibile eliminare l\'ordine offline');
-      }
-      
-      throw error;
-    }
+  async deleteOrder(id: string, suppliedVersion?: number): Promise<void> {
+    const version = await this.requiredVersion(id, suppliedVersion);
+    const response = await api.delete(`/orders/${encodeURIComponent(String(id))}`, {
+      headers: { 'If-Match': String(version) },
+    });
+    await cacheService.delete('orders', String(id));
+    await cacheService.delete('orders', `status_${id}`);
+    await this.invalidateCache();
+    if (response.status !== 202) toast.success('Ordine eliminato con successo');
   }
 
-  /**
-   * Cerca ordini per titolo, cliente o stato
-   */
   async searchOrders(query: string): Promise<Order[]> {
     try {
-      const response = await api.get<Order[]>(`/orders/search`, {
-        params: { q: query }
-      });
-      
+      const response = await api.get<Order[]>('/orders/search', { params: { q: query } });
       return response.data;
     } catch (error: any) {
-      console.error('Errore nella ricerca ordini:', error);
-      
-      // Fallback al cache per ricerca offline
-      if (error.code === 'ERR_NETWORK') {
-        const cachedOrders = await cacheService.get<Order[]>('orders', 'all');
-        if (cachedOrders) {
-          // Usa la stessa logica di throttling per le notifiche
-          const lastOfflineToast = localStorage.getItem('lastOfflineToast');
-          const now = Date.now();
-          
-          if (!lastOfflineToast || (now - parseInt(lastOfflineToast)) > 30000) {
-            toast.error('Sei offline – dati in sola lettura', {
-              duration: 5000,
-              id: 'offline-mode'
-            });
-            localStorage.setItem('lastOfflineToast', now.toString());
-          }
-          const filteredOrders = cachedOrders.filter(order => 
-            order.title.toLowerCase().includes(query.toLowerCase()) ||
-            order.clientName.toLowerCase().includes(query.toLowerCase()) ||
-            order.status.toLowerCase().includes(query.toLowerCase())
-          );
-          return filteredOrders;
-        }
+      const cached = await cacheService.get<Order[]>('orders', 'all');
+      if (isNetworkFailure(error) && cached) {
+        this.notifyOfflineReadOnly();
+        const normalized = safeText(query);
+        return cached.filter((order) => [
+          order.title,
+          order.clientName,
+          order.status,
+        ].some((value) => safeText(value).includes(normalized)));
       }
-      
       throw error;
     }
   }
 
-  /**
-   * Ottiene ordini per stato
-   */
   async getOrdersByStatus(status: Order['status']): Promise<Order[]> {
     try {
-      const response = await api.get<Order[]>(`/orders/by-status/${status}`);
+      const response = await api.get<Order[]>(
+        `/orders/by-status/${encodeURIComponent(status)}`,
+      );
       return response.data;
     } catch (error: any) {
-      console.error(`Errore nel recupero ordini per stato ${status}:`, error);
-      
-      // Fallback al cache
-      if (error.code === 'ERR_NETWORK') {
-        const cachedOrders = await cacheService.get<Order[]>('orders', 'all');
-        if (cachedOrders) {
-          const filteredOrders = cachedOrders.filter(order => order.status === status);
-          toast.error('Sei offline – dati in sola lettura');
-          return filteredOrders;
-        }
+      const cached = await cacheService.get<Order[]>('orders', 'all');
+      if (isNetworkFailure(error) && cached) {
+        this.notifyOfflineReadOnly();
+        return cached.filter((order) => order.status === status);
       }
-      
       throw error;
     }
   }
 
-  /**
-   * Calcola lo stato dell'ordine da un oggetto Order completo
-   * Utilizzato come fallback quando l'API non è disponibile
-   */
   private calculateOrderStatusFromOrder(order: Order): OrderStatus {
     const now = new Date();
     const endDate = new Date(order.endDate);
     const startDate = new Date(order.startDate);
-    
-    // Calcola percentuale di completamento basata su date e stato
     let completionPercentage = 0;
-    switch (order.status) {
-      case 'Preventivo':
-        completionPercentage = 0;
-        break;
-      case 'In Attesa':
-        completionPercentage = 10;
-        break;
-      case 'In Lavorazione':
-        const totalDuration = endDate.getTime() - startDate.getTime();
-        const elapsed = now.getTime() - startDate.getTime();
-        completionPercentage = Math.min(90, Math.max(10, (elapsed / totalDuration) * 80 + 10));
-        break;
-      case 'Completato':
-        completionPercentage = 100;
-        break;
-      case 'Annullato':
-        completionPercentage = 0;
-        break;
-    }
 
-    // Calcola ETA
+    if (order.status === 'In Attesa') completionPercentage = 10;
+    if (order.status === 'In Lavorazione') {
+      const duration = endDate.getTime() - startDate.getTime();
+      const elapsed = now.getTime() - startDate.getTime();
+      completionPercentage = duration > 0 && Number.isFinite(duration)
+        ? Math.min(90, Math.max(10, (elapsed / duration) * 80 + 10))
+        : 50;
+    }
+    if (order.status === 'Completato') completionPercentage = 100;
+
     let eta: string | null = null;
     if (order.status === 'In Lavorazione' && order.estimatedDelivery) {
       eta = order.estimatedDelivery;
     } else if (order.status === 'Completato' && order.actualDelivery) {
       eta = order.actualDelivery;
     }
-
-    // Calcola ritardi (semplificato)
-    const delaysCount = (endDate < now && order.status !== 'Completato') ? 1 : 0;
 
     return {
       id: order.id,
@@ -399,112 +279,55 @@ class OrdersService {
       title: order.title,
       priority: order.priority,
       completionPercentage: Math.round(completionPercentage),
-      delaysCount,
+      delaysCount: Number.isFinite(endDate.getTime())
+        && endDate < now
+        && order.status !== 'Completato'
+        ? 1
+        : 0,
       lastUpdate: order.updatedAt,
     };
   }
 
-  /**
-   * Invalida il cache degli ordini
-   */
   private async invalidateCache(): Promise<void> {
-    try {
-      await cacheService.delete('orders', 'all');
-    } catch (error) {
-      console.error('Errore nell\'invalidazione cache ordini:', error);
-    }
+    await cacheService.delete('orders', 'all');
+    await cacheService.delete('orders', 'stats');
   }
 
-  /**
-   * Recupera le statistiche degli ordini
-   */
   async getOrdersStats(): Promise<{
     total: number;
     byStatus: Record<Order['status'], number>;
     totalValue: number;
     pendingDeliveries: number;
   }> {
-    try {
-      const response = await api.get('/orders/stats');
-      const stats = response.data;
-      
-      // Salva nel cache
-      await cacheService.set('orders', 'stats', stats, this.CACHE_TTL);
-      
-      return stats;
-    } catch (error: any) {
-      console.error('Errore nel recupero statistiche ordini:', error);
-      
-      // Fallback al cache se errore di rete
-       if (error.code === 'ERR_NETWORK') {
-         const cachedStats = await cacheService.get<{
-           total: number;
-           byStatus: Record<Order['status'], number>;
-           totalValue: number;
-           pendingDeliveries: number;
-         }>('orders', 'stats');
-         if (cachedStats) {
-           return cachedStats;
-         }
-       }
-      
-      // Calcolo locale delle statistiche se non disponibili
-      const orders = await this.getOrders();
-      const stats = this.calculateStatsFromOrders(orders);
-      return stats;
-    }
+    const orders = await this.getOrders();
+    const stats = this.calculateStatsFromOrders(orders);
+    await cacheService.set('orders', 'stats', stats, this.CACHE_TTL);
+    return stats;
   }
 
-  /**
-   * Calcola le statistiche dagli ordini in cache
-   */
-  private calculateStatsFromOrders(orders: Order[]): {
-    total: number;
-    byStatus: Record<Order['status'], number>;
-    totalValue: number;
-    pendingDeliveries: number;
-  } {
+  private calculateStatsFromOrders(orders: Order[]) {
     const byStatus: Record<Order['status'], number> = {
-      'Preventivo': 0,
+      Preventivo: 0,
       'In Attesa': 0,
       'In Lavorazione': 0,
-      'Completato': 0,
-      'Annullato': 0
+      Completato: 0,
+      Annullato: 0,
     };
-    
     let totalValue = 0;
     let pendingDeliveries = 0;
-    
-    orders.forEach(order => {
-      byStatus[order.status]++;
-      totalValue += order.amount;
-      
-      if (order.status === 'In Lavorazione' || order.status === 'In Attesa') {
-        pendingDeliveries++;
-      }
-    });
-    
-    return {
-      total: orders.length,
-      byStatus,
-      totalValue,
-      pendingDeliveries
-    };
+
+    for (const order of orders) {
+      if (order.status in byStatus) byStatus[order.status] += 1;
+      totalValue += Number(order.amount) || 0;
+      if (['In Lavorazione', 'In Attesa'].includes(order.status)) pendingDeliveries += 1;
+    }
+    return { total: orders.length, byStatus, totalValue, pendingDeliveries };
   }
 
-  /**
-   * Pulisce la cache degli ordini
-   */
   async clearCache(): Promise<void> {
-    try {
-      await cacheService.clear('orders');
-      console.log('Cache ordini pulito');
-    } catch (error) {
-      console.error('Errore nella pulizia cache ordini:', error);
-    }
+    await cacheService.clear('orders');
   }
 }
 
-// Istanza singleton del servizio ordini
 export const ordersService = new OrdersService();
 export default ordersService;

@@ -1,28 +1,30 @@
 {
   "name": "crm-marmeria-server",
-  "version": "1.0.0",
-  "description": "Server API per CRM Marmeria",
+  "version": "2.3.0",
+  "description": "Server centrale LAN per CRM Marmeria",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --check index.js && node --check app.js && node --check self-update.js && node --check database.js && node --check restore-safety.js && node --check mutation-barrier.js && node --check middleware/auth.js && node --check snapshot-compat.js && node --check tls-identity.js && node --check simple-lan.check.js && node --check smoke-test.js && node --check setup-test.js && node access-policy.check.js && node restore-validation.check.js && node shutdown-runtime.check.js && node runtime-files.check.js && node tls-identity.check.js && node simple-lan.check.js && node index-bootstrap.check.js && node mutation-barrier.check.js && node setup-test.js && node smoke-test.js create && node smoke-test.js update && node smoke-test.js conflict && node smoke-test.js snapshot && node smoke-test.js server"
   },
-  "keywords": [
-    "crm",
-    "api",
-    "express",
-    "marmeria"
-  ],
-  "author": "CRM Marmeria",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
+    "bcrypt": "^6.0.0",
+    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
+    "express": "^4.22.2",
     "jsonwebtoken": "^9.0.2",
-    "bcrypt": "^5.1.1"
+    "multer": "^2.2.0",
+    "selfsigned": "^5.5.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
+  },
+  "overrides": {
+    "jws": "3.2.3",
+    "lodash": "4.18.1",
+    "path-to-regexp": "0.1.13"
   }
 }

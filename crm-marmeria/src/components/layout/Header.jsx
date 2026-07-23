@@ -5,7 +5,7 @@ import useUI from '../../hooks/useUI';
 import { useAuth } from '../../contexts/AuthContext';
 
 const Header = () => {
-  const { theme, toggleTheme, userPreferences } = useUI();
+  const { theme, toggleTheme, toggleSidebar, userPreferences } = useUI();
   const { user, logout } = useAuth();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const darkMode = theme === 'dark';
@@ -31,7 +31,15 @@ const Header = () => {
       role="banner"
     >
       <div className="h-16 px-4 md:px-6 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleSidebar}
+            type="button"
+            className="p-2 -ml-2 rounded-lg text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 dark:hover:bg-gray-700"
+            aria-label="Apri o chiudi menu navigazione"
+          >
+            <Menu className="w-6 h-6" />
+          </button>
           <h1 className="text-xl font-semibold text-gray-800 dark:text-white capitalize">
             {currentPageLabel}
           </h1>

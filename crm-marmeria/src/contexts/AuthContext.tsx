@@ -1,100 +1,122 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { authService, User, LoginCredentials } from '../services/auth';
 import toast from 'react-hot-toast';
-
-// AuthContext module loaded
+import { authService, User, LoginCredentials, ProfileUpdate } from '../services/auth';
+import { cacheService } from '../services/cache';
+import { realtimeService } from '../services/realtime';
+import { store } from '../store';
+import { resetClientsState } from '../store/slices/clientsSlice';
+import { resetMaterialsState } from '../store/slices/materialsSlice';
+import { resetOrdersState } from '../store/slices/ordersSlice';
+import { resetAnalyticsState } from '../store/slices/analyticsSlice';
 
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isInitialized: boolean;
   login: (credentials: LoginCredentials) => Promise<void>;
   logout: () => Promise<void>;
+  updateUser: (profile: ProfileUpdate) => Promise<User>;
   hasPermission: (permission: string) => boolean;
   hasRole: (role: string) => boolean;
   hasAnyRole: (roles: string[]) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+let accountStateQueue: Promise<void> = Promise.resolve();
 
-interface AuthProviderProps {
-  children: ReactNode;
-}
+const clearAccountScopedState = (): Promise<void> => {
+  accountStateQueue = accountStateQueue.catch((error) => {
+    console.error('Pulizia stato account precedente fallita:', error);
+  }).then(async () => {
+    store.dispatch(resetClientsState());
+    store.dispatch(resetMaterialsState());
+    store.dispatch(resetOrdersState());
+    store.dispatch(resetAnalyticsState());
+    await cacheService.clearAll();
+  });
+  return accountStateQueue;
+};
 
-export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
+export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Inizializza l'autenticazione al caricamento dell'app
   useEffect(() => {
-    let isMounted = true; // Flag per evitare aggiornamenti di stato se il componente è smontato
-    
-    const initAuth = async () => {
+    let mounted = true;
+    const initialize = async () => {
       try {
-        // Delay minimo per evitare lampeggiamento
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        // Controlla se ci sono dati di autenticazione salvati
+        const localUser = authService.getUser();
         const token = authService.getToken();
-        const userData = authService.getUser();
-        
-        if (token && userData) {
-          // Prima imposta i dati locali per evitare schermo bianco
-          if (isMounted) {
-            setUser(userData);
+        if (mounted && token && localUser) setUser(localUser);
+
+        if (token && localUser) {
+          const valid = await authService.validateToken();
+          if (mounted) {
+            const validatedUser = valid ? authService.getUser() : null;
+            setUser(validatedUser);
+            if (validatedUser) realtimeService.connectFromStorage();
           }
-          
-          // Poi valida il token in background
-          try {
-            const isValid = await authService.validateToken();
-            if (isMounted) {
-              if (isValid) {
-                // Token valido, aggiorna con i dati dal server se necessario
-                const updatedUserData = authService.getUser();
-                setUser(updatedUserData);
-              } else {
-                // Token non valido, pulisci l'autenticazione
-                authService.clearAuth();
-                setUser(null);
-              }
-            }
-          } catch (validationError) {
-            // Errore nella validazione (es. server non raggiungibile)
-            console.warn('Errore validazione token, mantengo dati locali:', validationError);
-            // Mantieni i dati locali già impostati
-          }
-        } else {
-          // Nessun dato di autenticazione salvato
-          if (isMounted) {
-            setUser(null);
-          }
+        } else if (mounted) {
+          setUser(null);
         }
       } catch (error) {
         console.error('Errore inizializzazione auth:', error);
-        if (isMounted) {
-          authService.clearAuth();
-          setUser(null);
-        }
+        if (mounted) setUser(null);
       } finally {
-        if (isMounted) {
+        if (mounted) {
           setIsLoading(false);
+          setIsInitialized(true);
         }
       }
     };
 
-    initAuth();
-    
-    // Cleanup function per evitare memory leaks
-    return () => {
-      isMounted = false;
+    const resetSession = async (showExpiredMessage: boolean) => {
+      authService.clearAuth();
+      realtimeService.disconnect();
+      setUser(null);
+      setIsLoading(true);
+      await clearAccountScopedState();
+      if (!mounted) return;
+      setIsLoading(false);
+      window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
+      if (showExpiredMessage) {
+        toast.error('Sessione scaduta. Accedi nuovamente.', { id: 'session-expired' });
+      }
     };
-  }, []); // Array di dipendenze vuoto per eseguire solo al mount
+
+    const handleExpiredSession = () => void resetSession(true);
+    const handleServerChanged = () => {
+      void resetSession(false).then(() => {
+        if (mounted) {
+          toast('Server o dati centrali cambiati. Accedi nuovamente.', { id: 'server-changed' });
+        }
+      });
+    };
+
+    window.addEventListener('crm-auth-expired', handleExpiredSession);
+    window.addEventListener('crm-auth-reset-for-server-change', handleServerChanged);
+    void initialize();
+    return () => {
+      mounted = false;
+      window.removeEventListener('crm-auth-expired', handleExpiredSession);
+      window.removeEventListener('crm-auth-reset-for-server-change', handleServerChanged);
+    };
+  }, []);
 
   const login = async (credentials: LoginCredentials): Promise<void> => {
+    setIsLoading(true);
     try {
-      setIsLoading(true);
       const response = await authService.login(credentials);
+      try {
+        await clearAccountScopedState();
+      } catch (error) {
+        console.error('Pulizia cache dopo login fallita:', error);
+      }
       setUser(response.user);
+      realtimeService.connectFromStorage();
+      window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: response.user }));
       toast.success(`Benvenuto, ${response.user.firstName}!`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Errore durante il login';
@@ -106,46 +128,40 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   };
 
   const logout = async (): Promise<void> => {
+    setIsLoading(true);
     try {
-      setIsLoading(true);
+      realtimeService.disconnect();
       await authService.logout();
+      await clearAccountScopedState();
       setUser(null);
+      window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: null }));
       toast.success('Logout effettuato con successo');
-    } catch (error) {
-      console.error('Errore logout:', error);
-      // Anche in caso di errore, pulisci lo stato locale
-      authService.clearAuth();
-      setUser(null);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const hasPermission = (permission: string): boolean => {
-    return authService.hasPermission(permission);
-  };
-
-  const hasRole = (role: string): boolean => {
-    return authService.hasRole(role);
-  };
-
-  const hasAnyRole = (roles: string[]): boolean => {
-    return authService.hasAnyRole(roles);
-  };
-
-  const value: AuthContextType = {
-    user,
-    isAuthenticated: !!user,
-    isLoading,
-    login,
-    logout,
-    hasPermission,
-    hasRole,
-    hasAnyRole,
+  const updateUser = async (profile: ProfileUpdate): Promise<User> => {
+    const updated = await authService.updateProfile(profile);
+    setUser(updated);
+    window.dispatchEvent(new CustomEvent('crm-auth-changed', { detail: updated }));
+    toast.success('Profilo aggiornato con successo');
+    return updated;
   };
 
   return (
-    <AuthContext.Provider value={value}>
+    <AuthContext.Provider value={{
+      user,
+      isAuthenticated: Boolean(user),
+      isLoading,
+      isInitialized,
+      login,
+      logout,
+      updateUser,
+      hasPermission: (permission) => user?.permissions.includes(permission) ?? false,
+      hasRole: (role) => user?.role === role,
+      hasAnyRole: (roles) => Boolean(user?.role && roles.includes(user.role)),
+    }}>
       {children}
     </AuthContext.Provider>
   );
@@ -153,8 +169,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
   return context;
 };

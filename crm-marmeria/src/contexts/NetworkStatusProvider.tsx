@@ -1,308 +1,284 @@
-/**
- * Provider per la gestione dello stato di connessione di rete
- * Monitora lo stato online/offline e fornisce contesto all'app
- */
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, {
+  createContext,
+  ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import toast from 'react-hot-toast';
+import { apiClient } from '../services/api';
+import { cacheService } from '../services/cache';
+import { offlineQueue } from '../services/offlineQueue';
+import { realtimeService } from '../services/realtime';
 
-// Interfacce TypeScript
 interface NetworkStatus {
   isOnline: boolean;
   isOffline: boolean;
-  connectionType: 'wifi' | 'cellular' | 'ethernet' | 'unknown';
-  effectiveType: 'slow-2g' | '2g' | '3g' | '4g' | 'unknown';
-  downlink: number;
-  rtt: number;
+  serverReachable: boolean;
+  apiUrl: string;
   lastOnline: Date | null;
   lastOffline: Date | null;
+  queuedOperations: number;
+  realtimeStatus: 'disconnected' | 'connecting' | 'connected';
 }
 
 interface NetworkStatusContextType {
   networkStatus: NetworkStatus;
   checkConnection: () => Promise<boolean>;
+  setApiUrl: (url: string, expectedServerId?: string) => Promise<boolean>;
   forceOfflineMode: () => void;
   exitOfflineMode: () => void;
   isForceOffline: boolean;
 }
 
-// Creazione del contesto
 const NetworkStatusContext = createContext<NetworkStatusContextType | undefined>(undefined);
 
-// Props del provider
-interface NetworkStatusProviderProps {
-  children: ReactNode;
-}
+const clearStoredServerIdentity = () => {
+  localStorage.removeItem('crm_server_id');
+  localStorage.removeItem('crm_server_identity_url');
+  localStorage.removeItem('crm_data_epoch');
+};
 
-/**
- * Provider per lo stato di rete
- */
-export const NetworkStatusProvider: React.FC<NetworkStatusProviderProps> = ({ children }) => {
-  const [isForceOffline, setIsForceOffline] = useState(false);
+export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [isForceOffline, setIsForceOffline] = useState(
+    () => localStorage.getItem('forceOfflineMode') === 'true',
+  );
+  const forceOfflineRef = useRef(isForceOffline);
   const [networkStatus, setNetworkStatus] = useState<NetworkStatus>({
     isOnline: navigator.onLine,
     isOffline: !navigator.onLine,
-    connectionType: 'unknown',
-    effectiveType: 'unknown',
-    downlink: 0,
-    rtt: 0,
-    lastOnline: navigator.onLine ? new Date() : null,
-    lastOffline: !navigator.onLine ? new Date() : null,
+    serverReachable: false,
+    apiUrl: apiClient.getBaseURL(),
+    lastOnline: null,
+    lastOffline: null,
+    queuedOperations: 0,
+    realtimeStatus: 'disconnected',
   });
 
-  /**
-   * Aggiorna le informazioni di rete avanzate
-   */
-  const updateNetworkInfo = () => {
-    const connection = (navigator as any).connection || 
-                      (navigator as any).mozConnection || 
-                      (navigator as any).webkitConnection;
-    
-    if (connection) {
-      setNetworkStatus(prev => ({
-        ...prev,
-        connectionType: connection.type || 'unknown',
-        effectiveType: connection.effectiveType || 'unknown',
-        downlink: connection.downlink || 0,
-        rtt: connection.rtt || 0,
-      }));
-    }
-  };
-
-  /**
-   * Gestisce il cambio di stato online
-   */
-  const handleOnline = () => {
-    if (!isForceOffline) {
-      setNetworkStatus(prev => ({
-        ...prev,
-        isOnline: true,
-        isOffline: false,
-        lastOnline: new Date(),
-      }));
-      
-      updateNetworkInfo();
-      toast.success('Connessione ripristinata', {
-        duration: 3000,
-        icon: '🌐',
-      });
-    }
-  };
-
-  /**
-   * Gestisce il cambio di stato offline
-   */
-  const handleOffline = () => {
-    setNetworkStatus(prev => ({
-      ...prev,
-      isOnline: false,
-      isOffline: true,
-      lastOffline: new Date(),
-    }));
-    
-    // Toast disabilitato per evitare notifiche continue
-    // toast.error('Connessione persa - Modalità offline attiva', {
-    //   duration: 5000,
-    //   icon: '📡',
-    // });
-  };
-
-  /**
-   * Verifica attivamente la connessione
-   */
-  const checkConnection = async (): Promise<boolean> => {
-    if (isForceOffline) {
-      return false;
-    }
-
+  const refreshQueueCount = useCallback(async () => {
     try {
-      // Usa l'URL completo del server per il controllo della connessione
-      const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
-      const healthUrl = `${baseURL}/health`;
-      
-      // Tenta una richiesta a un endpoint veloce
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch(healthUrl, {
-        method: 'HEAD',
-        signal: controller.signal,
-        cache: 'no-cache',
-      });
-      
-      clearTimeout(timeoutId);
-      
-      const isConnected = response.ok;
-      
-      setNetworkStatus(prev => ({
-        ...prev,
-        isOnline: isConnected,
-        isOffline: !isConnected,
-        lastOnline: isConnected ? new Date() : prev.lastOnline,
-        lastOffline: !isConnected ? new Date() : prev.lastOffline,
-      }));
-      
-      return isConnected;
+      const queuedOperations = await offlineQueue.count();
+      setNetworkStatus((previous) => ({ ...previous, queuedOperations }));
     } catch (error) {
-      console.warn('Controllo connessione fallito:', error);
-      
-      setNetworkStatus(prev => ({
-        ...prev,
-        isOnline: false,
-        isOffline: true,
-        lastOffline: new Date(),
-      }));
-      
-      return false;
-    }
-  };
-
-  /**
-   * Forza la modalità offline
-   */
-  const forceOfflineMode = () => {
-    setIsForceOffline(true);
-    setNetworkStatus(prev => ({
-      ...prev,
-      isOnline: false,
-      isOffline: true,
-      lastOffline: new Date(),
-    }));
-    
-    toast('Modalità offline forzata attivata', {
-      duration: 3000,
-      icon: '🔒',
-    });
-  };
-
-  /**
-   * Esce dalla modalità offline forzata
-   */
-  const exitOfflineMode = () => {
-    setIsForceOffline(false);
-    
-    // Ricontrolla immediatamente la connessione
-    if (navigator.onLine) {
-      setNetworkStatus(prev => ({
-        ...prev,
-        isOnline: true,
-        isOffline: false,
-        lastOnline: new Date(),
-      }));
-      
-      toast.success('Modalità offline disattivata', {
-        duration: 3000,
-        icon: '🔓',
-      });
-    }
-  };
-
-  // Effetti per il monitoraggio della rete
-  useEffect(() => {
-    // Event listeners per online/offline
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    
-    // Event listener per cambi di connessione
-    const connection = (navigator as any).connection || 
-                      (navigator as any).mozConnection || 
-                      (navigator as any).webkitConnection;
-    
-    if (connection) {
-      connection.addEventListener('change', updateNetworkInfo);
-    }
-    
-    // Controllo periodico della connessione disabilitato per evitare errori
-    // const intervalId = setInterval(() => {
-    //   if (!isForceOffline) {
-    //     checkConnection();
-    //   }
-    // }, 30000);
-    
-    // Aggiorna info iniziali
-    updateNetworkInfo();
-    
-    // Cleanup
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-      
-      if (connection) {
-        connection.removeEventListener('change', updateNetworkInfo);
-      }
-      
-      // clearInterval(intervalId);
-    };
-  }, [isForceOffline]);
-
-  // Effetto per il salvataggio dello stato offline forzato
-  useEffect(() => {
-    localStorage.setItem('forceOfflineMode', JSON.stringify(isForceOffline));
-  }, [isForceOffline]);
-
-  // Effetto per il ripristino dello stato offline forzato
-  useEffect(() => {
-    const savedForceOffline = localStorage.getItem('forceOfflineMode');
-    if (savedForceOffline) {
-      try {
-        const isForced = JSON.parse(savedForceOffline);
-        if (isForced) {
-          setIsForceOffline(true);
-        }
-      } catch (error) {
-        console.error('Errore nel ripristino modalità offline:', error);
-      }
+      console.error('Conteggio coda offline fallito:', error);
     }
   }, []);
 
-  const contextValue: NetworkStatusContextType = {
+  const checkConnection = useCallback(async (): Promise<boolean> => {
+    if (forceOfflineRef.current || !navigator.onLine) {
+      setNetworkStatus((previous) => ({
+        ...previous,
+        isOnline: false,
+        isOffline: true,
+        serverReachable: false,
+        lastOffline: new Date(),
+      }));
+      realtimeService.disconnect();
+      await refreshQueueCount();
+      return false;
+    }
+
+    const reachable = await apiClient.checkHealth();
+    setNetworkStatus((previous) => ({
+      ...previous,
+      isOnline: reachable,
+      isOffline: !reachable,
+      serverReachable: reachable,
+      apiUrl: apiClient.getBaseURL(),
+      lastOnline: reachable ? new Date() : previous.lastOnline,
+      lastOffline: reachable ? previous.lastOffline : new Date(),
+    }));
+
+    if (reachable && localStorage.getItem('crm_auth_token')) {
+      realtimeService.connectFromStorage();
+    } else {
+      realtimeService.disconnect(false);
+    }
+    await refreshQueueCount();
+    return reachable;
+  }, [refreshQueueCount]);
+
+  const setApiUrl = useCallback(async (url: string, expectedServerId?: string) => {
+    const previousUrl = apiClient.getBaseURL();
+    const previousServerId = apiClient.getServerId();
+    const normalizedExpectedId = String(expectedServerId || '').trim() || null;
+    const sameVerifiedServer = Boolean(
+      previousServerId
+      && normalizedExpectedId
+      && previousServerId === normalizedExpectedId,
+    );
+
+    apiClient.setBaseURL(url);
+    const nextUrl = apiClient.getBaseURL();
+    const addressChanged = previousUrl !== nextUrl;
+    const identityChanged = Boolean(
+      normalizedExpectedId
+      && previousServerId
+      && previousServerId !== normalizedExpectedId,
+    );
+    const unknownIdentityChange = addressChanged && !sameVerifiedServer;
+
+    if (identityChanged || unknownIdentityChange) clearStoredServerIdentity();
+    if (normalizedExpectedId) localStorage.setItem('crm_server_id', normalizedExpectedId);
+
+    if (addressChanged) realtimeService.disconnect();
+    if (identityChanged || unknownIdentityChange) {
+      await cacheService.clearAll();
+      window.dispatchEvent(new CustomEvent('crm-auth-reset-for-server-change'));
+      window.dispatchEvent(new CustomEvent('crm-data-refresh-requested'));
+    }
+
+    setNetworkStatus((previous) => ({
+      ...previous,
+      apiUrl: nextUrl,
+      serverReachable: false,
+    }));
+    return checkConnection();
+  }, [checkConnection]);
+
+  const forceOfflineMode = useCallback(() => {
+    forceOfflineRef.current = true;
+    setIsForceOffline(true);
+    localStorage.setItem('forceOfflineMode', 'true');
+    realtimeService.disconnect();
+    setNetworkStatus((previous) => ({
+      ...previous,
+      isOnline: false,
+      isOffline: true,
+      serverReachable: false,
+      lastOffline: new Date(),
+    }));
+    toast('Modalità offline forzata attivata');
+  }, []);
+
+  const exitOfflineMode = useCallback(() => {
+    forceOfflineRef.current = false;
+    setIsForceOffline(false);
+    localStorage.setItem('forceOfflineMode', 'false');
+    void checkConnection();
+  }, [checkConnection]);
+
+  useEffect(() => {
+    const initialize = async () => {
+      if (window.electronAPI?.network.getPreferences) {
+        try {
+          const result = await window.electronAPI.network.getPreferences();
+          if (result.success && result.prefs?.apiUrl) {
+            const configuredUrl = result.prefs.apiUrl;
+            const configuredServerId = result.prefs.discoveredServerId;
+            if (
+              apiClient.getBaseURL() !== configuredUrl
+              || (configuredServerId && apiClient.getServerId() !== configuredServerId)
+            ) {
+              await setApiUrl(configuredUrl, configuredServerId);
+              return;
+            }
+            setNetworkStatus((previous) => ({
+              ...previous,
+              apiUrl: configuredUrl,
+            }));
+          }
+        } catch (error) {
+          console.error('Caricamento configurazione rete fallito:', error);
+        }
+      }
+      await checkConnection();
+    };
+
+    const online = () => void checkConnection();
+    const offline = () => {
+      realtimeService.disconnect();
+      setNetworkStatus((previous) => ({
+        ...previous,
+        isOnline: false,
+        isOffline: true,
+        serverReachable: false,
+        lastOffline: new Date(),
+      }));
+    };
+    const realtimeStatus = (event: Event) => {
+      setNetworkStatus((previous) => ({
+        ...previous,
+        realtimeStatus: (event as CustomEvent<NetworkStatus['realtimeStatus']>).detail,
+      }));
+    };
+    const apiChanged = (event: Event) => {
+      const apiUrl = String((event as CustomEvent<string>).detail || apiClient.getBaseURL());
+      setNetworkStatus((previous) => ({ ...previous, apiUrl }));
+    };
+    const authChanged = () => {
+      void refreshQueueCount();
+      if (localStorage.getItem('crm_auth_token')) void checkConnection();
+      else realtimeService.disconnect();
+    };
+    const queueChanged = () => void refreshQueueCount();
+    const identityChanged = () => void refreshQueueCount();
+
+    window.addEventListener('online', online);
+    window.addEventListener('offline', offline);
+    window.addEventListener('crm-realtime-status', realtimeStatus);
+    window.addEventListener('crm-api-url-changed', apiChanged);
+    window.addEventListener('crm-auth-changed', authChanged);
+    window.addEventListener('crm-offline-queue-changed', queueChanged);
+    window.addEventListener('crm-server-identity-changed', identityChanged);
+    void initialize();
+    const interval = window.setInterval(checkConnection, 10000);
+
+    return () => {
+      window.clearInterval(interval);
+      realtimeService.disconnect();
+      window.removeEventListener('online', online);
+      window.removeEventListener('offline', offline);
+      window.removeEventListener('crm-realtime-status', realtimeStatus);
+      window.removeEventListener('crm-api-url-changed', apiChanged);
+      window.removeEventListener('crm-auth-changed', authChanged);
+      window.removeEventListener('crm-offline-queue-changed', queueChanged);
+      window.removeEventListener('crm-server-identity-changed', identityChanged);
+    };
+  }, [checkConnection, refreshQueueCount, setApiUrl]);
+
+  const value = useMemo(() => ({
     networkStatus,
     checkConnection,
+    setApiUrl,
     forceOfflineMode,
     exitOfflineMode,
     isForceOffline,
-  };
+  }), [
+    networkStatus,
+    checkConnection,
+    setApiUrl,
+    forceOfflineMode,
+    exitOfflineMode,
+    isForceOffline,
+  ]);
 
   return (
-    <NetworkStatusContext.Provider value={contextValue}>
+    <NetworkStatusContext.Provider value={value}>
       {children}
     </NetworkStatusContext.Provider>
   );
 };
 
-/**
- * Hook per utilizzare il contesto di rete
- */
-export const useNetworkStatus = (): NetworkStatusContextType => {
+export const useNetworkStatus = () => {
   const context = useContext(NetworkStatusContext);
-  
-  if (context === undefined) {
-    throw new Error('useNetworkStatus deve essere utilizzato all\'interno di NetworkStatusProvider');
-  }
-  
+  if (!context) throw new Error('useNetworkStatus deve essere utilizzato dentro NetworkStatusProvider');
   return context;
 };
 
-/**
- * Hook semplificato per verificare solo lo stato online/offline
- */
-export const useIsOnline = (): boolean => {
-  const { networkStatus } = useNetworkStatus();
-  return networkStatus.isOnline;
-};
+export const useIsOnline = () => useNetworkStatus().networkStatus.isOnline;
 
-/**
- * Hook per ottenere informazioni dettagliate sulla connessione
- */
 export const useConnectionInfo = () => {
   const { networkStatus } = useNetworkStatus();
-  
   return {
-    type: networkStatus.connectionType,
-    effectiveType: networkStatus.effectiveType,
-    downlink: networkStatus.downlink,
-    rtt: networkStatus.rtt,
-    quality: networkStatus.downlink > 1.5 ? 'good' : 
-             networkStatus.downlink > 0.5 ? 'fair' : 'poor',
+    type: networkStatus.serverReachable ? 'lan' : 'offline',
+    effectiveType: networkStatus.realtimeStatus,
+    downlink: 0,
+    rtt: 0,
+    quality: networkStatus.serverReachable ? 'good' : 'poor',
   };
 };
 
