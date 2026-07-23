@@ -25,8 +25,31 @@ jobs:
 
       - name: Install clean dependencies
         run: |
-          npm ci
-          npm ci --prefix server
+          npm ci --silent --no-audit --no-fund
+          npm ci --prefix server --silent --no-audit --no-fund
+
+      - name: Diagnose application production audit
+        shell: bash
+        run: |
+          set +e
+          npm audit --omit=dev --audit-level=low --json > /tmp/crm-audit.json
+          audit_status=$?
+          set -e
+          node <<'NODE'
+          const fs = require('fs');
+          const report = JSON.parse(fs.readFileSync('/tmp/crm-audit.json', 'utf8'));
+          const vulnerabilities = report.vulnerabilities || {};
+          for (const [name, entry] of Object.entries(vulnerabilities)) {
+            const via = (entry.via || []).map((item) => typeof item === 'string'
+              ? item
+              : `${item.source}:${item.title} (${item.url})`).join(' | ');
+            console.log(`${name}: severity=${entry.severity}; direct=${entry.isDirect}; range=${entry.range}`);
+            console.log(`  via: ${via}`);
+            console.log(`  fixAvailable: ${JSON.stringify(entry.fixAvailable)}`);
+          }
+          console.log(`metadata: ${JSON.stringify(report.metadata?.vulnerabilities || {})}`);
+          NODE
+          exit "$audit_status"
 
       - name: Verify dependency bootstrap
         run: node verifica-dipendenze.cjs
@@ -114,9 +137,6 @@ jobs:
 
       - name: Vitest
         run: npm test -- --run
-
-      - name: Audit application production dependencies
-        run: npm audit --omit=dev --audit-level=low
 
       - name: Audit server production dependencies
         run: npm audit --prefix server --omit=dev --audit-level=low
