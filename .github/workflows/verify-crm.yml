@@ -129,3 +129,38 @@ jobs:
 
       - name: Package Electron Linux directory
         run: timeout 180s npx electron-builder --linux dir --publish never
+
+  verify-windows-launcher:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check PowerShell launcher syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'crm-marmeria/avvia-server-lan.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
+      - name: Verify Node and npm standard path fallback
+        shell: pwsh
+        run: |
+          $fakeProgramFiles = Join-Path $env:RUNNER_TEMP 'Program Files'
+          $nodeDirectory = Join-Path $fakeProgramFiles 'nodejs'
+          New-Item -ItemType Directory -Force -Path $nodeDirectory | Out-Null
+          New-Item -ItemType File -Force -Path (Join-Path $nodeDirectory 'node.exe') | Out-Null
+          New-Item -ItemType File -Force -Path (Join-Path $nodeDirectory 'npm.cmd') | Out-Null
+
+          $systemPath = Join-Path $env:SystemRoot 'System32'
+          $command = 'set "CRM_LAUNCHER_READY=1" && set "ProgramFiles={0}" && set "PATH={1}" && call "crm-marmeria\avvia-server-lan-runner.cmd" --check' -f $fakeProgramFiles, $systemPath
+          cmd.exe /d /c $command
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
