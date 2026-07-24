@@ -32,6 +32,12 @@ if not defined NPM_CMD (
   exit /b 1
 )
 
+if /i "%~1"=="--check" (
+  echo [OK] node.exe: %NODE_EXE%
+  echo [OK] npm.cmd: %NPM_CMD%
+  exit /b 0
+)
+
 :run
 call :port_in_use
 if not errorlevel 1 (
