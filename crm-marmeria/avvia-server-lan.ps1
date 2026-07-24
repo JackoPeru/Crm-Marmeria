@@ -131,6 +131,7 @@ $env:CRM_WEB_ROOT = (Join-Path $root 'dist')
 $env:CRM_WEB_ORIGINS = (($addresses | ForEach-Object { "http://$($_):$port" }) -join ',')
 $env:CRM_DISABLE_TLS = '1'
 $env:CRM_SIMPLE_DEFAULT_ADMIN = '1'
+$env:CRM_LAUNCHER_READY = '1'
 
 $runners = @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction SilentlyContinue |
   Where-Object { $_.CommandLine -match 'avvia-server-lan-runner\.cmd' })
