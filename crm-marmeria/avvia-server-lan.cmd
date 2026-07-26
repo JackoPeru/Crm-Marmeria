@@ -99,6 +99,7 @@ if exist ".crm-update-pending" (
   call "%NODE_EXE%" verifica-dipendenze.cjs
   if errorlevel 1 goto serve_retry
   del ".crm-update-pending"
+  call :set_server_environment
 )
 call "%NODE_EXE%" server\index.js
 call :port_status

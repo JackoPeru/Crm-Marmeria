@@ -120,6 +120,9 @@ jobs:
           foreach ($required in 'OpenJS.NodeJS.LTS', 'Git.Git', 'Repair-WinGetPackageManager', '--serve', 'verifica-dipendenze.cjs', '.crm-update-pending') {
             if ($content -notmatch [regex]::Escape($required)) { throw "Bootstrap incompleto: $required" }
           }
+          if ($content -notmatch '(?s)if exist "\.crm-update-pending" \(.*?call :set_server_environment') {
+            throw 'Update non rigenera gli indirizzi LAN prima del riavvio.'
+          }
 
       - name: Verify Node and npm standard path fallback
         shell: pwsh
