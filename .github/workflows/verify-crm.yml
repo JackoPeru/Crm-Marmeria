@@ -67,6 +67,9 @@ jobs:
       - name: Verify standalone index bootstrap
         run: node server/index-bootstrap.check.js
 
+      - name: Verify Git server update flow
+        run: node server/self-update.check.js
+
       - name: Verify server setup
         run: node server/setup-test.js
 
@@ -111,11 +114,10 @@ jobs:
         run: |
           $launcher = 'crm-marmeria/avvia-server-lan.cmd'
           if (-not (Test-Path $launcher)) { throw 'Launcher unico mancante.' }
-          foreach ($obsolete in 'crm-marmeria/avvia-server-lan.ps1', 'crm-marmeria/avvia-server-lan-runner.cmd') {
-            if (Test-Path $obsolete) { throw "Launcher obsoleto presente: $obsolete" }
-          }
+          if (Test-Path 'crm-marmeria/avvia-server-lan.ps1') { throw 'Launcher PowerShell obsoleto presente.' }
+          if (-not (Test-Path 'crm-marmeria/avvia-server-lan-runner.cmd')) { throw 'Runner compatibilita update mancante.' }
           $content = Get-Content -Raw $launcher
-          foreach ($required in 'OpenJS.NodeJS.LTS', 'Git.Git', 'Repair-WinGetPackageManager', '--serve', 'verifica-dipendenze.cjs') {
+          foreach ($required in 'OpenJS.NodeJS.LTS', 'Git.Git', 'Repair-WinGetPackageManager', '--serve', 'verifica-dipendenze.cjs', '.crm-update-pending') {
             if ($content -notmatch [regex]::Escape($required)) { throw "Bootstrap incompleto: $required" }
           }
 

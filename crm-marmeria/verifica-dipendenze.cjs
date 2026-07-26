@@ -9,6 +9,7 @@ const root = __dirname;
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const nodeCommand = process.execPath;
 const forceRepair = process.argv.includes('--force');
+const updateMarker = path.join(root, '.crm-update-pending');
 
 const npmCliPath = () => {
   const candidates = [
@@ -193,6 +194,16 @@ function ensureDependencySet(config) {
   console.log(`[OK] Dipendenze ${config.label} ripristinate e verificate.`);
 }
 
+function rebuildWebAfterUpdate() {
+  if (!fs.existsSync(updateMarker)) return;
+
+  console.log('[AGGIORNAMENTO] Compilo interfaccia web aggiornata...');
+  const build = run(npmCommand, ['run', 'build'], root, { inherit: true });
+  if (!build.ok) {
+    throw new Error('Build dell\'interfaccia web non riuscita dopo aggiornamento.');
+  }
+}
+
 try {
   const npmVersion = run(npmCommand, ['--version'], root);
   if (!npmVersion.ok) {
@@ -202,6 +213,8 @@ try {
   for (const config of dependencySets) {
     ensureDependencySet(config);
   }
+
+  rebuildWebAfterUpdate();
 
   console.log('\n[OK] Tutte le dipendenze richieste sono pronte.');
 } catch (error) {
