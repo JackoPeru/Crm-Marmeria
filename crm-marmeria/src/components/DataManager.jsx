@@ -9,7 +9,6 @@ import {
   Upload,
 } from 'lucide-react';
 import { apiClient } from '../services/api';
-import ServerConnectionSettings from './ServerConnectionSettings';
 
 const formatBytes = (bytes = 0) => {
   if (!bytes) return '0 B';
@@ -100,9 +99,7 @@ const DataManager = () => {
   };
 
   return (
-    <>
-      <ServerConnectionSettings />
-      <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
+    <div className="mb-10 p-6 bg-white dark:bg-dark-card rounded-lg shadow-md">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <h3 className="text-xl font-semibold text-gray-700 dark:text-gray-200 flex items-center">
             <Database size={24} className="mr-3 text-blue-500" /> Backup del server centrale
@@ -187,8 +184,7 @@ const DataManager = () => {
             {status.message}
           </div>
         )}
-      </div>
-    </>
+    </div>
   );
 };
 

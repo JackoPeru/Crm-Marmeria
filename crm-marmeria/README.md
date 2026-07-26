@@ -1,20 +1,21 @@
-# CRM Marmeria
+# CRM Marmeria — server browser LAN
 
-Piccola applicazione CRM demo costruita con **React + Vite + TailwindCSS**.
+CRM Marmeria si usa esclusivamente dal browser. Un PC della rete ospita dati, API e interfaccia web; telefoni e altri PC aprono il suo indirizzo LAN. Non esistono installer o applicazioni desktop.
 
-## Requisiti
+## Primo avvio del server
 
-- Node.js ≥ 18
-- Chiavi Firebase (in `.env`)
+Sul PC che conserva i dati esegui solo `avvia-server-lan.cmd`.
 
-## Setup rapido
+Richiede Windows 10 1809 o successivo, connessione Internet e autorizzazione amministratore. Il file installa WinGet, Node.js LTS e Git se mancanti, installa dipendenze, compila interfaccia, apre firewall privato TCP `3001` e avvia il server.
+
+Apri uno degli indirizzi mostrati, per esempio `http://192.168.1.20:3001`. Le altre postazioni usano lo stesso indirizzo nel browser. Primo accesso: `admin` / `marmo2026!`; cambia password subito dopo il login.
+
+## Sviluppo
 
 ```bash
-npm install          # installa dipendenze
-npm run dev          # avvia server di sviluppo (http://localhost:5173)
+npm install
+npm install --prefix server
+npm run dev
+```
 
-## Server LAN Windows
-
-Sul PC che deve conservare i dati, esegui `avvia-server-lan.cmd`. Al primo avvio installa Node.js e le dipendenze mancanti, compila l'interfaccia, apre il firewall TCP `3001` e crea account `admin` con password `marmo2026!`.
-
-Le altre postazioni nella stessa Wi-Fi aprono indirizzo mostrato, per esempio `http://192.168.1.20:3001`. Cambia password admin appena possibile: traffico LAN non è cifrato.
+Per provare API server locale: `npm run server`. Per distribuzione LAN usa sempre `avvia-server-lan.cmd`.

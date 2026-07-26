@@ -82,7 +82,7 @@ class RealtimeService {
       || import.meta.env.VITE_API_BASE_URL
       || (['http:', 'https:'].includes(window.location.protocol) && window.location.port === '3001'
         ? `${window.location.origin}/api`
-        : 'https://127.0.0.1:3001/api');
+        : 'http://127.0.0.1:3001/api');
     this.connect(baseUrl, localStorage.getItem('crm_auth_token'));
   }
 

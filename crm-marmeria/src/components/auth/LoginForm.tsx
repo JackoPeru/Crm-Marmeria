@@ -38,22 +38,8 @@ const LoginForm: React.FC = () => {
     try {
       const response = await apiClient.get('/health', { timeout: 5000 });
       const requiresSetup = Boolean(response.data?.setupRequired);
-      let localSetup = false;
-      if (requiresSetup && window.electronAPI?.network) {
-        const [preferences, status] = await Promise.all([
-          window.electronAPI.network.getPreferences(),
-          window.electronAPI.network.getServerStatus(),
-        ]);
-        localSetup = Boolean(
-          preferences.success
-          && preferences.prefs?.mode === 'master'
-          && status?.isRunning
-          && status?.serverId
-          && String(status.serverId) === String(response.data?.serverId),
-        );
-      }
       setSetupRequired(requiresSetup);
-      setSetupAllowedHere(localSetup);
+      setSetupAllowedHere(false);
       setDefaultAdmin(response.data?.defaultAdmin || null);
       setServerReachable(true);
     } catch {

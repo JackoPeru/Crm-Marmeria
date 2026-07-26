@@ -10,6 +10,14 @@ const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const nodeCommand = process.execPath;
 const forceRepair = process.argv.includes('--force');
 
+const npmCliPath = () => {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(nodeCommand), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+};
+
 const dependencySets = [
   {
     label: 'frontend web (build)',
@@ -40,7 +48,8 @@ function fail(message) {
 }
 
 function run(command, args, directory, options = {}) {
-  const result = spawnSync(command, args, {
+  const npmCli = command === npmCommand && process.platform === 'win32' ? npmCliPath() : null;
+  const result = spawnSync(npmCli ? nodeCommand : command, npmCli ? [npmCli, ...args] : args, {
     cwd: directory,
     encoding: 'utf8',
     stdio: options.inherit ? 'inherit' : 'pipe',

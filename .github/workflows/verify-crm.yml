@@ -31,9 +31,6 @@ jobs:
       - name: Verify dependency bootstrap
         run: node verifica-dipendenze.cjs
 
-      - name: Verify automatic mode
-        run: node electron/automatic-mode.check.cjs
-
       - name: Verify access policy
         run: node server/access-policy.check.js
 
@@ -49,12 +46,6 @@ jobs:
       - name: Verify server bootstrap smoke
         run: node server/smoke-test.js server
 
-      - name: Check Electron main syntax
-        run: node --check electron/main.cjs
-
-      - name: Check Electron network syntax
-        run: node --check electron/network-config.cjs
-
       - name: Check server app syntax
         run: node --check server/app.js
 
@@ -69,21 +60,6 @@ jobs:
 
       - name: Check access policy syntax
         run: node --check server/access-policy.js
-
-      - name: Verify Electron main helpers
-        run: node electron/main-helpers.check.cjs
-
-      - name: Verify Electron main bootstrap
-        run: node electron/main-bootstrap.check.cjs
-
-      - name: Verify server identity
-        run: node electron/server-identity.check.cjs
-
-      - name: Verify duplicate master protection
-        run: node electron/server-master.check.cjs
-
-      - name: Verify network configuration
-        run: node electron/network-config.check.cjs
 
       - name: Verify runtime files
         run: node server/runtime-files.check.js
@@ -121,14 +97,8 @@ jobs:
       - name: Audit server production dependencies
         run: npm audit --prefix server --omit=dev --audit-level=low
 
-      - name: Electron native smoke
-        run: timeout 30s xvfb-run -a ./node_modules/.bin/electron electron/native-smoke.cjs --no-sandbox
-
       - name: Build web application
         run: npm run build
-
-      - name: Package Electron Linux directory
-        run: timeout 180s npx electron-builder --linux dir --publish never
 
   verify-windows-launcher:
     runs-on: windows-latest
@@ -136,19 +106,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check PowerShell launcher syntax
+      - name: Verify single Windows launcher
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path 'crm-marmeria/avvia-server-lan.ps1'),
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_ }
-            exit 1
+          $launcher = 'crm-marmeria/avvia-server-lan.cmd'
+          if (-not (Test-Path $launcher)) { throw 'Launcher unico mancante.' }
+          foreach ($obsolete in 'crm-marmeria/avvia-server-lan.ps1', 'crm-marmeria/avvia-server-lan-runner.cmd') {
+            if (Test-Path $obsolete) { throw "Launcher obsoleto presente: $obsolete" }
+          }
+          $content = Get-Content -Raw $launcher
+          foreach ($required in 'OpenJS.NodeJS.LTS', 'Git.Git', 'Repair-WinGetPackageManager', '--serve', 'verifica-dipendenze.cjs') {
+            if ($content -notmatch [regex]::Escape($required)) { throw "Bootstrap incompleto: $required" }
           }
 
       - name: Verify Node and npm standard path fallback
@@ -161,6 +129,6 @@ jobs:
           New-Item -ItemType File -Force -Path (Join-Path $nodeDirectory 'npm.cmd') | Out-Null
 
           $systemPath = Join-Path $env:SystemRoot 'System32'
-          $command = 'set "CRM_LAUNCHER_READY=1" && set "ProgramFiles={0}" && set "PATH={1}" && call "crm-marmeria\avvia-server-lan-runner.cmd" --check' -f $fakeProgramFiles, $systemPath
+          $command = 'set "ProgramFiles={0}" && set "PATH={1}" && call "crm-marmeria\avvia-server-lan.cmd" --check' -f $fakeProgramFiles, $systemPath
           cmd.exe /d /c $command
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

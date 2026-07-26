@@ -82,7 +82,7 @@ export const getCurrentQueueScope = (): QueueScope | null => {
       || import.meta.env.VITE_API_BASE_URL
       || (['http:', 'https:'].includes(window.location.protocol) && window.location.port === '3001'
         ? `${window.location.origin}/api`
-        : 'https://127.0.0.1:3001/api'),
+        : 'http://127.0.0.1:3001/api'),
   );
   const serverId = String(localStorage.getItem('crm_server_id') || '').trim() || undefined;
   const dataEpoch = String(localStorage.getItem('crm_data_epoch') || '').trim() || undefined;

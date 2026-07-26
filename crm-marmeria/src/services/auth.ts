@@ -38,20 +38,7 @@ class AuthService {
   async login(credentials: LoginCredentials): Promise<AuthResponse> {
     try {
       let data: AuthResponse;
-      const isInitialSetup = Boolean(
-        credentials.firstName
-        && credentials.lastName
-        && credentials.email,
-      );
-      if (isInitialSetup && window.electronAPI?.network.setupFirstAdmin) {
-        const result = await window.electronAPI.network.setupFirstAdmin(credentials);
-        if (!result.success || !result.data) {
-          throw new Error(result.error || 'Configurazione iniziale non riuscita');
-        }
-        data = result.data as AuthResponse;
-      } else {
-        data = (await apiClient.post('/auth/login', credentials)).data;
-      }
+      data = (await apiClient.post('/auth/login', credentials)).data;
       this.setToken(data.token);
       this.setUser(data.user);
       return data;
