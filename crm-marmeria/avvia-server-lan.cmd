@@ -5,6 +5,7 @@ set "PORT=3001"
 
 if /i "%~1"=="--serve" goto serve
 if /i "%~1"=="--check" goto check
+if /i "%~1"=="--addresses-check" goto addresses_check
 if /i "%~1"=="--elevated" goto bootstrap
 
 rem L'installazione di programmi e la regola firewall richiedono privilegi elevati.
@@ -152,23 +153,27 @@ exit /b 0
 :set_server_environment
 set "CRM_WEB_ROOT=%ROOT%dist"
 set "CRM_WEB_ORIGINS="
-for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue ^| Where-Object { $_.IPAddress -notmatch '^127\.' -and $_.IPAddress -notmatch '^169\.254\.' } ^| Select-Object -ExpandProperty IPAddress -Unique"`) do (
+for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do (
   if defined CRM_WEB_ORIGINS (set "CRM_WEB_ORIGINS=!CRM_WEB_ORIGINS!,http://%%I:%PORT%") else set "CRM_WEB_ORIGINS=http://%%I:%PORT%"
 )
 set "CRM_SIMPLE_DEFAULT_ADMIN=1"
 exit /b 0
 
 :port_status
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$connection = Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue ^| Select-Object -First 1; if (-not $connection) { exit 1 }; $process = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $connection.OwningProcess) -ErrorAction SilentlyContinue; if ($process -and $process.Name -eq 'node.exe' -and $process.CommandLine -match 'index\.js') { exit 0 }; exit 2"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$connection = Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $connection) { exit 1 }; $process = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $connection.OwningProcess) -ErrorAction SilentlyContinue; if ($process -and $process.Name -eq 'node.exe' -and $process.CommandLine -match 'index\.js') { exit 0 }; exit 2"
 exit /b %ERRORLEVEL%
 
 :show_address
 echo.
 echo CRM pronto. Apri da telefono o browser:
-for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue ^| Where-Object { $_.IPAddress -notmatch '^127\.' -and $_.IPAddress -notmatch '^169\.254\.' } ^| Select-Object -ExpandProperty IPAddress -Unique"`) do echo   http://%%I:%PORT%
+for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do echo   http://%%I:%PORT%
 echo Login iniziale: admin / marmo2026!
 echo Puoi chiudere questa finestra: server resta attivo.
 pause
+exit /b 0
+
+:addresses_check
+for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do echo [OK] LAN IPv4: %%I
 exit /b 0
 
 :already_running
