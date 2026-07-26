@@ -112,10 +112,10 @@ async function runServerTest() {
       headers: { Origin: 'https://evil.example' },
     });
     assert.equal(hostileOrigin.response.status, 403, 'Le origini web esterne devono essere bloccate');
-    const electronOrigin = await requestJson(baseUrl, '/health', {
+    const fileOrigin = await requestJson(baseUrl, '/health', {
       headers: { Origin: 'null' },
     });
-    assert.equal(electronOrigin.response.status, 200, 'Le pagine Electron file:// devono poter usare l’API');
+    assert.equal(fileOrigin.response.status, 403, 'Le pagine file:// non devono poter usare l’API');
 
     const login = async (username) => {
       const result = await requestJson(baseUrl, '/auth/login', {

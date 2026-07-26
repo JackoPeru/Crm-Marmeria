@@ -162,31 +162,7 @@ export const NetworkStatusProvider: React.FC<{ children: ReactNode }> = ({ child
   }, [checkConnection]);
 
   useEffect(() => {
-    const initialize = async () => {
-      if (window.electronAPI?.network.getPreferences) {
-        try {
-          const result = await window.electronAPI.network.getPreferences();
-          if (result.success && result.prefs?.apiUrl) {
-            const configuredUrl = result.prefs.apiUrl;
-            const configuredServerId = result.prefs.discoveredServerId;
-            if (
-              apiClient.getBaseURL() !== configuredUrl
-              || (configuredServerId && apiClient.getServerId() !== configuredServerId)
-            ) {
-              await setApiUrl(configuredUrl, configuredServerId);
-              return;
-            }
-            setNetworkStatus((previous) => ({
-              ...previous,
-              apiUrl: configuredUrl,
-            }));
-          }
-        } catch (error) {
-          console.error('Caricamento configurazione rete fallito:', error);
-        }
-      }
-      await checkConnection();
-    };
+    const initialize = async () => { await checkConnection(); };
 
     const online = () => void checkConnection();
     const offline = () => {

@@ -9,6 +9,15 @@ const root = __dirname;
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const nodeCommand = process.execPath;
 const forceRepair = process.argv.includes('--force');
+const updateMarker = path.join(root, '.crm-update-pending');
+
+const npmCliPath = () => {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(nodeCommand), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+};
 
 const dependencySets = [
   {
@@ -40,7 +49,8 @@ function fail(message) {
 }
 
 function run(command, args, directory, options = {}) {
-  const result = spawnSync(command, args, {
+  const npmCli = command === npmCommand && process.platform === 'win32' ? npmCliPath() : null;
+  const result = spawnSync(npmCli ? nodeCommand : command, npmCli ? [npmCli, ...args] : args, {
     cwd: directory,
     encoding: 'utf8',
     stdio: options.inherit ? 'inherit' : 'pipe',
@@ -184,6 +194,16 @@ function ensureDependencySet(config) {
   console.log(`[OK] Dipendenze ${config.label} ripristinate e verificate.`);
 }
 
+function rebuildWebAfterUpdate() {
+  if (!fs.existsSync(updateMarker)) return;
+
+  console.log('[AGGIORNAMENTO] Compilo interfaccia web aggiornata...');
+  const build = run(npmCommand, ['run', 'build'], root, { inherit: true });
+  if (!build.ok) {
+    throw new Error('Build dell\'interfaccia web non riuscita dopo aggiornamento.');
+  }
+}
+
 try {
   const npmVersion = run(npmCommand, ['--version'], root);
   if (!npmVersion.ok) {
@@ -193,6 +213,8 @@ try {
   for (const config of dependencySets) {
     ensureDependencySet(config);
   }
+
+  rebuildWebAfterUpdate();
 
   console.log('\n[OK] Tutte le dipendenze richieste sono pronte.');
 } catch (error) {

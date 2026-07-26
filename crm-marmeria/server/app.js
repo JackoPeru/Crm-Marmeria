@@ -498,8 +498,6 @@ async function createCrmServer(options = {}) {
   const corsOptions = {
     origin(origin, callback) {
       const allowed = !origin
-        || origin === 'null'
-        || /^file:\/\//i.test(origin)
         || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin)
         || webOrigins.has(String(origin).replace(/\/$/, ''));
       if (allowed) return callback(null, true);

@@ -43,7 +43,7 @@ const initialApiBaseUrl = () => {
       localStorage.removeItem('crm_api_base_url');
     }
   }
-  return storedUrl || import.meta.env.VITE_API_BASE_URL || browserUrl || 'https://127.0.0.1:3001/api';
+  return storedUrl || import.meta.env.VITE_API_BASE_URL || browserUrl || 'http://127.0.0.1:3001/api';
 };
 const currentUserId = () => {
   try {
@@ -77,7 +77,7 @@ class ApiClient {
       localStorage.getItem('crm_api_base_url')
         || import.meta.env.VITE_API_BASE_URL
         || browserApiBaseUrl()
-        || 'https://127.0.0.1:3001/api',
+        || 'http://127.0.0.1:3001/api',
     );
   }
 
