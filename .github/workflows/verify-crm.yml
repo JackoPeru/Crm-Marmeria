@@ -132,5 +132,11 @@ jobs:
 
           $systemPath = Join-Path $env:SystemRoot 'System32'
           $command = 'set "ProgramFiles={0}" && set "PATH={1}" && call "crm-marmeria\avvia-server-lan.cmd" --check' -f $fakeProgramFiles, $systemPath
-          cmd.exe /d /c $command
+           cmd.exe /d /c $command
+           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify LAN address discovery
+        shell: pwsh
+        run: |
+          cmd.exe /d /c "crm-marmeria\avvia-server-lan.cmd --addresses-check"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
