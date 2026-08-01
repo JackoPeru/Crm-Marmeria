@@ -4,7 +4,9 @@ const TYPE_PERMISSIONS = {
   project: 'projects',
   material: 'materials',
   quote: 'quotes',
+  quote_template: 'quotes',
   invoice: 'invoices',
+  appointment: 'calendar',
 };
 
 const REQUIRED_ROLE_PERMISSIONS = {

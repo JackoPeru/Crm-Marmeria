@@ -70,6 +70,9 @@ jobs:
       - name: Verify Git server update flow
         run: node server/self-update.check.js
 
+      - name: Verify calendar, Word templates and quote attachments
+        run: node server/features.check.js
+
       - name: Verify server setup
         run: node server/setup-test.js
 

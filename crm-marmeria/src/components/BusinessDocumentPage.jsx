@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Edit, Eye, Plus, Search, Trash, X } from 'lucide-react';
+import { Download, Edit, Eye, Mail, MessageCircle, Plus, Search, Trash, X } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { apiClient } from '../services/api';
 import useUI from '../hooks/useUI';
 import { useAuth } from '../contexts/AuthContext';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
@@ -23,6 +25,7 @@ const emptyDocument = (kind) => ({
   status: kind === 'invoice' ? 'Non Pagata' : 'Bozza',
   validityDays: 30,
   paymentDetails: '',
+  templateId: '',
 });
 
 const normalizeDocument = (document, kind) => ({
@@ -32,6 +35,7 @@ const normalizeDocument = (document, kind) => ({
   customerId: document.customerId == null ? '' : String(document.customerId),
   projectId: document.projectId == null ? '' : String(document.projectId),
   quoteId: document.quoteId == null ? '' : String(document.quoteId),
+  templateId: document.templateId == null ? '' : String(document.templateId),
   date: document.date ? String(document.date).slice(0, 10) : '',
   dueDate: document.dueDate ? String(document.dueDate).slice(0, 10) : '',
   items: Array.isArray(document.items) && document.items.length
@@ -80,7 +84,7 @@ const Modal = ({ title, onClose, children, wide = false }) => (
   </div>
 );
 
-const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, materials }) => {
+const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, materials, quoteTemplates = [] }) => {
   const invoice = kind === 'invoice';
   const currentTotals = totals(value.items, invoice);
 
@@ -151,6 +155,16 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
           <span className="mb-1 block text-sm font-medium">Data *</span>
           <input type="date" required value={value.date || ''} onChange={(event) => setValue((previous) => ({ ...previous, date: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
         </label>
+
+        {!invoice && (
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium">Modello Word</span>
+            <select value={value.templateId || ''} onChange={(event) => setValue((previous) => ({ ...previous, templateId: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">
+              <option value="">Seleziona modello per esportazione</option>
+              {quoteTemplates.map((template) => <option key={template.id} value={String(template.id)}>{template.name}</option>)}
+            </select>
+          </label>
+        )}
 
         {invoice ? (
           <label className="block">
@@ -260,6 +274,7 @@ const BusinessDocumentPage = ({
   projects = [],
   quotes = [],
   materials = [],
+  quoteTemplates = [],
   addDocument,
   updateDocument,
   deleteDocument,
@@ -359,6 +374,35 @@ const BusinessDocumentPage = ({
     (item) => String(item.id) === String(document.customerId),
   )?.name || '-';
 
+  const quoteMessage = (document) => {
+    const customer = customers.find((item) => String(item.id) === String(document.customerId));
+    return {
+      customer,
+      text: `Buongiorno ${customer?.name || ''},\nle inviamo il preventivo ${document.quoteNumber || ''} del ${formatDate(document.date)} per un totale di ${formatEuro(document.total)}.\nRimaniamo a disposizione.`,
+    };
+  };
+  const sendQuote = (document, channel) => {
+    const { customer, text } = quoteMessage(document);
+    if (channel === 'whatsapp') {
+      const phone = String(customer?.phone || '').replace(/\D/g, '');
+      if (!phone) { toast.error('Il cliente non ha un numero di telefono'); return; }
+      window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (!customer?.email) { toast.error('Il cliente non ha un indirizzo email'); return; }
+    window.location.href = `mailto:${encodeURIComponent(customer.email)}?subject=${encodeURIComponent(`Preventivo ${document.quoteNumber || ''}`)}&body=${encodeURIComponent(text)}`;
+  };
+  const downloadQuoteWord = async (quote) => {
+    if (!quote.templateId) { toast.error('Seleziona un modello Word nel preventivo'); return; }
+    try {
+      const response = await apiClient.get(`/quotes/${quote.id}/document`, { params: { templateId: quote.templateId }, responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      const link = window.document.createElement('a');
+      link.href = url; link.download = `preventivo-${quote.quoteNumber || quote.id}.docx`;
+      window.document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+    } catch (error) { toast.error(error.response?.data?.error || 'Creazione Word non riuscita'); }
+  };
+
   return (
     <div className="min-h-screen bg-light-bg p-6 text-light-text dark:bg-dark-bg dark:text-dark-text">
       <div className="mb-6 flex items-center justify-between gap-3">
@@ -401,6 +445,7 @@ const BusinessDocumentPage = ({
                   <td className="px-5 py-4">
                     <div className="flex justify-end gap-2">
                       <button type="button" onClick={() => { setViewingId(String(document.id)); showModal({ id: `${kind}-view`, type: 'view' }); }} className="p-1.5 text-blue-600" title="Visualizza"><Eye size={18} /></button>
+                      {!invoice && <><button type="button" onClick={() => sendQuote(document, 'whatsapp')} className="p-1.5 text-green-600" title="Invia WhatsApp"><MessageCircle size={18} /></button><button type="button" onClick={() => sendQuote(document, 'email')} className="p-1.5 text-indigo-600" title="Invia email"><Mail size={18} /></button><button type="button" onClick={() => void downloadQuoteWord(document)} className="p-1.5 text-gray-700 dark:text-gray-200" title="Scarica Word"><Download size={18} /></button></>}
                       {hasPermission(`${permission}.edit`) && <button type="button" onClick={() => { setEditing(document); setForm(normalizeDocument(document, kind)); showModal({ id: `${kind}-edit`, type: 'edit' }); }} className="p-1.5 text-yellow-600" title="Modifica"><Edit size={18} /></button>}
                       {hasPermission(`${permission}.delete`) && <button type="button" onClick={() => { setDeleting(document); showModal({ id: `${kind}-delete`, type: 'delete' }); }} className="p-1.5 text-red-600" title="Elimina"><Trash size={18} /></button>}
                     </div>
@@ -416,7 +461,7 @@ const BusinessDocumentPage = ({
       {isModalOpen(`${kind}-add`) && (
         <Modal title={`Nuovo ${singular}`} onClose={() => hideModal(`${kind}-add`)} wide>
           <form onSubmit={submitAdd}>
-            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} />
+            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-add`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Crea'}</button></div>
           </form>
         </Modal>
@@ -425,7 +470,7 @@ const BusinessDocumentPage = ({
       {isModalOpen(`${kind}-edit`) && editing && (
         <Modal title={`Modifica ${singular}`} onClose={() => hideModal(`${kind}-edit`)} wide>
           <form onSubmit={submitEdit}>
-            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} />
+            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-edit`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button></div>
           </form>
         </Modal>
@@ -444,6 +489,7 @@ const BusinessDocumentPage = ({
           <div className="mt-5 space-y-2">
             {(viewing.items || []).map((item, index) => <div key={index} className="flex justify-between gap-3 border-b py-2 text-sm dark:border-dark-border"><span>{item.description} · {item.quantity} × {formatEuro(item.unitPrice)}</span><strong>{formatEuro(totals([item], invoice).total)}</strong></div>)}
           </div>
+          {!invoice && <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => sendQuote(viewing, 'whatsapp')} className="flex items-center gap-2 rounded-md bg-green-600 px-3 py-2 text-sm text-white"><MessageCircle size={16} /> WhatsApp</button><button type="button" onClick={() => sendQuote(viewing, 'email')} className="flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white"><Mail size={16} /> Email</button><button type="button" onClick={() => void downloadQuoteWord(viewing)} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><Download size={16} /> Word compilato</button></div>}
         </Modal>
       )}
 

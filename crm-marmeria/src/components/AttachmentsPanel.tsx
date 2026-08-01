@@ -112,14 +112,15 @@ const AttachmentsPanel: React.FC<{
     <div className="mt-6 border-t pt-5 border-light-border dark:border-dark-border">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <h3 className="font-semibold flex items-center gap-2">
-          <Paperclip size={18} /> Foto e allegati
+          <Paperclip size={18} /> {entityType === 'project' ? 'Immagini e allegati progetto' : 'Foto e allegati'}
         </h3>
         {canEdit && (
           <label className={`px-3 py-2 text-sm rounded-md text-white flex items-center gap-2 ${busy ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'}`}>
-            <Upload size={16} /> Aggiungi file
+            <Upload size={16} /> {entityType === 'project' ? 'Aggiungi immagini/file' : 'Aggiungi file'}
             <input
               type="file"
               multiple
+              accept={entityType === 'project' ? 'image/*,.pdf' : undefined}
               onChange={upload}
               disabled={busy}
               className="hidden"
@@ -129,7 +130,7 @@ const AttachmentsPanel: React.FC<{
       </div>
 
       {!attachments.length ? (
-        <p className="text-sm text-gray-500">Nessun allegato.</p>
+        <p className="text-sm text-gray-500">{entityType === 'project' ? 'Nessuna immagine o allegato. Quantità illimitata.' : 'Nessun allegato.'}</p>
       ) : (
         <div className="space-y-2 max-h-52 overflow-y-auto">
           {attachments.map((attachment) => (
