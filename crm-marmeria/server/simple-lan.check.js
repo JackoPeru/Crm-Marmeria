@@ -55,7 +55,7 @@ async function run() {
     const health = await requestHttp(`${origin}/api/health`);
     const healthData = JSON.parse(health.body);
     assert.equal(healthData.setupRequired, false);
-    assert.deepEqual(healthData.defaultAdmin, { username: 'admin', password: 'marmo2026!' });
+    assert.equal(Object.hasOwn(healthData, 'defaultAdmin'), false, 'Health non deve divulgare credenziali bootstrap');
     const login = await requestHttp(`${origin}/api/auth/login`, {
       method: 'POST',
       headers: { Origin: origin, 'Content-Type': 'application/json' },

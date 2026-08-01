@@ -153,9 +153,11 @@ exit /b 0
 
 :set_server_environment
 set "CRM_WEB_ROOT=%ROOT%dist"
+set "CRM_ENABLE_TLS=1"
+set "CRM_WEB_SCHEME=https"
 set "CRM_WEB_ORIGINS="
 for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do (
-  if defined CRM_WEB_ORIGINS (set "CRM_WEB_ORIGINS=!CRM_WEB_ORIGINS!,http://%%I:%PORT%") else set "CRM_WEB_ORIGINS=http://%%I:%PORT%"
+  if defined CRM_WEB_ORIGINS (set "CRM_WEB_ORIGINS=!CRM_WEB_ORIGINS!,!CRM_WEB_SCHEME!://%%I:%PORT%") else set "CRM_WEB_ORIGINS=!CRM_WEB_SCHEME!://%%I:%PORT%"
 )
 set "CRM_SIMPLE_DEFAULT_ADMIN=1"
 exit /b 0
@@ -167,7 +169,7 @@ exit /b %ERRORLEVEL%
 :show_address
 echo.
 echo CRM pronto. Apri da telefono o browser:
-for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do echo   http://%%I:%PORT%
+for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do echo   https://%%I:%PORT%
 echo Login iniziale: admin / marmo2026!
 echo Puoi chiudere questa finestra: server resta attivo.
 pause

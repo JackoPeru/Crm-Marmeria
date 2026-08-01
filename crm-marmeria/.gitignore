@@ -36,14 +36,8 @@ pids
 *.pid
 *.seed
 *.pid.lock
-server/data/.auth-epoch
-server/data/.jwt-secret
-server/data/.server-id
-server/data/.setup-secret
-server/data/.tls/
-server/data/attachments/
-server/data/backups/
-server/data/crm-marmeria.db*
+server/data/*
+!server/data/.gitkeep
 
 # Coverage directory used by tools like istanbul
 coverage

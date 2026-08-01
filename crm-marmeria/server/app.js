@@ -8,6 +8,7 @@ const cors = require('cors');
 const multer = require('multer');
 const WebSocket = require('ws');
 const { renderQuoteDocument } = require('./quote-document');
+const { createGmailDraftService } = require('./gmail-drafts');
 const { CrmDatabase, ENTITY_TYPES } = require('./database');
 const {
   authenticateToken,
@@ -516,6 +517,10 @@ async function createCrmServer(options = {}) {
   const dataDir = options.dataDir || path.join(__dirname, 'data');
   const backupDir = options.backupDir || path.join(dataDir, 'backups');
   const attachmentsDir = options.attachmentsDir || path.join(dataDir, 'attachments');
+  const gmail = options.gmail || createGmailDraftService({
+    dataDir,
+    callbackUrl: options.gmailCallbackUrl || `${options.tls ? 'https' : 'http'}://127.0.0.1:${requestedPort}/oauth2/gmail`,
+  });
   const setupSecret = options.setupSecret || process.env.CRM_SETUP_SECRET || null;
   const webRoot = options.webRoot && fs.existsSync(path.join(options.webRoot, 'index.html'))
     ? path.resolve(options.webRoot)
@@ -645,7 +650,7 @@ async function createCrmServer(options = {}) {
 
   app.get('/api/health', (req, res) => res.json({
     status: mutationBarrier.isMaintenance ? 'maintenance' : 'ok',
-    version: '2.4.0',
+    version: '2.4.1',
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,
@@ -656,9 +661,6 @@ async function createCrmServer(options = {}) {
     maintenance: mutationBarrier.isMaintenance,
     dataEpoch: getAuthEpoch(),
     setupRequired: !hasActiveAdmin(),
-    defaultAdmin: options.bootstrapAdmin
-      ? { username: options.bootstrapAdmin.username, password: options.bootstrapAdmin.password }
-      : null,
   }));
   app.head('/api/health', (req, res) => res.sendStatus(200));
 
@@ -1128,31 +1130,48 @@ async function createCrmServer(options = {}) {
     });
   }
 
+  const quoteWordDocument = (quoteId, requestedTemplateId = '', { requireCustomerEmail = false } = {}) => {
+    const quote = db.get('quote', quoteId);
+    if (!quote) throw Object.assign(new Error('Preventivo non trovato'), { status: 404 });
+    const templateId = String(requestedTemplateId || quote.templateId || '').trim();
+    if (!templateId) throw Object.assign(new Error('Seleziona un modello Word prima di creare il preventivo'), { status: 400 });
+    const template = db.get('quote_template', templateId);
+    if (!template) throw Object.assign(new Error('Modello Word non trovato'), { status: 404 });
+    const attachment = db.listAttachments('quote_template', templateId)
+      .map((item) => db.getAttachment(item.id))
+      .find((item) => item && /\.docx$/i.test(item.originalName));
+    if (!attachment || !fs.existsSync(attachment.absolutePath)) {
+      throw Object.assign(new Error('Il modello non contiene un file .docx valido'), { status: 409 });
+    }
+    const customer = quote.customerId ? db.get('client', quote.customerId) : null;
+    if (requireCustomerEmail && !customer?.email) throw Object.assign(new Error('Il cliente non ha un indirizzo email valido'), { status: 400 });
+    const project = quote.projectId ? db.get('project', quote.projectId) : null;
+    const document = renderQuoteDocument({ templatePath: attachment.absolutePath, quote, customer, project });
+    const number = String(quote.quoteNumber || quote.id).replace(/[^a-zA-Z0-9_-]+/g, '-');
+    return { quote, customer, document, fileName: `preventivo-${number}.docx` };
+  };
+
   app.get('/api/quotes/:id/document', authenticateToken, requirePermission('quotes.view'), (req, res) => {
     try {
-      const quote = db.get('quote', req.params.id);
-      if (!quote) return res.status(404).json({ error: 'Preventivo non trovato' });
-      const templateId = String(req.query.templateId || quote.templateId || '').trim();
-      if (!templateId) return res.status(400).json({ error: 'Seleziona un modello Word prima di scaricare il preventivo' });
-      const template = db.get('quote_template', templateId);
-      if (!template) return res.status(404).json({ error: 'Modello Word non trovato' });
-      const attachment = db.listAttachments('quote_template', templateId)
-        .map((item) => db.getAttachment(item.id))
-        .find((item) => item && /\.docx$/i.test(item.originalName));
-      if (!attachment || !fs.existsSync(attachment.absolutePath)) {
-        return res.status(409).json({ error: 'Il modello non contiene un file .docx valido' });
-      }
-      const customer = quote.customerId ? db.get('client', quote.customerId) : null;
-      const project = quote.projectId ? db.get('project', quote.projectId) : null;
-      const document = renderQuoteDocument({
-        templatePath: attachment.absolutePath, quote, customer, project,
-      });
-      const number = String(quote.quoteNumber || quote.id).replace(/[^a-zA-Z0-9_-]+/g, '-');
+      const { document, fileName } = quoteWordDocument(req.params.id, req.query.templateId);
       res.type('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-      res.attachment(`preventivo-${number}.docx`);
+      res.attachment(fileName);
       return res.send(document);
     } catch (error) {
       error.status = error.status || 400;
+      return respondError(res, error);
+    }
+  });
+
+  app.post('/api/quotes/:id/gmail-draft', authenticateToken, requirePermission('quotes.edit'), async (req, res) => {
+    try {
+      const { quote, customer, document, fileName } = quoteWordDocument(req.params.id, req.body?.templateId, { requireCustomerEmail: true });
+      const subject = String(req.body?.subject || `Preventivo ${quote.quoteNumber || ''}`).trim();
+      const text = String(req.body?.text || '').trim();
+      if (!subject || !text) return res.status(400).json({ error: 'Oggetto e messaggio email sono obbligatori' });
+      const draft = await gmail.createDraft({ to: customer.email, subject, text, attachmentName: fileName, attachment: document });
+      return res.status(201).json(draft);
+    } catch (error) {
       return respondError(res, error);
     }
   });
@@ -1396,6 +1415,40 @@ async function createCrmServer(options = {}) {
       return undefined;
     } catch (error) {
       return respondError(res, error);
+    }
+  });
+
+  app.get('/api/integrations/gmail/status', authenticateToken, requirePermission('settings.edit'), (req, res) => res.json(gmail.status()));
+  app.put('/api/integrations/gmail/config', authenticateToken, requirePermission('settings.edit'), (req, res) => {
+    try {
+      return res.json(gmail.configure({ clientId: req.body?.clientId }));
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.post('/api/integrations/gmail/authorize', authenticateToken, requirePermission('settings.edit'), (req, res) => {
+    try {
+      if (!isLoopback(req)) return res.status(403).json({ error: 'Collega Gmail aprendo il CRM dal browser del PC server: http://localhost:3001' });
+      return res.json(gmail.beginAuthorization());
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.delete('/api/integrations/gmail', authenticateToken, requirePermission('settings.edit'), (req, res) => {
+    try {
+      return res.json(gmail.disconnect());
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.get('/oauth2/gmail', async (req, res) => {
+    try {
+      if (!isLoopback(req)) return res.status(403).type('text').send('Autorizzazione Gmail consentita solo dal PC server.');
+      if (req.query.error) return res.status(400).type('html').send('<!doctype html><title>CRM Marmeria</title><p>Autorizzazione Gmail annullata. Puoi chiudere questa finestra.</p>');
+      await gmail.completeAuthorization({ code: req.query.code, state: req.query.state });
+      return res.type('html').send('<!doctype html><title>CRM Marmeria</title><p>Gmail collegato. Puoi chiudere questa finestra e tornare al CRM.</p><script>window.close()</script>');
+    } catch (error) {
+      return res.status(error.status || 400).type('html').send('<!doctype html><title>CRM Marmeria</title><p>Collegamento Gmail non riuscito. Torna al CRM e riprova.</p>');
     }
   });
 

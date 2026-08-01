@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Database,
   FileDigit,
+  Mail,
   Palette,
   Printer,
   User,
@@ -14,6 +15,7 @@ import UserManagement from '../components/UserManagement';
 import ServerUpdatePanel from '../components/ServerUpdatePanel';
 import useUI from '../hooks/useUI';
 import { useAuth } from '../contexts/AuthContext';
+import { apiClient } from '../services/api';
 
 const AnimatedSwitch = ({ id, checked, onChange, label }) => (
   <div className="flex items-center justify-between py-3">
@@ -42,6 +44,55 @@ const Section = ({ icon: Icon, title, iconClass, children }) => (
     {children}
   </section>
 );
+
+const GmailPanel = () => {
+  const [status, setStatus] = useState(null);
+  const [clientId, setClientId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try {
+      const response = await apiClient.get('/integrations/gmail/status');
+      setStatus(response.data);
+      setClientId(response.data?.clientId || '');
+    } catch (error) { toast.error(error.response?.data?.error || 'Stato Gmail non disponibile'); }
+  };
+  useEffect(() => { void load(); }, []);
+  const save = async () => {
+    setBusy(true);
+    try {
+      const response = await apiClient.put('/integrations/gmail/config', { clientId });
+      setStatus(response.data);
+      toast.success('Client ID Gmail salvato');
+    } catch (error) { toast.error(error.response?.data?.error || 'Client ID Gmail non valido'); } finally { setBusy(false); }
+  };
+  const connect = async () => {
+    const popup = window.open('', 'crm-gmail-connect', 'width=640,height=760');
+    setBusy(true);
+    try {
+      const response = await apiClient.post('/integrations/gmail/authorize');
+      if (!popup) throw new Error('Popup Gmail bloccato dal browser');
+      popup.location.href = response.data.url;
+      toast.success('Completa autorizzazione Gmail nella nuova finestra, poi aggiorna questa pagina');
+    } catch (error) {
+      popup?.close();
+      toast.error(error.response?.data?.error || error.message || 'Collegamento Gmail non riuscito');
+    } finally { setBusy(false); }
+  };
+  const disconnect = async () => {
+    setBusy(true);
+    try {
+      const response = await apiClient.delete('/integrations/gmail');
+      setStatus(response.data);
+      toast.success('Gmail scollegato');
+    } catch (error) { toast.error(error.response?.data?.error || 'Scollegamento Gmail non riuscito'); } finally { setBusy(false); }
+  };
+  return <Section icon={Mail} title="Gmail preventivi" iconClass="text-red-500">
+    <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">Crea bozze Gmail con Word allegato. Invio finale sempre controllato in Gmail.</p>
+    <label className="block"><span className="mb-1 block text-sm font-medium">Client ID OAuth Desktop Google</span><input value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="...apps.googleusercontent.com" className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+    <p className="mt-2 text-xs text-gray-500">Google Cloud: abilita Gmail API, crea client OAuth con callback <code>https://127.0.0.1:3001/oauth2/gmail</code>, incolla qui Client ID. Collegamento solo dal PC server.</p>
+    <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={() => void save()} className="rounded-md border px-4 py-2 disabled:opacity-50">Salva Client ID</button>{status?.configured && !status?.connected && <button type="button" disabled={busy} onClick={() => void connect()} className="rounded-md bg-red-600 px-4 py-2 text-white disabled:opacity-50">Collega Gmail</button>}{status?.connected && <><span className="text-sm text-green-700 dark:text-green-400">Collegato: {status.email}</span><button type="button" disabled={busy} onClick={() => void disconnect()} className="rounded-md border border-red-300 px-4 py-2 text-red-700 disabled:opacity-50">Scollega</button></>}</div>
+  </Section>;
+};
 
 const SettingsPage = () => {
   const { theme, userPreferences, changeTheme, updatePreferences } = useUI();
@@ -158,6 +209,7 @@ const SettingsPage = () => {
       </Section>
 
       {user?.role === 'admin' && <ServerUpdatePanel />}
+      {user?.role === 'admin' && <GmailPanel />}
       {user?.role === 'admin' && <UserManagement />}
 
       <Section icon={Bell} title="Notifiche" iconClass="text-green-500">

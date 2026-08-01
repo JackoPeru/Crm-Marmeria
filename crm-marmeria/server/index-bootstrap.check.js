@@ -59,7 +59,11 @@ async function run() {
     assert.ok(receivedOptions, 'Il server standalone deve avviare createCrmServer');
     assert.match(receivedOptions.serverId, /^[0-9a-f-]{36}$/i);
     assert.match(receivedOptions.setupSecret, /^[0-9a-f]{96}$/i);
-    assert.equal(receivedOptions.tls, null, 'Il server browser LAN deve usare HTTP per default');
+    assert.deepEqual(
+      receivedOptions.tls,
+      { key: 'test-key', cert: 'test-cert', fingerprint: 'test-fingerprint' },
+      'Il server browser LAN deve usare TLS per default',
+    );
     assert.equal(
       fs.readFileSync(path.join(root, '.setup-secret'), 'utf8').trim(),
       receivedOptions.setupSecret,
