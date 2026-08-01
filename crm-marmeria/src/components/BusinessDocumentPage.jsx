@@ -292,6 +292,8 @@ const BusinessDocumentPage = ({
   const [deleting, setDeleting] = useState(null);
   const [form, setForm] = useState(() => emptyDocument(kind));
   const [saving, setSaving] = useState(false);
+  const [emailDraft, setEmailDraft] = useState(null);
+  const [drafting, setDrafting] = useState(false);
 
   const viewing = documents.find((document) => String(document.id) === String(viewingId));
 
@@ -381,16 +383,37 @@ const BusinessDocumentPage = ({
       text: `Buongiorno ${customer?.name || ''},\nle inviamo il preventivo ${document.quoteNumber || ''} del ${formatDate(document.date)} per un totale di ${formatEuro(document.total)}.\nRimaniamo a disposizione.`,
     };
   };
-  const sendQuote = (document, channel) => {
+  const sendQuote = (document) => {
     const { customer, text } = quoteMessage(document);
-    if (channel === 'whatsapp') {
-      const phone = String(customer?.phone || '').replace(/\D/g, '');
-      if (!phone) { toast.error('Il cliente non ha un numero di telefono'); return; }
-      window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
-      return;
-    }
+    const phone = String(customer?.phone || '').replace(/\D/g, '');
+    if (!phone) { toast.error('Il cliente non ha un numero di telefono'); return; }
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
+  };
+  const openGmailDraft = (document) => {
+    const { customer, text } = quoteMessage(document);
+    if (!hasPermission('quotes.edit')) { toast.error('Permesso modifica preventivi richiesto'); return; }
     if (!customer?.email) { toast.error('Il cliente non ha un indirizzo email'); return; }
-    window.location.href = `mailto:${encodeURIComponent(customer.email)}?subject=${encodeURIComponent(`Preventivo ${document.quoteNumber || ''}`)}&body=${encodeURIComponent(text)}`;
+    if (!document.templateId) { toast.error('Seleziona un modello Word nel preventivo'); return; }
+    setEmailDraft({ document, subject: `Preventivo ${document.quoteNumber || ''}`, text });
+    showModal({ id: 'quote-gmail-draft', type: 'email' });
+  };
+  const createGmailDraft = async (event) => {
+    event.preventDefault();
+    if (!emailDraft) return;
+    const gmailWindow = window.open('', 'crm-gmail-drafts');
+    if (!gmailWindow) { toast.error('Popup Gmail bloccato dal browser'); return; }
+    setDrafting(true);
+    try {
+      const response = await apiClient.post(`/quotes/${emailDraft.document.id}/gmail-draft`, {
+        templateId: emailDraft.document.templateId,
+        subject: emailDraft.subject,
+        text: emailDraft.text,
+      });
+      hideModal('quote-gmail-draft');
+      setEmailDraft(null);
+      gmailWindow.location.href = response.data.gmailUrl;
+      toast.success('Bozza Gmail creata con Word allegato');
+    } catch (error) { gmailWindow.close(); toast.error(error.response?.data?.error || 'Creazione bozza Gmail non riuscita'); } finally { setDrafting(false); }
   };
   const downloadQuoteWord = async (quote) => {
     if (!quote.templateId) { toast.error('Seleziona un modello Word nel preventivo'); return; }
@@ -445,7 +468,7 @@ const BusinessDocumentPage = ({
                   <td className="px-5 py-4">
                     <div className="flex justify-end gap-2">
                       <button type="button" onClick={() => { setViewingId(String(document.id)); showModal({ id: `${kind}-view`, type: 'view' }); }} className="p-1.5 text-blue-600" title="Visualizza"><Eye size={18} /></button>
-                      {!invoice && <><button type="button" onClick={() => sendQuote(document, 'whatsapp')} className="p-1.5 text-green-600" title="Invia WhatsApp"><MessageCircle size={18} /></button><button type="button" onClick={() => sendQuote(document, 'email')} className="p-1.5 text-indigo-600" title="Invia email"><Mail size={18} /></button><button type="button" onClick={() => void downloadQuoteWord(document)} className="p-1.5 text-gray-700 dark:text-gray-200" title="Scarica Word"><Download size={18} /></button></>}
+                      {!invoice && <><button type="button" onClick={() => sendQuote(document)} className="p-1.5 text-green-600" title="Invia WhatsApp"><MessageCircle size={18} /></button><button type="button" onClick={() => openGmailDraft(document)} className="p-1.5 text-indigo-600" title="Crea bozza Gmail"><Mail size={18} /></button><button type="button" onClick={() => void downloadQuoteWord(document)} className="p-1.5 text-gray-700 dark:text-gray-200" title="Scarica Word"><Download size={18} /></button></>}
                       {hasPermission(`${permission}.edit`) && <button type="button" onClick={() => { setEditing(document); setForm(normalizeDocument(document, kind)); showModal({ id: `${kind}-edit`, type: 'edit' }); }} className="p-1.5 text-yellow-600" title="Modifica"><Edit size={18} /></button>}
                       {hasPermission(`${permission}.delete`) && <button type="button" onClick={() => { setDeleting(document); showModal({ id: `${kind}-delete`, type: 'delete' }); }} className="p-1.5 text-red-600" title="Elimina"><Trash size={18} /></button>}
                     </div>
@@ -489,7 +512,18 @@ const BusinessDocumentPage = ({
           <div className="mt-5 space-y-2">
             {(viewing.items || []).map((item, index) => <div key={index} className="flex justify-between gap-3 border-b py-2 text-sm dark:border-dark-border"><span>{item.description} · {item.quantity} × {formatEuro(item.unitPrice)}</span><strong>{formatEuro(totals([item], invoice).total)}</strong></div>)}
           </div>
-          {!invoice && <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => sendQuote(viewing, 'whatsapp')} className="flex items-center gap-2 rounded-md bg-green-600 px-3 py-2 text-sm text-white"><MessageCircle size={16} /> WhatsApp</button><button type="button" onClick={() => sendQuote(viewing, 'email')} className="flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white"><Mail size={16} /> Email</button><button type="button" onClick={() => void downloadQuoteWord(viewing)} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><Download size={16} /> Word compilato</button></div>}
+          {!invoice && <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => sendQuote(viewing)} className="flex items-center gap-2 rounded-md bg-green-600 px-3 py-2 text-sm text-white"><MessageCircle size={16} /> WhatsApp</button><button type="button" onClick={() => openGmailDraft(viewing)} className="flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white"><Mail size={16} /> Crea bozza Gmail</button><button type="button" onClick={() => void downloadQuoteWord(viewing)} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><Download size={16} /> Word compilato</button></div>}
+        </Modal>
+      )}
+
+      {isModalOpen('quote-gmail-draft') && emailDraft && (
+        <Modal title="Bozza Gmail preventivo" onClose={() => { hideModal('quote-gmail-draft'); setEmailDraft(null); }}>
+          <form onSubmit={createGmailDraft}>
+            <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">Gmail creerà una bozza con Word allegato. Controlla testo, poi invia da Gmail.</p>
+            <label className="block"><span className="mb-1 block text-sm font-medium">Oggetto *</span><input required value={emailDraft.subject} onChange={(event) => setEmailDraft((previous) => ({ ...previous, subject: event.target.value }))} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+            <label className="mt-4 block"><span className="mb-1 block text-sm font-medium">Messaggio *</span><textarea required rows="7" value={emailDraft.text} onChange={(event) => setEmailDraft((previous) => ({ ...previous, text: event.target.value }))} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+            <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => { hideModal('quote-gmail-draft'); setEmailDraft(null); }} className="rounded-md border px-4 py-2">Annulla</button><button disabled={drafting} className="rounded-md bg-indigo-600 px-4 py-2 text-white disabled:opacity-50">{drafting ? 'Creo bozza...' : 'Crea bozza Gmail'}</button></div>
+          </form>
         </Modal>
       )}
 

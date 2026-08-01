@@ -33,9 +33,18 @@ async function run() {
   };
   fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([user]));
+  const gmailDrafts = [];
+  const gmail = {
+    status: () => ({ configured: true, clientId: 'test.apps.googleusercontent.com', connected: true, email: 'ufficio@example.test', callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail' }),
+    configure: () => gmail.status(),
+    beginAuthorization: () => ({ url: 'https://accounts.google.com/test' }),
+    completeAuthorization: async () => gmail.status(),
+    disconnect: () => ({ configured: true, clientId: 'test.apps.googleusercontent.com', connected: false, email: null, callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail' }),
+    createDraft: async (payload) => { gmailDrafts.push(payload); return { id: 'gmail-draft-ci', gmailUrl: 'https://mail.google.com/mail/u/0/#drafts' }; },
+  };
   let instance;
   try {
-    instance = await createCrmServer({ port: 0, host: '127.0.0.1', dataDir, backupDir: path.join(root, 'backups'), attachmentsDir: path.join(root, 'attachments') });
+    instance = await createCrmServer({ port: 0, host: '127.0.0.1', dataDir, backupDir: path.join(root, 'backups'), attachmentsDir: path.join(root, 'attachments'), gmail });
     const baseUrl = `http://127.0.0.1:${instance.port}/api`;
     const login = await requestJson(baseUrl, '/auth/login', { method: 'POST', body: JSON.stringify({ username: user.username, password: 'Feature-password-123' }) });
     assert.equal(login.response.status, 200);
@@ -65,6 +74,14 @@ async function run() {
     assert.ok(renderedXml.includes(quote.body.quoteNumber));
     assert.ok(renderedXml.includes('Cliente Word'));
     assert.ok(renderedXml.includes('Piano cucina'));
+
+    const gmailDraft = await requestJson(baseUrl, `/quotes/${quote.body.id}/gmail-draft`, { method: 'POST', headers, body: JSON.stringify({ templateId: template.body.id, subject: 'Preventivo CI', text: 'Buongiorno, trova allegato il preventivo.' }) });
+    assert.equal(gmailDraft.response.status, 201);
+    assert.equal(gmailDraft.body.id, 'gmail-draft-ci');
+    assert.equal(gmailDrafts.length, 1);
+    assert.equal(gmailDrafts[0].to, 'cliente@example.test');
+    assert.equal(gmailDrafts[0].attachmentName, `preventivo-${quote.body.quoteNumber}.docx`);
+    assert.ok(Buffer.isBuffer(gmailDrafts[0].attachment));
 
     const images = new FormData();
     for (let index = 0; index < 11; index += 1) images.append('files', new Blob(['x'], { type: 'image/png' }), `misura-${index}.png`);

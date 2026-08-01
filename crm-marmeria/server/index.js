@@ -42,7 +42,7 @@ const start = async () => {
   const backupDir = process.env.CRM_BACKUP_DIR || path.join(dataDir, 'backups');
   const serverId = persistentServerId(dataDir);
   const setupSecret = persistentSetupSecret(dataDir);
-  const tlsIdentity = process.env.CRM_ENABLE_TLS === '1'
+  const tlsIdentity = process.env.CRM_ENABLE_TLS !== '0'
     ? await readOrCreateTlsIdentity(
       path.join(dataDir, '.tls'),
       process.env.CRM_TLS_COMMON_NAME || `crm-marmeria-${serverId}`,

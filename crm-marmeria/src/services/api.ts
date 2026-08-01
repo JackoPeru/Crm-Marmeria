@@ -30,18 +30,9 @@ const browserApiBaseUrl = () => {
 const initialApiBaseUrl = () => {
   const browserUrl = browserApiBaseUrl();
   const storedUrl = localStorage.getItem('crm_api_base_url');
-  if (browserUrl && storedUrl) {
-    try {
-      const current = new URL(browserUrl);
-      const stored = new URL(storedUrl);
-      // Stesso PC/porta, protocollo cambiato dal launcher: usa sempre la pagina aperta.
-      if (stored.host === current.host) {
-        localStorage.setItem('crm_api_base_url', browserUrl);
-        return browserUrl;
-      }
-    } catch {
-      localStorage.removeItem('crm_api_base_url');
-    }
+  if (browserUrl) {
+    localStorage.setItem('crm_api_base_url', browserUrl);
+    return browserUrl;
   }
   return storedUrl || import.meta.env.VITE_API_BASE_URL || browserUrl || 'http://127.0.0.1:3001/api';
 };
@@ -73,6 +64,8 @@ class ApiClient {
   }
 
   getBaseURL(): string {
+    const browserUrl = browserApiBaseUrl();
+    if (browserUrl) return browserUrl;
     return normalizeBaseUrl(
       localStorage.getItem('crm_api_base_url')
         || import.meta.env.VITE_API_BASE_URL

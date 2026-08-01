@@ -29,7 +29,6 @@ const LoginForm: React.FC = () => {
   const [setupAllowedHere, setSetupAllowedHere] = useState(false);
   const [checkingServer, setCheckingServer] = useState(true);
   const [serverReachable, setServerReachable] = useState(true);
-  const [defaultAdmin, setDefaultAdmin] = useState<{ username: string; password: string } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState('');
 
@@ -40,12 +39,10 @@ const LoginForm: React.FC = () => {
       const requiresSetup = Boolean(response.data?.setupRequired);
       setSetupRequired(requiresSetup);
       setSetupAllowedHere(false);
-      setDefaultAdmin(response.data?.defaultAdmin || null);
       setServerReachable(true);
     } catch {
       setServerReachable(false);
       setSetupAllowedHere(false);
-      setDefaultAdmin(null);
     } finally {
       setCheckingServer(false);
     }
@@ -151,12 +148,6 @@ const LoginForm: React.FC = () => {
               <button type="button" onClick={() => void checkServer()} className="mt-3 flex items-center gap-2 px-3 py-1.5 border rounded-md">
                 <RefreshCw size={15} /> Riprova
               </button>
-            </div>
-          )}
-
-          {defaultAdmin && (
-            <div className="mb-5 p-3 rounded-lg bg-yellow-50 text-yellow-900 border border-yellow-300 text-sm dark:bg-yellow-900/20 dark:text-yellow-100 dark:border-yellow-700">
-              <strong>Accesso base:</strong> username <code>{defaultAdmin.username}</code> — password <code>{defaultAdmin.password}</code>
             </div>
           )}
 
