@@ -13,8 +13,8 @@ interface ReplayConfig extends AxiosRequestConfig {
 }
 
 const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
-const ENTITY_CREATE = /^\/(clients|orders|projects|materials|quotes|invoices)\/?$/;
-const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|quotes|invoices)(\/[^/?]+(\/status)?)?\/?$/;
+const ENTITY_CREATE = /^\/(clients|orders|projects|materials|quotes|invoices|appointments)\/?$/;
+const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|quotes|invoices|appointments)(\/[^/?]+(\/status)?)?\/?$/;
 const AUTH_ACTION = /^\/auth\/(login|logout)\/?$/;
 const SERVER_ID_KEY = 'crm_server_id';
 const SERVER_URL_KEY = 'crm_server_identity_url';

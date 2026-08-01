@@ -8,6 +8,7 @@ import {
   Layers,
   FileText,
   DollarSign,
+  CalendarDays,
   Settings as Cog,
 } from 'lucide-react';
 import { cacheService } from './services/cache';
@@ -27,6 +28,7 @@ import MaterialsPage from './pages/MaterialsPage';
 import QuotesPage from './pages/QuotesPage';
 import InvoicesPage from './pages/InvoicesPage';
 import SettingsPage from './pages/SettingsPage';
+import CalendarPage from './pages/CalendarPage';
 import useUI from './hooks/useUI';
 
 const navItems = [
@@ -35,6 +37,7 @@ const navItems = [
   { id: 'projects', label: 'Progetti', icon: Briefcase, component: ProjectsPage, permission: 'projects.view' },
   { id: 'materials', label: 'Materiali', icon: Layers, component: MaterialsPage, permission: 'materials.view' },
   { id: 'quotes', label: 'Preventivi', icon: FileText, component: QuotesPage, permission: 'quotes.view' },
+  { id: 'calendar', label: 'Calendario', icon: CalendarDays, component: CalendarPage, permission: 'calendar.view' },
   { id: 'invoices', label: 'Fatture', icon: DollarSign, component: InvoicesPage, permission: 'invoices.view' },
   { id: 'settings', label: 'Impostazioni', icon: Cog, component: SettingsPage, permission: 'settings.view' },
 ];

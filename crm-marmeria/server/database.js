@@ -13,7 +13,7 @@ const {
   validateUsers,
 } = require('./restore-safety');
 
-const ENTITY_TYPES = ['client', 'order', 'project', 'material', 'quote', 'invoice'];
+const ENTITY_TYPES = ['client', 'order', 'project', 'material', 'quote', 'invoice', 'appointment', 'quote_template'];
 const DOCUMENT_CONFIG = {
   quote: { field: 'quoteNumber', prefix: 'PREV' },
   invoice: { field: 'invoiceNumber', prefix: 'FATT' },
@@ -191,6 +191,26 @@ class CrmDatabase {
         stock: stockQuantity,
         minStockLevel,
         minQuantity: minStockLevel,
+      };
+    }
+
+    if (type === 'appointment') {
+      return {
+        ...data,
+        type: 'appointment',
+        entityType: 'appointment',
+        title: String(data.title || ''),
+        startAt: data.startAt ? new Date(data.startAt).toISOString() : '',
+        endAt: data.endAt ? new Date(data.endAt).toISOString() : '',
+      };
+    }
+
+    if (type === 'quote_template') {
+      return {
+        ...data,
+        type: 'quote_template',
+        entityType: 'quote_template',
+        name: String(data.name || ''),
       };
     }
 

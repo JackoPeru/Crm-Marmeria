@@ -7,6 +7,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const WebSocket = require('ws');
+const { renderQuoteDocument } = require('./quote-document');
 const { CrmDatabase, ENTITY_TYPES } = require('./database');
 const {
   authenticateToken,
@@ -40,7 +41,9 @@ const ROUTES = {
   projects: { type: 'project', permission: 'projects' },
   materials: { type: 'material', permission: 'materials' },
   quotes: { type: 'quote', permission: 'quotes' },
+  'quote-templates': { type: 'quote_template', permission: 'quotes' },
   invoices: { type: 'invoice', permission: 'invoices' },
+  appointments: { type: 'appointment', permission: 'calendar' },
 };
 
 const ADMIN_PERMISSIONS = [
@@ -271,6 +274,16 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
       data.minQuantity = minStockLevel;
     }
   }
+  if (type === 'appointment') {
+    data.type = 'appointment';
+    data.entityType = 'appointment';
+    if (hasOwn(data, 'title')) data.title = String(data.title || '').trim();
+  }
+  if (type === 'quote_template') {
+    data.type = 'quote_template';
+    data.entityType = 'quote_template';
+    if (hasOwn(data, 'name')) data.name = String(data.name || '').trim();
+  }
   if (['order', 'project', 'quote', 'invoice'].includes(type)) {
     data.type = type;
     data.entityType = type;
@@ -308,6 +321,8 @@ const validateEntity = (type, payload) => {
     quote: ['date', 'customerId'],
     invoice: ['date', 'customerId'],
     order: ['title'],
+    appointment: ['title', 'startAt', 'endAt'],
+    quote_template: ['name'],
   }[type] || [];
   const missing = required.filter((key) => payload[key] == null || String(payload[key]).trim() === '');
   if (missing.length) {
@@ -358,6 +373,15 @@ const validateEntity = (type, payload) => {
     error.status = 400;
     throw error;
   }
+  if (type === 'appointment') {
+    const start = new Date(payload.startAt);
+    const end = new Date(payload.endAt);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      const error = new Error('Intervallo appuntamento non valido');
+      error.status = 400;
+      throw error;
+    }
+  }
 };
 
 const expectedVersionFrom = (req, required = false) => {
@@ -387,6 +411,19 @@ const canViewAuditEntry = (user, item) => item.entityType === 'database'
 const normalizeBackupPayload = (raw) => {
   if (!raw?.data || typeof raw.data !== 'object' || Array.isArray(raw.data)) return raw;
   const data = raw.data;
+  // I backup completi creati prima di calendario e modelli Word restano validi.
+  // Un backup parziale continua invece a essere rifiutato da restoreJson.
+  const previousEntityTypes = ['client', 'order', 'project', 'material', 'quote', 'invoice'];
+  if (previousEntityTypes.every((type) => Array.isArray(data[type]))) {
+    return {
+      ...raw,
+      data: {
+        ...data,
+        appointment: Array.isArray(data.appointment) ? data.appointment : [],
+        quote_template: Array.isArray(data.quote_template) ? data.quote_template : [],
+      },
+    };
+  }
   if (ENTITY_TYPES.some((type) => Object.prototype.hasOwnProperty.call(data, type))) return raw;
 
   const legacyKeys = ['clients', 'orders', 'projects', 'materials', 'quotes', 'invoices'];
@@ -489,6 +526,24 @@ async function createCrmServer(options = {}) {
 
   configureAuth({ dataDir });
   await createBootstrapAdmin(options.bootstrapAdmin || null);
+  // Aggiorna gli amministratori già esistenti con la nuova sezione, senza
+  // alterare ruoli manager/operaio o le loro configurazioni personalizzate.
+  if (hasActiveAdmin()) {
+    await mutateUsers(async (users) => {
+      let changed = false;
+      for (const user of users) {
+        if (user.role !== 'admin') continue;
+        const required = ['calendar.view', 'calendar.create', 'calendar.edit', 'calendar.delete'];
+        const permissions = [...new Set([...(user.permissions || []), ...required])];
+        if (permissions.length !== (user.permissions || []).length) {
+          user.permissions = permissions;
+          user.updatedAt = new Date().toISOString();
+          changed = true;
+        }
+      }
+      return changed ? { value: true } : { write: false };
+    });
+  }
   const mutationBarrier = new MutationBarrier({ timeoutMs: 30000 });
   const db = new CrmDatabase({ dataDir, backupDir, attachmentsDir });
   db.migrateLegacy(dataDir);
@@ -567,7 +622,7 @@ async function createCrmServer(options = {}) {
         `${crypto.randomUUID()}${path.extname(file.originalname).slice(0, 20)}`,
       ),
     }),
-    limits: { fileSize: 25 * 1024 * 1024, files: 10 },
+    limits: { fileSize: 25 * 1024 * 1024 },
   });
 
   const removeUploadedFiles = (files = []) => {
@@ -590,7 +645,7 @@ async function createCrmServer(options = {}) {
 
   app.get('/api/health', (req, res) => res.json({
     status: mutationBarrier.isMaintenance ? 'maintenance' : 'ok',
-    version: '2.3.0',
+    version: '2.4.0',
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,
@@ -1073,6 +1128,35 @@ async function createCrmServer(options = {}) {
     });
   }
 
+  app.get('/api/quotes/:id/document', authenticateToken, requirePermission('quotes.view'), (req, res) => {
+    try {
+      const quote = db.get('quote', req.params.id);
+      if (!quote) return res.status(404).json({ error: 'Preventivo non trovato' });
+      const templateId = String(req.query.templateId || quote.templateId || '').trim();
+      if (!templateId) return res.status(400).json({ error: 'Seleziona un modello Word prima di scaricare il preventivo' });
+      const template = db.get('quote_template', templateId);
+      if (!template) return res.status(404).json({ error: 'Modello Word non trovato' });
+      const attachment = db.listAttachments('quote_template', templateId)
+        .map((item) => db.getAttachment(item.id))
+        .find((item) => item && /\.docx$/i.test(item.originalName));
+      if (!attachment || !fs.existsSync(attachment.absolutePath)) {
+        return res.status(409).json({ error: 'Il modello non contiene un file .docx valido' });
+      }
+      const customer = quote.customerId ? db.get('client', quote.customerId) : null;
+      const project = quote.projectId ? db.get('project', quote.projectId) : null;
+      const document = renderQuoteDocument({
+        templatePath: attachment.absolutePath, quote, customer, project,
+      });
+      const number = String(quote.quoteNumber || quote.id).replace(/[^a-zA-Z0-9_-]+/g, '-');
+      res.type('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      res.attachment(`preventivo-${number}.docx`);
+      return res.send(document);
+    } catch (error) {
+      error.status = error.status || 400;
+      return respondError(res, error);
+    }
+  });
+
   const visibleList = (user, type) => (
     hasEntityPermission(user, type, 'view') ? db.list(type) : []
   );
@@ -1331,7 +1415,7 @@ async function createCrmServer(options = {}) {
   app.get('/api/entity-attachments/:type/:id', authenticateToken, ensureAttachmentEntity('view'), (req, res) => {
     res.json(db.listAttachments(req.params.type, req.params.id));
   });
-  app.post('/api/entity-attachments/:type/:id', authenticateToken, ensureAttachmentEntity('edit'), upload.array('files', 10), (req, res) => {
+  app.post('/api/entity-attachments/:type/:id', authenticateToken, ensureAttachmentEntity('edit'), upload.array('files'), (req, res) => {
     try {
       if (!req.files?.length) return res.status(400).json({ error: 'Nessun file ricevuto' });
       if (!db.get(req.params.type, req.params.id)) {
