@@ -73,9 +73,22 @@ async function run() {
       return { snapshot: snapshot.name, status: driveBackupConfig };
     },
   };
+  const company = {
+    legalName: 'Marmeria CI Srl', vatNumber: '01234567890', fiscalCode: '01234567890', taxRegime: 'RF01',
+    address: 'Via Test', streetNumber: '1', zip: '20100', city: 'Milano', province: 'MI', country: 'IT',
+  };
+  const sdiPec = {
+    status: () => ({ configured: true, email: 'fatture@pec.example.test', hasPassword: true, company, smtp: {}, imap: {} }),
+    configure: () => sdiPec.status(),
+    testConnection: async () => ({ verified: true, email: 'fatture@pec.example.test' }),
+    prepare: ({ progressive }) => ({ filename: `IT01234567890_${progressive}.xml`, xml: '<FatturaElettronica />' }),
+    send: async ({ progressive }) => ({ filename: `IT01234567890_${progressive}.xml`, archivedPath: '/tmp/fattura.xml', messageId: '<pec-ci>' }),
+    pollReceipts: async () => ({ changed: 0 }),
+    archiveXml: () => '/tmp/ricevuta.xml',
+  };
   let instance;
   try {
-    instance = await createCrmServer({ port: 0, host: '127.0.0.1', dataDir, backupDir: path.join(root, 'backups'), attachmentsDir: path.join(root, 'attachments'), gmail, googleDriveBackups });
+    instance = await createCrmServer({ port: 0, host: '127.0.0.1', dataDir, backupDir: path.join(root, 'backups'), attachmentsDir: path.join(root, 'attachments'), gmail, googleDriveBackups, sdiPec });
     const baseUrl = `http://127.0.0.1:${instance.port}/api`;
     const login = await requestJson(baseUrl, '/auth/login', { method: 'POST', body: JSON.stringify({ username: user.username, password: 'Feature-password-123' }) });
     assert.equal(login.response.status, 200);
@@ -88,12 +101,28 @@ async function run() {
     const driveBackupRun = await requestJson(baseUrl, '/integrations/google-drive-backups/run', { method: 'POST', headers });
     assert.equal(driveBackupRun.response.status, 201);
     assert.ok(driveBackupRun.body.snapshot);
+    const sdiStatus = await requestJson(baseUrl, '/integrations/sdi-pec/status', { headers });
+    assert.equal(sdiStatus.response.status, 200);
+    const sdiTest = await requestJson(baseUrl, '/integrations/sdi-pec/test', { method: 'POST', headers, body: JSON.stringify({}) });
+    assert.equal(sdiTest.response.status, 200);
     const customer = await requestJson(baseUrl, '/clients', { method: 'POST', headers, body: JSON.stringify({ name: 'Cliente Word', email: 'cliente@example.test', phone: '+39 333 1234567' }) });
     const project = await requestJson(baseUrl, '/projects', { method: 'POST', headers, body: JSON.stringify({ name: 'Cucina marmo', clientId: customer.body.id }) });
     assert.equal(customer.response.status, 201); assert.equal(project.response.status, 201);
 
     const invoice = await requestJson(baseUrl, '/invoices', { method: 'POST', headers, body: JSON.stringify({ date: '2031-06-03', dueDate: '2031-06-05', customerId: customer.body.id, projectId: project.body.id, items: [{ description: 'Piano cucina', quantity: 1, unitPrice: 1500, taxRate: 0 }] }) });
     assert.equal(invoice.response.status, 201);
+    const sdiCustomer = await requestJson(baseUrl, '/clients', { method: 'POST', headers, body: JSON.stringify({ name: 'Cliente SdI Srl', type: 'Azienda', clientType: 'Azienda', vatNumber: '12345678901', fiscalCode: '12345678901', recipientCode: 'ABC1234', address: 'Via Roma', streetNumber: '1', zip: '20100', city: 'Milano', province: 'MI' }) });
+    assert.equal(sdiCustomer.response.status, 201);
+    const sdiInvoice = await requestJson(baseUrl, '/invoices', { method: 'POST', headers, body: JSON.stringify({ date: '2031-06-03', dueDate: '2031-06-05', customerId: sdiCustomer.body.id, paymentMethod: 'MP05', items: [{ description: 'Piano cucina SdI', quantity: 1, unitPrice: 100, taxRate: 22 }] }) });
+    assert.equal(sdiInvoice.response.status, 201);
+    const sdiPreflight = await requestJson(baseUrl, `/invoices/${sdiInvoice.body.id}/electronic/preflight`, { headers });
+    assert.equal(sdiPreflight.response.status, 200);
+    assert.equal(sdiPreflight.body.valid, true);
+    const missingConfirm = await requestJson(baseUrl, `/invoices/${sdiInvoice.body.id}/electronic/send`, { method: 'POST', headers, body: JSON.stringify({}) });
+    assert.equal(missingConfirm.response.status, 400);
+    const sdiSend = await requestJson(baseUrl, `/invoices/${sdiInvoice.body.id}/electronic/send`, { method: 'POST', headers, body: JSON.stringify({ confirm: true }) });
+    assert.equal(sdiSend.response.status, 201);
+    assert.equal(sdiSend.body.electronicInvoice.status, 'inviata_pec');
     const payment = await requestJson(baseUrl, '/payments', { method: 'POST', headers, body: JSON.stringify({ clientId: customer.body.id, invoiceId: invoice.body.id, date: '2031-06-04', amount: 500, method: 'Bonifico' }) });
     assert.equal(payment.response.status, 201);
     const history = await requestJson(baseUrl, `/clients/${customer.body.id}/history`, { headers });
@@ -110,7 +139,7 @@ async function run() {
     assert.equal(financials.body.margin, 800);
     const schedule = await requestJson(baseUrl, '/invoices/schedule', { headers });
     assert.equal(schedule.response.status, 200);
-    assert.equal(schedule.body[0].remaining, 1000);
+    assert.equal(schedule.body.find((item) => item.id === invoice.body.id).remaining, 1000);
     const legacyPaidInvoice = await requestJson(baseUrl, '/invoices', { method: 'POST', headers, body: JSON.stringify({ date: '2025-01-01', dueDate: '2025-01-15', customerId: customer.body.id, projectId: project.body.id, status: 'Pagata', items: [{ description: 'Fattura legacy già saldata', quantity: 1, unitPrice: 100, taxRate: 0 }] }) });
     assert.equal(legacyPaidInvoice.response.status, 201);
     const scheduleAfterLegacy = await requestJson(baseUrl, '/invoices/schedule', { headers });

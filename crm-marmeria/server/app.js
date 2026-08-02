@@ -11,6 +11,7 @@ const PizZip = require('pizzip');
 const { renderQuoteDocument } = require('./quote-document');
 const { createGmailDraftService } = require('./gmail-drafts');
 const { createGoogleDriveBackupService } = require('./google-drive-backups');
+const { createSdiPecService } = require('./sdi-pec');
 const { CrmDatabase, ENTITY_TYPES } = require('./database');
 const {
   authenticateToken,
@@ -252,6 +253,7 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
       quantity: numeric(item.quantity, { strict: true, field: 'quantità' }),
       unitPrice: numeric(item.unitPrice, { strict: true, field: 'prezzo unitario' }),
       taxRate: numeric(item.taxRate, { strict: true, field: 'aliquota IVA' }),
+      taxNature: String(item.taxNature || '').trim().toUpperCase(),
     }));
   }
   if (type === 'client') {
@@ -262,6 +264,12 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
       data.clientType = clientType;
     }
     data.entityType = 'client';
+    for (const key of ['name', 'firstName', 'lastName', 'email', 'phone', 'address', 'streetNumber', 'zip', 'city', 'province', 'country', 'vatNumber', 'fiscalCode', 'recipientCode', 'recipientPec', 'notes']) {
+      if (hasOwn(data, key)) data[key] = String(data[key] || '').trim();
+    }
+    if (hasOwn(data, 'province')) data.province = data.province.toUpperCase();
+    if (hasOwn(data, 'country')) data.country = data.country.toUpperCase();
+    if (hasOwn(data, 'recipientCode')) data.recipientCode = data.recipientCode.toUpperCase();
   }
   if (type === 'material') {
     data.type = 'material';
@@ -807,6 +815,7 @@ async function createCrmServer(options = {}) {
     callbackUrl: options.gmailCallbackUrl || `http://127.0.0.1:${requestedPort}/oauth2/gmail`,
   });
   const googleDriveBackups = options.googleDriveBackups || createGoogleDriveBackupService({ dataDir, google: gmail });
+  const sdiPec = options.sdiPec || createSdiPecService({ dataDir });
   const setupSecret = options.setupSecret || process.env.CRM_SETUP_SECRET || null;
   const webRoot = options.webRoot && fs.existsSync(path.join(options.webRoot, 'index.html'))
     ? path.resolve(options.webRoot)
@@ -876,6 +885,7 @@ async function createCrmServer(options = {}) {
       || route === '/api/backup/clear'
       || route === '/api/imports/history/commit'
       || route === '/api/integrations/google-drive-backups/run'
+      || /^\/api\/invoices\/[^/]+\/electronic\/send$/.test(route)
       || /^\/api\/backups\/[^/]+\/restore$/.test(route);
   };
   app.use('/api', (req, res, next) => {
@@ -1303,6 +1313,71 @@ async function createCrmServer(options = {}) {
     } catch (error) { return respondError(res, error); }
   });
 
+  const electronicInvoiceStatus = (invoice) => String(invoice?.electronicInvoice?.status || 'bozza');
+  const immutableElectronicInvoice = (invoice) => ['invio_in_corso', 'inviata_pec', 'consegnata', 'mancata_consegna'].includes(electronicInvoiceStatus(invoice));
+  const invoiceForSdi = (invoiceId) => {
+    const invoice = db.get('invoice', invoiceId);
+    if (!invoice) throw Object.assign(new Error('Fattura non trovata'), { status: 404 });
+    const client = db.get('client', invoice.customerId);
+    if (!client) throw Object.assign(new Error('Cliente fattura non trovato'), { status: 409 });
+    return { invoice, client };
+  };
+  const nextSdiProgressive = () => crypto.randomBytes(6).toString('hex').toUpperCase().slice(0, 10);
+  app.get('/api/invoices/:id/electronic/preflight', authenticateToken, requireRole('admin'), (req, res) => {
+    try {
+      const { invoice, client } = invoiceForSdi(req.params.id);
+      const progressive = invoice.electronicInvoice?.progressive || nextSdiProgressive();
+      const prepared = sdiPec.prepare({ invoice, client, progressive });
+      return res.json({ valid: true, fileName: prepared.filename, progressive, total: invoice.total, recipientCode: client.recipientCode || '0000000' });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.get('/api/invoices/:id/electronic/xml', authenticateToken, requireRole('admin'), (req, res) => {
+    try {
+      const { invoice, client } = invoiceForSdi(req.params.id);
+      const progressive = invoice.electronicInvoice?.progressive || nextSdiProgressive();
+      const prepared = sdiPec.prepare({ invoice, client, progressive });
+      res.type('application/xml').attachment(prepared.filename);
+      return res.send(prepared.xml);
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.post('/api/invoices/:id/electronic/send', authenticateToken, requireRole('admin'), async (req, res) => {
+    try {
+      if (req.body?.confirm !== true) return res.status(400).json({ error: 'Conferma esplicita richiesta per invio fiscale' });
+      const { invoice, client } = invoiceForSdi(req.params.id);
+      if (immutableElectronicInvoice(invoice) || electronicInvoiceStatus(invoice) === 'invio_in_corso') {
+        return res.status(409).json({ error: 'Fattura già trasmessa o in fase di trasmissione' });
+      }
+      const progressive = invoice.electronicInvoice?.progressive || nextSdiProgressive();
+      const starting = db.update('invoice', invoice.id, {
+        electronicInvoice: { ...(invoice.electronicInvoice || {}), status: 'invio_in_corso', progressive, startedAt: new Date().toISOString(), lastError: null },
+      }, invoice.version, req.user, null).item;
+      realtime.broadcast({ event: 'invoices.updated', entityType: 'invoice', item: starting, actor: publicActor(req.user) }, 'invoices.view');
+      try {
+        const sent = await sdiPec.send({ invoice: starting, client, progressive });
+        const result = db.update('invoice', starting.id, {
+          electronicInvoice: {
+            ...starting.electronicInvoice, status: 'inviata_pec', fileName: sent.filename,
+            messageId: sent.messageId, sentAt: new Date().toISOString(), archivePath: sent.archivedPath,
+          },
+        }, starting.version, req.user, null);
+        realtime.broadcast({ event: 'invoices.updated', entityType: 'invoice', item: result.item, actor: publicActor(req.user) }, 'invoices.view');
+        return res.status(201).json(presentEntity(req.user, 'invoice', result.item));
+      } catch (error) {
+        const failed = db.update('invoice', starting.id, {
+          electronicInvoice: { ...starting.electronicInvoice, status: 'errore_invio', lastError: String(error.message || 'Errore invio PEC').slice(0, 500), failedAt: new Date().toISOString() },
+        }, starting.version, req.user, null);
+        realtime.broadcast({ event: 'invoices.updated', entityType: 'invoice', item: failed.item, actor: publicActor(req.user) }, 'invoices.view');
+        throw error;
+      }
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
   app.get('/api/projects/:id/financials', authenticateToken, requirePermission('projects.view'), (req, res) => {
     if (!canViewFinancials(req.user)) return res.status(403).json({ error: 'Permessi finanziari insufficienti' });
     const summary = projectFinancialSummary(db, req.params.id);
@@ -1649,6 +1724,9 @@ async function createCrmServer(options = {}) {
         if (!patch) return res.status(400).json({ error: 'Nessun campo valido da modificare' });
         const current = db.get(config.type, req.params.id);
         if (!current) return res.status(404).json({ error: 'Elemento non trovato' });
+        if (config.type === 'invoice' && immutableElectronicInvoice(current)) {
+          return res.status(409).json({ error: 'Fattura già trasmessa a SdI: per correggerla emettere una nota di credito' });
+        }
         validateEntity(config.type, { ...current, ...patch });
         if (config.type === 'payment') validatePaymentLinks(db, { ...current, ...patch });
         const result = db.update(
@@ -1671,6 +1749,11 @@ async function createCrmServer(options = {}) {
     app.patch(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.edit`), update);
     app.delete(`${base}/:id`, authenticateToken, requirePermission(`${config.permission}.delete`), (req, res) => {
       try {
+        const current = db.get(config.type, req.params.id);
+        if (!current) return res.status(404).json({ error: 'Elemento non trovato' });
+        if (config.type === 'invoice' && immutableElectronicInvoice(current)) {
+          return res.status(409).json({ error: 'Fattura già trasmessa a SdI: non può essere eliminata' });
+        }
         const result = db.delete(
           config.type, req.params.id, expectedVersionFrom(req, true), req.user,
           operationIdFrom(req, `${config.type}:delete:${req.params.id}`),
@@ -2015,6 +2098,23 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
+  app.get('/api/integrations/sdi-pec/status', authenticateToken, requirePermission('settings.edit'), (req, res) => res.json(sdiPec.status()));
+  app.put('/api/integrations/sdi-pec/config', authenticateToken, requirePermission('settings.edit'), (req, res) => {
+    try {
+      if (!isLoopback(req)) return res.status(403).json({ error: 'Configura PEC Aruba solo dal browser del PC server: http://localhost:3001' });
+      return res.json(sdiPec.configure(req.body || {}));
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.post('/api/integrations/sdi-pec/test', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+    try {
+      if (!isLoopback(req)) return res.status(403).json({ error: 'Test PEC consentito solo dal browser del PC server: http://localhost:3001' });
+      return res.json(await sdiPec.testConnection());
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
   app.get('/oauth2/gmail', async (req, res) => {
     try {
       if (!isLoopback(req)) return res.status(403).type('text').send('Autorizzazione Gmail consentita solo dal PC server.');
@@ -2210,16 +2310,44 @@ async function createCrmServer(options = {}) {
     void runGoogleDriveBackup(false).catch((error) => console.error('Backup Google Drive automatico fallito:', error.message));
   }, 15 * 60 * 1000);
   void runGoogleDriveBackup(false).catch((error) => console.error('Backup Google Drive automatico fallito:', error.message));
+  const pollSdiReceipts = async () => {
+    const status = sdiPec.status();
+    if (!status.email || !status.hasPassword) return;
+    try {
+      await sdiPec.pollReceipts({
+        onReceipt: async ({ state, filename, raw, receivedAt }) => {
+          const invoice = db.list('invoice').find((item) => item.electronicInvoice?.fileName === filename);
+          if (!invoice || invoice.electronicInvoice?.status === state) return false;
+          const receiptPath = sdiPec.archiveXml({
+            invoiceId: invoice.id,
+            filename: `ricevuta-${receivedAt.replace(/[:.]/g, '-')}-${filename}`,
+            content: raw,
+          });
+          const result = db.update('invoice', invoice.id, {
+            electronicInvoice: { ...invoice.electronicInvoice, status: state, receiptAt: receivedAt, receiptPath },
+          }, invoice.version, { id: 'sdi-pec', username: 'SdI PEC' }, null);
+          realtime.broadcast({ event: 'invoices.updated', entityType: 'invoice', item: result.item, actor: { id: 'sdi-pec', username: 'SdI PEC' } }, 'invoices.view');
+          return true;
+        },
+      });
+    } catch (error) {
+      console.error('Lettura ricevute SdI PEC fallita:', error.message);
+    }
+  };
+  const sdiReceiptTimer = setInterval(() => { void pollSdiReceipts(); }, 15 * 60 * 1000);
+  void pollSdiReceipts();
 
   return {
     app,
     server,
     db,
     googleDriveBackups,
+    sdiPec,
     port: actualPort,
     host,
     close: async () => {
       clearInterval(googleDriveBackupTimer);
+      clearInterval(sdiReceiptTimer);
       return gracefulShutdown({
         barrier: mutationBarrier,
         server,

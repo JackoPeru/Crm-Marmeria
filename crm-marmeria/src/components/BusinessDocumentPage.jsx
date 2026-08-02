@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Download, Edit, Eye, Mail, MessageCircle, Plus, Search, Trash, X } from 'lucide-react';
+import { Download, Edit, Eye, FileCheck2, Mail, MessageCircle, Plus, Search, Send, Trash, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
 import useUI from '../hooks/useUI';
@@ -11,11 +11,13 @@ const emptyItem = (invoice) => ({
   quantity: 1,
   unitPrice: 0,
   taxRate: invoice ? 22 : 0,
+  taxNature: '',
   materialId: '',
 });
 
 const emptyDocument = (kind) => ({
   date: new Date().toISOString().slice(0, 10),
+  documentType: kind === 'invoice' ? 'TD01' : '',
   dueDate: '',
   customerId: '',
   projectId: '',
@@ -25,6 +27,7 @@ const emptyDocument = (kind) => ({
   status: kind === 'invoice' ? 'Non Pagata' : 'Bozza',
   validityDays: 30,
   paymentDetails: '',
+  paymentMethod: 'MP05',
   templateId: '',
 });
 
@@ -36,7 +39,9 @@ const normalizeDocument = (document, kind) => ({
   projectId: document.projectId == null ? '' : String(document.projectId),
   quoteId: document.quoteId == null ? '' : String(document.quoteId),
   templateId: document.templateId == null ? '' : String(document.templateId),
+  paymentMethod: document.paymentMethod == null ? '' : String(document.paymentMethod),
   date: document.date ? String(document.date).slice(0, 10) : '',
+  documentType: kind === 'invoice' ? String(document.documentType || 'TD01').toUpperCase() : '',
   dueDate: document.dueDate ? String(document.dueDate).slice(0, 10) : '',
   items: Array.isArray(document.items) && document.items.length
     ? document.items.map((item) => ({
@@ -46,6 +51,7 @@ const normalizeDocument = (document, kind) => ({
       quantity: parseLocaleNumber(item.quantity),
       unitPrice: parseLocaleNumber(item.unitPrice),
       taxRate: kind === 'invoice' ? parseLocaleNumber(item.taxRate ?? 22) : 0,
+      taxNature: String(item.taxNature || '').toUpperCase(),
     }))
     : [emptyItem(kind === 'invoice')],
 });
@@ -178,6 +184,8 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
           </label>
         )}
 
+        {invoice && <label className="block"><span className="mb-1 block text-sm font-medium">Tipo documento elettronico</span><select value={value.documentType || 'TD01'} onChange={(event) => setValue((previous) => ({ ...previous, documentType: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input"><option value="TD01">TD01 — Fattura</option><option value="TD03">TD03 — Acconto/anticipo su fattura</option><option value="TD04">TD04 — Nota di credito</option></select></label>}
+
         <label className="block">
           <span className="mb-1 block text-sm font-medium">Cliente *</span>
           <select required value={value.customerId || ''} onChange={(event) => setValue((previous) => ({ ...previous, customerId: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">
@@ -226,7 +234,7 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
             const line = totals([item], invoice).total;
             return (
               <div key={index} className="rounded-md border p-3">
-                <div className={`grid grid-cols-1 gap-3 ${invoice ? 'md:grid-cols-7' : 'md:grid-cols-6'}`}>
+                <div className={`grid grid-cols-1 gap-3 ${invoice ? 'md:grid-cols-8' : 'md:grid-cols-6'}`}>
                   <select value={item.materialId || ''} onChange={(event) => updateItem(index, 'materialId', event.target.value)} className="rounded-md border p-2 md:col-span-2 bg-light-bg dark:bg-dark-input">
                     <option value="">Voce manuale</option>
                     {materials.map((material) => <option key={material.id} value={String(material.id)}>{material.name}</option>)}
@@ -235,6 +243,7 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
                   <input type="number" min="0.01" step="0.01" required value={item.quantity} onChange={(event) => updateItem(index, 'quantity', event.target.value)} placeholder="Quantità" className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
                   <input type="number" min="0" step="0.01" required value={item.unitPrice} onChange={(event) => updateItem(index, 'unitPrice', event.target.value)} placeholder="Prezzo" className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
                   {invoice && <input type="number" min="0" max="100" step="0.01" value={item.taxRate} onChange={(event) => updateItem(index, 'taxRate', event.target.value)} placeholder="IVA %" className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />}
+                  {invoice && <input value={item.taxNature || ''} onChange={(event) => updateItem(index, 'taxNature', event.target.value.toUpperCase())} placeholder={parseLocaleNumber(item.taxRate) === 0 ? 'Natura IVA * (es. N2.2)' : 'Natura IVA'} required={parseLocaleNumber(item.taxRate) === 0} className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />}
                 </div>
                 <div className="mt-2 flex items-center justify-between text-sm">
                   <span>Totale voce: {formatEuro(line)}</span>
@@ -257,6 +266,7 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
           <textarea rows={2} value={value.paymentDetails || ''} onChange={(event) => setValue((previous) => ({ ...previous, paymentDetails: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
         </label>
       )}
+      {invoice && <label className="block"><span className="mb-1 block text-sm font-medium">Metodo pagamento elettronico</span><select value={value.paymentMethod || ''} onChange={(event) => setValue((previous) => ({ ...previous, paymentMethod: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input"><option value="">Non indicare nel file XML</option><option value="MP05">Bonifico</option><option value="MP01">Contanti</option><option value="MP12">Ri.Ba.</option><option value="MP02">Assegno</option><option value="MP08">Carta pagamento</option></select></label>}
 
       <div className="rounded-md bg-gray-50 p-3 text-right dark:bg-gray-800">
         <p>Imponibile: {formatEuro(currentTotals.subtotal)}</p>
@@ -280,7 +290,7 @@ const BusinessDocumentPage = ({
   deleteDocument,
 }) => {
   const { isModalOpen, showModal, hideModal, setBreadcrumbs } = useUI();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const invoice = kind === 'invoice';
   const plural = invoice ? 'Fatture' : 'Preventivi';
   const singular = invoice ? 'fattura' : 'preventivo';
@@ -294,8 +304,15 @@ const BusinessDocumentPage = ({
   const [saving, setSaving] = useState(false);
   const [emailDraft, setEmailDraft] = useState(null);
   const [drafting, setDrafting] = useState(false);
+  const [sdiInvoice, setSdiInvoice] = useState(null);
+  const [sdiPreflight, setSdiPreflight] = useState(null);
+  const [sdiError, setSdiError] = useState('');
+  const [sdiBusy, setSdiBusy] = useState(false);
 
   const viewing = documents.find((document) => String(document.id) === String(viewingId));
+  const canUseSdi = invoice && user?.role === 'admin';
+  const electronicStatus = (document) => String(document?.electronicInvoice?.status || 'bozza');
+  const transmitted = (document) => ['inviata_pec', 'consegnata', 'mancata_consegna'].includes(electronicStatus(document));
 
   useEffect(() => {
     setBreadcrumbs([{ label: plural }]);
@@ -325,6 +342,7 @@ const BusinessDocumentPage = ({
       quantity: parseLocaleNumber(item.quantity),
       unitPrice: parseLocaleNumber(item.unitPrice),
       taxRate: invoice ? parseLocaleNumber(item.taxRate) : 0,
+      taxNature: invoice ? String(item.taxNature || '').toUpperCase() : '',
     })),
   });
 
@@ -425,6 +443,34 @@ const BusinessDocumentPage = ({
       window.document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
     } catch (error) { toast.error(error.response?.data?.error || 'Creazione Word non riuscita'); }
   };
+  const openSdi = async (document) => {
+    setSdiInvoice(document); setSdiPreflight(null); setSdiError(''); showModal({ id: 'invoice-sdi-confirm', type: 'confirm' });
+    setSdiBusy(true);
+    try {
+      const response = await apiClient.get(`/invoices/${document.id}/electronic/preflight`);
+      setSdiPreflight(response.data);
+    } catch (error) {
+      const message = error.response?.data?.error || 'Controllo FatturaPA non riuscito';
+      setSdiError(message); toast.error(message);
+    } finally { setSdiBusy(false); }
+  };
+  const sendSdi = async () => {
+    if (!sdiInvoice || !sdiPreflight?.valid) return;
+    setSdiBusy(true);
+    try {
+      await apiClient.post(`/invoices/${sdiInvoice.id}/electronic/send`, { confirm: true });
+      toast.success('XML inviato via PEC a SdI. Attendo ricevuta.');
+      hideModal('invoice-sdi-confirm'); setSdiInvoice(null); setSdiPreflight(null);
+    } catch (error) { toast.error(error.response?.data?.error || 'Invio SdI non riuscito'); } finally { setSdiBusy(false); }
+  };
+  const downloadSdiXml = async (document) => {
+    try {
+      const response = await apiClient.get(`/invoices/${document.id}/electronic/xml`, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data); const link = window.document.createElement('a');
+      link.href = url; link.download = document.electronicInvoice?.fileName || `fattura-${document.invoiceNumber || document.id}.xml`;
+      window.document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+    } catch (error) { toast.error(error.response?.data?.error || 'Esportazione XML non riuscita'); }
+  };
 
   return (
     <div className="min-h-screen bg-light-bg p-6 text-light-text dark:bg-dark-bg dark:text-dark-text">
@@ -464,13 +510,15 @@ const BusinessDocumentPage = ({
                   <td className="px-5 py-4">{formatDate(document.date)}</td>
                   <td className="px-5 py-4">{documentCustomer(document)}</td>
                   <td className="px-5 py-4">{formatEuro(document.total)}</td>
-                  <td className="px-5 py-4"><span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">{document.status || '-'}</span>{document._queued && <span className="ml-2 text-xs text-orange-600">in coda</span>}</td>
+                  <td className="px-5 py-4"><span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">{document.status || '-'}</span>{invoice && electronicStatus(document) !== 'bozza' && <span className="ml-2 text-xs text-orange-700 dark:text-orange-300">SdI: {electronicStatus(document).replace(/_/g, ' ')}</span>}{document._queued && <span className="ml-2 text-xs text-orange-600">in coda</span>}</td>
                   <td className="px-5 py-4">
                     <div className="flex justify-end gap-2">
                       <button type="button" onClick={() => { setViewingId(String(document.id)); showModal({ id: `${kind}-view`, type: 'view' }); }} className="p-1.5 text-blue-600" title="Visualizza"><Eye size={18} /></button>
                       {!invoice && <><button type="button" onClick={() => sendQuote(document)} className="p-1.5 text-green-600" title="Invia WhatsApp"><MessageCircle size={18} /></button><button type="button" onClick={() => openGmailDraft(document)} className="p-1.5 text-indigo-600" title="Crea bozza Gmail"><Mail size={18} /></button><button type="button" onClick={() => void downloadQuoteWord(document)} className="p-1.5 text-gray-700 dark:text-gray-200" title="Scarica Word"><Download size={18} /></button></>}
-                      {hasPermission(`${permission}.edit`) && <button type="button" onClick={() => { setEditing(document); setForm(normalizeDocument(document, kind)); showModal({ id: `${kind}-edit`, type: 'edit' }); }} className="p-1.5 text-yellow-600" title="Modifica"><Edit size={18} /></button>}
-                      {hasPermission(`${permission}.delete`) && <button type="button" onClick={() => { setDeleting(document); showModal({ id: `${kind}-delete`, type: 'delete' }); }} className="p-1.5 text-red-600" title="Elimina"><Trash size={18} /></button>}
+                      {canUseSdi && !transmitted(document) && electronicStatus(document) !== 'invio_in_corso' && <button type="button" onClick={() => void openSdi(document)} className="p-1.5 text-orange-600" title="Invia a SdI via PEC"><Send size={18} /></button>}
+                      {canUseSdi && <button type="button" onClick={() => void downloadSdiXml(document)} className="p-1.5 text-gray-700 dark:text-gray-200" title="Scarica XML FatturaPA"><FileCheck2 size={18} /></button>}
+                      {hasPermission(`${permission}.edit`) && !transmitted(document) && <button type="button" onClick={() => { setEditing(document); setForm(normalizeDocument(document, kind)); showModal({ id: `${kind}-edit`, type: 'edit' }); }} className="p-1.5 text-yellow-600" title="Modifica"><Edit size={18} /></button>}
+                      {hasPermission(`${permission}.delete`) && !transmitted(document) && <button type="button" onClick={() => { setDeleting(document); showModal({ id: `${kind}-delete`, type: 'delete' }); }} className="p-1.5 text-red-600" title="Elimina"><Trash size={18} /></button>}
                     </div>
                   </td>
                 </tr>
@@ -506,6 +554,7 @@ const BusinessDocumentPage = ({
             {invoice && <div><span className="text-gray-500">Scadenza</span><p>{formatDate(viewing.dueDate)}</p></div>}
             <div><span className="text-gray-500">Cliente</span><p>{documentCustomer(viewing)}</p></div>
             <div><span className="text-gray-500">Stato</span><p>{viewing.status || '-'}</p></div>
+            {invoice && <div><span className="text-gray-500">Esito SdI</span><p>{electronicStatus(viewing).replace(/_/g, ' ')}</p></div>}
             <div><span className="text-gray-500">Totale</span><p className="font-semibold">{formatEuro(viewing.total)}</p></div>
             <div className="md:col-span-2"><span className="text-gray-500">Note</span><p className="whitespace-pre-wrap">{viewing.notes || '-'}</p></div>
           </div>
@@ -513,6 +562,15 @@ const BusinessDocumentPage = ({
             {(viewing.items || []).map((item, index) => <div key={index} className="flex justify-between gap-3 border-b py-2 text-sm dark:border-dark-border"><span>{item.description} · {item.quantity} × {formatEuro(item.unitPrice)}</span><strong>{formatEuro(totals([item], invoice).total)}</strong></div>)}
           </div>
           {!invoice && <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => sendQuote(viewing)} className="flex items-center gap-2 rounded-md bg-green-600 px-3 py-2 text-sm text-white"><MessageCircle size={16} /> WhatsApp</button><button type="button" onClick={() => openGmailDraft(viewing)} className="flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white"><Mail size={16} /> Crea bozza Gmail</button><button type="button" onClick={() => void downloadQuoteWord(viewing)} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><Download size={16} /> Word compilato</button></div>}
+          {invoice && canUseSdi && <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => void downloadSdiXml(viewing)} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><FileCheck2 size={16} /> Scarica XML FatturaPA</button>{!transmitted(viewing) && electronicStatus(viewing) !== 'invio_in_corso' && <button type="button" onClick={() => void openSdi(viewing)} className="flex items-center gap-2 rounded-md bg-orange-600 px-3 py-2 text-sm text-white"><Send size={16} /> Invia a SdI via PEC</button>}</div>}
+        </Modal>
+      )}
+
+      {isModalOpen('invoice-sdi-confirm') && sdiInvoice && (
+        <Modal title="Invio fiscale a SdI" onClose={() => { if (!sdiBusy) { hideModal('invoice-sdi-confirm'); setSdiInvoice(null); } }}>
+          <p className="mb-4 text-sm text-gray-700 dark:text-gray-300">Questa azione invia la fattura elettronica <strong>{sdiInvoice.invoiceNumber}</strong> a SdI tramite PEC Aruba. Dopo accettazione PEC, fattura non è più modificabile dal CRM.</p>
+          {sdiBusy && !sdiPreflight ? <p className="mb-4 text-sm text-gray-500">Controllo dati FatturaPA…</p> : sdiPreflight ? <div className="mb-4 rounded border border-green-300 bg-green-50 p-3 text-sm text-green-900 dark:bg-green-950/30 dark:text-green-100"><p>Controllo superato.</p><p>File: <strong>{sdiPreflight.fileName}</strong></p><p>Destinatario: {sdiPreflight.recipientCode}</p></div> : <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{sdiError || 'Correggi campi fiscali indicati dal controllo prima di inviare.'}</div>}
+          <div className="flex justify-end gap-3"><button type="button" disabled={sdiBusy} onClick={() => { hideModal('invoice-sdi-confirm'); setSdiInvoice(null); }} className="rounded-md border px-4 py-2">Annulla</button><button type="button" disabled={sdiBusy || !sdiPreflight?.valid} onClick={() => void sendSdi()} className="rounded-md bg-orange-600 px-4 py-2 text-white disabled:opacity-50">{sdiBusy ? 'Invio...' : 'Conferma invio SdI'}</button></div>
         </Modal>
       )}
 

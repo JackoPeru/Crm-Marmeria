@@ -1,12 +1,12 @@
 {
   "name": "crm-marmeria-server",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Server centrale LAN per CRM Marmeria",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --check index.js && node --check app.js && node --check gmail-drafts.js && node --check gmail-drafts.check.js && node --check google-drive-backups.js && node --check google-drive-backups.check.js && node --check self-update.js && node --check self-update.check.js && node --check database.js && node --check restore-safety.js && node --check mutation-barrier.js && node --check middleware/auth.js && node --check snapshot-compat.js && node --check tls-identity.js && node --check simple-lan.check.js && node --check smoke-test.js && node --check setup-test.js && node --check features.check.js && node access-policy.check.js && node restore-validation.check.js && node shutdown-runtime.check.js && node runtime-files.check.js && node tls-identity.check.js && node simple-lan.check.js && node index-bootstrap.check.js && node mutation-barrier.check.js && node self-update.check.js && node setup-test.js && node smoke-test.js create && node smoke-test.js update && node smoke-test.js conflict && node smoke-test.js snapshot && node smoke-test.js server && node features.check.js && node gmail-drafts.check.js && node google-drive-backups.check.js"
+    "test": "node --check index.js && node --check app.js && node --check gmail-drafts.js && node --check gmail-drafts.check.js && node --check google-drive-backups.js && node --check google-drive-backups.check.js && node --check sdi-pec.js && node --check sdi-pec.check.js && node --check self-update.js && node --check self-update.check.js && node --check database.js && node --check restore-safety.js && node --check mutation-barrier.js && node --check middleware/auth.js && node --check snapshot-compat.js && node --check tls-identity.js && node --check simple-lan.check.js && node --check smoke-test.js && node --check setup-test.js && node --check features.check.js && node access-policy.check.js && node restore-validation.check.js && node shutdown-runtime.check.js && node runtime-files.check.js && node tls-identity.check.js && node simple-lan.check.js && node index-bootstrap.check.js && node mutation-barrier.check.js && node self-update.check.js && node setup-test.js && node smoke-test.js create && node smoke-test.js update && node smoke-test.js conflict && node smoke-test.js snapshot && node smoke-test.js server && node features.check.js && node gmail-drafts.check.js && node google-drive-backups.check.js && node sdi-pec.check.js"
   },
   "license": "MIT",
   "dependencies": {
@@ -15,8 +15,11 @@
     "cors": "^2.8.5",
     "docxtemplater": "^3.67.7",
     "express": "^4.22.2",
+    "imapflow": "^1.6.5",
     "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.9.14",
     "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
     "pizzip": "^3.2.0",
     "selfsigned": "^5.5.0",
     "ws": "^8.21.0"
