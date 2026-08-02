@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Edit, Eye, Filter, Plus, Search, Trash, X } from 'lucide-react';
+import { Edit, Eye, FileSpreadsheet, Filter, Plus, Search, Trash, X } from 'lucide-react';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
+import CustomerHistoryModal, { HistoryImportModal } from '../components/CustomerHistoryModal';
 
 const emptyCustomer = {
   name: '',
@@ -70,7 +71,7 @@ const CustomerForm = ({ value, setValue }) => (
 const CustomersPage = () => {
   const { isModalOpen, showModal, hideModal, setBreadcrumbs } = useUI();
   const { customers = [], addCustomer, updateCustomer, deleteCustomer } = useData();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [vatFilter, setVatFilter] = useState('');
@@ -84,6 +85,8 @@ const CustomersPage = () => {
   const canCreate = hasPermission('clients.create');
   const canEdit = hasPermission('clients.edit');
   const canDelete = hasPermission('clients.delete');
+  const canCreatePayment = hasPermission('payments.create');
+  const canDeletePayment = hasPermission('payments.delete');
   const viewing = customers.find((customer) => String(customer.id) === String(viewingId));
 
   useEffect(() => {
@@ -165,11 +168,10 @@ const CustomersPage = () => {
     <div className="p-6 bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text min-h-screen">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-semibold">Clienti</h1>
-        {canCreate && (
-          <button onClick={() => { setForm(emptyCustomer); showModal({ id: 'addCustomer', type: 'add' }); }} className="px-4 py-2 bg-light-primary text-white rounded-md flex items-center gap-2">
-            <Plus className="w-5 h-5" /> Nuovo cliente
-          </button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {user?.role === 'admin' && <button onClick={() => showModal({ id: 'importHistory', type: 'import' })} className="px-4 py-2 border rounded-md flex items-center gap-2"><FileSpreadsheet className="w-5 h-5" /> Importa Excel</button>}
+          {canCreate && <button onClick={() => { setForm(emptyCustomer); showModal({ id: 'addCustomer', type: 'add' }); }} className="px-4 py-2 bg-light-primary text-white rounded-md flex items-center gap-2"><Plus className="w-5 h-5" /> Nuovo cliente</button>}
+        </div>
       </div>
 
       <div className="bg-white dark:bg-dark-card rounded-lg shadow-sm">
@@ -248,21 +250,8 @@ const CustomersPage = () => {
         </Modal>
       )}
 
-      {isModalOpen('viewCustomer') && viewing && (
-        <Modal title="Dettagli cliente" onClose={() => hideModal('viewCustomer')}>
-          <div className="space-y-2">
-            <p><strong>Nome:</strong> {viewing.name}</p>
-            <p><strong>Email:</strong> {viewing.email || '-'}</p>
-            <p><strong>Telefono:</strong> {viewing.phone || '-'}</p>
-            <p><strong>Indirizzo:</strong> {viewing.address || '-'}</p>
-            <p><strong>Tipo:</strong> {viewing.clientType || viewing.type || 'Privato'}</p>
-            <p><strong>Partita IVA:</strong> {viewing.vatNumber || '-'}</p>
-            <p><strong>Codice fiscale:</strong> {viewing.fiscalCode || '-'}</p>
-            <p><strong>Note:</strong> {viewing.notes || '-'}</p>
-          </div>
-          <div className="mt-6 flex justify-end"><button onClick={() => hideModal('viewCustomer')} className="px-4 py-2 border rounded-md">Chiudi</button></div>
-        </Modal>
-      )}
+      {isModalOpen('viewCustomer') && viewing && <CustomerHistoryModal customer={viewing} canCreatePayment={canCreatePayment} canDeletePayment={canDeletePayment} onClose={() => hideModal('viewCustomer')} />}
+      {isModalOpen('importHistory') && <HistoryImportModal onClose={() => hideModal('importHistory')} />}
 
       {isModalOpen('deleteCustomer') && (
         <Modal title="Conferma eliminazione" onClose={() => hideModal('deleteCustomer')}>

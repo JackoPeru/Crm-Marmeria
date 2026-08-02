@@ -17,12 +17,22 @@ async function run() {
   };
   try {
     const gmail = createGmailDraftService({ dataDir, callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail', fetchImpl: fakeFetch });
-    assert.deepEqual(gmail.status(), { configured: false, clientId: '', connected: false, email: null, callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail' });
+    assert.deepEqual(gmail.status(), {
+      configured: false,
+      clientId: '',
+      connected: false,
+      email: null,
+      callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail',
+      driveBackupReady: false,
+    });
     gmail.configure({ clientId: '123-test.apps.googleusercontent.com' });
     const authorization = gmail.beginAuthorization();
     const state = new URL(authorization.url).searchParams.get('state');
     await gmail.completeAuthorization({ code: 'code-ok', state });
     assert.equal(gmail.status().email, 'ufficio@example.com');
+    assert.equal(gmail.status().driveBackupReady, true);
+    assert.match(authorization.url, /drive\.file/);
+    assert.equal((await gmail.getDriveAccessToken()).token, 'renewed-token');
     assert.equal(fs.readFileSync(path.join(dataDir, 'gmail.json'), 'utf8').includes('refresh-token'), false);
     const draft = await gmail.createDraft({ to: 'cliente@example.com', subject: 'Preventivo PR-10', text: 'Buongiorno, allegato preventivo.', attachmentName: 'preventivo-PR-10.docx', attachment: Buffer.from('word-file') });
     assert.equal(draft.id, 'draft-123');

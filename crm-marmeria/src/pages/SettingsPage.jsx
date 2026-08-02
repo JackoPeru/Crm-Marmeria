@@ -86,11 +86,46 @@ const GmailPanel = () => {
       toast.success('Gmail scollegato');
     } catch (error) { toast.error(error.response?.data?.error || 'Scollegamento Gmail non riuscito'); } finally { setBusy(false); }
   };
-  return <Section icon={Mail} title="Gmail preventivi" iconClass="text-red-500">
+  return <Section icon={Mail} title="Account Google: Gmail e backup" iconClass="text-red-500">
     <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">Crea bozze Gmail con Word allegato. Invio finale sempre controllato in Gmail.</p>
     <label className="block"><span className="mb-1 block text-sm font-medium">Client ID OAuth Desktop Google</span><input value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="...apps.googleusercontent.com" className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
-    <p className="mt-2 text-xs text-gray-500">Google Cloud: abilita Gmail API, crea client OAuth con callback <code>https://127.0.0.1:3001/oauth2/gmail</code>, incolla qui Client ID. Collegamento solo dal PC server.</p>
-    <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={() => void save()} className="rounded-md border px-4 py-2 disabled:opacity-50">Salva Client ID</button>{status?.configured && !status?.connected && <button type="button" disabled={busy} onClick={() => void connect()} className="rounded-md bg-red-600 px-4 py-2 text-white disabled:opacity-50">Collega Gmail</button>}{status?.connected && <><span className="text-sm text-green-700 dark:text-green-400">Collegato: {status.email}</span><button type="button" disabled={busy} onClick={() => void disconnect()} className="rounded-md border border-red-300 px-4 py-2 text-red-700 disabled:opacity-50">Scollega</button></>}</div>
+    <p className="mt-2 text-xs text-gray-500">Google Cloud: abilita Gmail API e Google Drive API, crea client OAuth Desktop con callback <code>http://127.0.0.1:3001/oauth2/gmail</code>, incolla qui Client ID. Collegamento solo dal PC server.</p>
+    <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={() => void save()} className="rounded-md border px-4 py-2 disabled:opacity-50">Salva Client ID</button>{status?.configured && !status?.connected && <button type="button" disabled={busy} onClick={() => void connect()} className="rounded-md bg-red-600 px-4 py-2 text-white disabled:opacity-50">Collega Google</button>}{status?.connected && <><span className="text-sm text-green-700 dark:text-green-400">Collegato: {status.email}</span>{!status.driveBackupReady && <span className="text-sm text-amber-700 dark:text-amber-300">Ricollega Google per autorizzare Drive</span>}<button type="button" disabled={busy} onClick={() => void connect()} className="rounded-md border px-4 py-2 disabled:opacity-50">Ricollega</button><button type="button" disabled={busy} onClick={() => void disconnect()} className="rounded-md border border-red-300 px-4 py-2 text-red-700 disabled:opacity-50">Scollega</button></>}</div>
+  </Section>;
+};
+
+const GoogleDriveBackupPanel = () => {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try { setStatus((await apiClient.get('/integrations/google-drive-backups/status')).data); } catch (error) { toast.error(error.response?.data?.error || 'Stato backup Google Drive non disponibile'); }
+  };
+  useEffect(() => { void load(); }, []);
+  const save = async (changes) => {
+    setBusy(true);
+    try {
+      setStatus((await apiClient.put('/integrations/google-drive-backups/config', { ...status, ...changes })).data);
+      toast.success('Impostazioni backup Google Drive salvate');
+    } catch (error) { toast.error(error.response?.data?.error || 'Impostazioni backup non valide'); } finally { setBusy(false); }
+  };
+  const backupNow = async () => {
+    setBusy(true);
+    try {
+      const response = await apiClient.post('/integrations/google-drive-backups/run');
+      setStatus(response.data.status);
+      toast.success('Backup completo caricato su Google Drive');
+    } catch (error) { toast.error(error.response?.data?.error || 'Backup Google Drive non riuscito'); } finally { setBusy(false); }
+  };
+  return <Section icon={Database} title="Backup automatici Google Drive" iconClass="text-green-600">
+    <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">Copia completa di database, account e allegati nell’account Google collegato. Cartella: <strong>CRM Marmeria - Backup automatici</strong>.</p>
+    <div className="grid gap-4 md:grid-cols-3">
+      <label className="block"><span className="mb-1 block text-sm font-medium">Intervallo</span><select value={status?.intervalHours ?? 24} disabled={busy} onChange={(event) => void save({ intervalHours: Number(event.target.value) })} className="w-full rounded-md border p-2 dark:bg-dark-input"><option value={6}>Ogni 6 ore</option><option value={12}>Ogni 12 ore</option><option value={24}>Ogni giorno</option><option value={48}>Ogni 2 giorni</option><option value={168}>Ogni settimana</option></select></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Copie conservate</span><select value={status?.retentionCount ?? 30} disabled={busy} onChange={(event) => void save({ retentionCount: Number(event.target.value) })} className="w-full rounded-md border p-2 dark:bg-dark-input"><option value={7}>7 copie</option><option value={14}>14 copie</option><option value={30}>30 copie</option><option value={60}>60 copie</option><option value={90}>90 copie</option></select></label>
+      <div className="flex items-end gap-3"><button type="button" disabled={busy || !status?.connected || !status?.enabled} onClick={() => void backupNow()} className="rounded-md bg-green-600 px-4 py-2 text-white disabled:opacity-50">{busy ? 'Operazione...' : 'Backup ora'}</button><button type="button" disabled={busy} onClick={() => void save({ enabled: !status?.enabled })} className="rounded-md border px-4 py-2 disabled:opacity-50">{status?.enabled ? 'Disattiva' : 'Attiva'}</button></div>
+    </div>
+    <p className={`mt-4 text-sm ${status?.connected ? 'text-green-700 dark:text-green-400' : 'text-amber-700 dark:text-amber-300'}`}>{status?.connected ? `Google Drive autorizzato: ${status.accountEmail}` : 'Collega o ricollega account Google amministratore nella sezione sopra per autorizzare Google Drive.'}</p>
+    {status?.lastSuccessAt && <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">Ultimo upload: {new Date(status.lastSuccessAt).toLocaleString('it-IT')} · {status.remoteBackupCount} copie remote.</p>}
+    {status?.lastError && <p className="mt-2 text-sm text-red-700 dark:text-red-300">Ultimo errore: {status.lastError}</p>}
   </Section>;
 };
 
@@ -210,6 +245,7 @@ const SettingsPage = () => {
 
       {user?.role === 'admin' && <ServerUpdatePanel />}
       {user?.role === 'admin' && <GmailPanel />}
+      {user?.role === 'admin' && <GoogleDriveBackupPanel />}
       {user?.role === 'admin' && <UserManagement />}
 
       <Section icon={Bell} title="Notifiche" iconClass="text-green-500">

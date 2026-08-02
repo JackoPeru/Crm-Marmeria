@@ -32,6 +32,18 @@ jobs:
           
       - name: Install dependencies
         run: npm ci
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Typecheck frontend
+        run: npm run typecheck
+
+      - name: Test frontend
+        run: npm run test -- --run
+
+      - name: Test server
+        run: npm run server:test
         
       - name: Build
         run: npm run build

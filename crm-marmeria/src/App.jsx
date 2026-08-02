@@ -9,6 +9,8 @@ import {
   FileText,
   DollarSign,
   CalendarDays,
+  ClipboardList,
+  Truck,
   Settings as Cog,
 } from 'lucide-react';
 import { cacheService } from './services/cache';
@@ -29,16 +31,20 @@ import QuotesPage from './pages/QuotesPage';
 import InvoicesPage from './pages/InvoicesPage';
 import SettingsPage from './pages/SettingsPage';
 import CalendarPage from './pages/CalendarPage';
+import OperationsPage from './pages/OperationsPage';
+import SuppliersPage from './pages/SuppliersPage';
 import useUI from './hooks/useUI';
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, component: DashboardPage, permission: 'dashboard.view' },
   { id: 'customers', label: 'Clienti', icon: Users, component: CustomersPage, permission: 'clients.view' },
+  { id: 'suppliers', label: 'Fornitori', icon: Truck, component: SuppliersPage, permission: 'suppliers.view' },
   { id: 'projects', label: 'Progetti', icon: Briefcase, component: ProjectsPage, permission: 'projects.view' },
   { id: 'materials', label: 'Materiali', icon: Layers, component: MaterialsPage, permission: 'materials.view' },
   { id: 'quotes', label: 'Preventivi', icon: FileText, component: QuotesPage, permission: 'quotes.view' },
   { id: 'calendar', label: 'Calendario', icon: CalendarDays, component: CalendarPage, permission: 'calendar.view' },
   { id: 'invoices', label: 'Fatture', icon: DollarSign, component: InvoicesPage, permission: 'invoices.view' },
+  { id: 'operations', label: 'Operazioni', icon: ClipboardList, component: OperationsPage, permission: 'orders.view' },
   { id: 'settings', label: 'Impostazioni', icon: Cog, component: SettingsPage, permission: 'settings.view' },
 ];
 

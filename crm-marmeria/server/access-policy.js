@@ -1,16 +1,22 @@
 const TYPE_PERMISSIONS = {
   client: 'clients',
+  supplier: 'suppliers',
   order: 'orders',
   project: 'projects',
   material: 'materials',
   quote: 'quotes',
   quote_template: 'quotes',
   invoice: 'invoices',
+  payment: 'payments',
+  purchase_order: 'orders',
+  delivery_note: 'orders',
+  service_case: 'projects',
+  message_draft: 'clients',
   appointment: 'calendar',
 };
 
 const REQUIRED_ROLE_PERMISSIONS = {
-  admin: ['settings.view'],
+  admin: ['settings.view', 'payments.view', 'payments.create', 'payments.edit', 'payments.delete', 'suppliers.view', 'suppliers.create', 'suppliers.edit', 'suppliers.delete'],
 };
 
 const permissionForType = (type, action = 'view') => {

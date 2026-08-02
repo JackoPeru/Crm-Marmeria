@@ -5,6 +5,7 @@ import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
 import AttachmentsPanel from '../components/AttachmentsPanel';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
+import { apiClient } from '../services/api';
 
 const emptyProject = {
   name: '',
@@ -15,6 +16,12 @@ const emptyProject = {
   status: 'In Attesa',
   phase: '',
   productionNotes: '',
+  technicalSheet: { measurements: '', material: '', finish: '', survey: '', installation: '', accessNotes: '' },
+  costItems: [],
+  laborHours: 0,
+  laborRate: 0,
+  transportCost: 0,
+  otherCosts: 0,
 };
 
 const ProjectForm = ({ value, setValue, customers, operationalOnly = false }) => (
@@ -118,6 +125,27 @@ const ProjectForm = ({ value, setValue, customers, operationalOnly = false }) =>
         className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
       />
     </label>
+    {!operationalOnly && <>
+      <div className="md:col-span-2 mt-2 rounded-md border p-4">
+        <h3 className="mb-3 font-semibold">Scheda tecnica</h3>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {[
+            ['measurements', 'Misure'], ['material', 'Materiale / lastra'], ['finish', 'Finitura'], ['survey', 'Rilievo / sagoma'], ['installation', 'Posa'], ['accessNotes', 'Accesso e note cantiere'],
+          ].map(([key, label]) => <label key={key} className={key === 'accessNotes' ? 'md:col-span-2' : ''}><span className="mb-1 block text-sm font-medium">{label}</span><input value={value.technicalSheet?.[key] || ''} onChange={(event) => setValue({ ...value, technicalSheet: { ...(value.technicalSheet || {}), [key]: event.target.value } })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>)}
+        </div>
+      </div>
+      <div className="md:col-span-2 mt-2 rounded-md border p-4">
+        <h3 className="mb-3 font-semibold">Costi reali</h3>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <label><span className="mb-1 block text-sm">Ore manodopera</span><input type="number" min="0" step="0.25" value={value.laborHours ?? 0} onChange={(event) => setValue({ ...value, laborHours: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
+          <label><span className="mb-1 block text-sm">Costo ora</span><input type="number" min="0" step="0.01" value={value.laborRate ?? 0} onChange={(event) => setValue({ ...value, laborRate: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
+          <label><span className="mb-1 block text-sm">Trasporto</span><input type="number" min="0" step="0.01" value={value.transportCost ?? 0} onChange={(event) => setValue({ ...value, transportCost: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
+          <label><span className="mb-1 block text-sm">Altri costi</span><input type="number" min="0" step="0.01" value={value.otherCosts ?? 0} onChange={(event) => setValue({ ...value, otherCosts: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
+        </div>
+        <div className="mt-3 space-y-2">{(value.costItems || []).map((item, index) => <div key={index} className="grid grid-cols-1 gap-2 md:grid-cols-5"><input placeholder="Categoria" value={item.category || ''} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, category: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><input placeholder="Descrizione" value={item.description || ''} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, description: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><input type="number" min="0" step="0.01" placeholder="Quantità" value={item.quantity ?? 1} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, quantity: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><input type="number" min="0" step="0.01" placeholder="Costo unitario" value={item.unitCost ?? 0} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, unitCost: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><button type="button" onClick={() => setValue({ ...value, costItems: value.costItems.filter((_, itemIndex) => itemIndex !== index) })} className="rounded border text-red-600">Rimuovi</button></div>)}</div>
+        <button type="button" onClick={() => setValue({ ...value, costItems: [...(value.costItems || []), { category: 'Materiale', description: '', quantity: 1, unitCost: 0 }] })} className="mt-3 rounded border px-3 py-1.5 text-sm">Aggiungi costo</button>
+      </div>
+    </>}
   </div>
 );
 
@@ -146,6 +174,7 @@ const ProjectsPage = () => {
   const [selected, setSelected] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [financials, setFinancials] = useState(null);
 
   const canCreate = hasPermission('projects.create');
   const canEdit = hasPermission('projects.edit');
@@ -180,8 +209,12 @@ const ProjectsPage = () => {
     showModal({ id: 'editProject', type: 'edit' });
   };
 
-  const openView = (project) => {
+  const openView = async (project) => {
     setSelected(project);
+    setFinancials(null);
+    if (canViewFinancials) {
+      try { const response = await apiClient.get(`/projects/${encodeURIComponent(project.id)}/financials`); setFinancials(response.data); } catch { /* Messaggio non necessario: dati operativi restano visibili. */ }
+    }
     showModal({ id: 'viewProject', type: 'view' });
   };
 
@@ -311,7 +344,7 @@ const ProjectsPage = () => {
                   </td>
                   <td className="px-5 py-4">
                     <div className="flex justify-end gap-2">
-                      <button onClick={() => openView(project)} className="p-1.5 text-blue-600" title="Visualizza"><Eye size={19} /></button>
+                      <button onClick={() => void openView(project)} className="p-1.5 text-blue-600" title="Visualizza"><Eye size={19} /></button>
                       {canEdit && <button onClick={() => openEdit(project)} className="p-1.5 text-yellow-600" title="Modifica"><Edit size={19} /></button>}
                       {canDelete && (
                         <button
@@ -373,6 +406,8 @@ const ProjectsPage = () => {
             )}
             <div><span className="text-gray-500">Stato / fase</span><p>{selected.status} {selected.phase ? `· ${selected.phase}` : ''}</p></div>
             <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selected.productionNotes || '-'}</p></div>
+            <div className="md:col-span-2"><span className="text-gray-500">Scheda tecnica</span><p className="whitespace-pre-wrap">{Object.entries(selected.technicalSheet || {}).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`).join('\n') || '-'}</p></div>
+            {canViewFinancials && financials && <div className="md:col-span-2 rounded-md bg-gray-50 p-4 dark:bg-gray-800"><p className="font-semibold">Margine reale</p><div className="mt-2 grid grid-cols-2 gap-2 text-sm md:grid-cols-4"><p>Ricavi: {formatEuro(financials.revenue || financials.expectedRevenue)}</p><p>Costi: {formatEuro(financials.totalCost)}</p><p>Margine: {formatEuro(financials.margin)}</p><p>Margine %: {financials.marginPercent == null ? '-' : `${financials.marginPercent}%`}</p></div></div>}
           </div>
           <AttachmentsPanel entityType="project" entityId={String(selected.id)} />
           <div className="mt-6 flex justify-end"><button onClick={() => hideModal('viewProject')} className="px-4 py-2 border rounded-md">Chiudi</button></div>
