@@ -29,26 +29,65 @@ async function run() {
     id: 'admin-features', username: 'admin-features', email: 'admin@example.test',
     password: await bcrypt.hash('Feature-password-123', 4), firstName: 'Admin', lastName: 'Feature',
     role: 'admin', isActive: true,
-    permissions: ['clients.view', 'clients.create', 'projects.view', 'projects.create', 'projects.edit', 'quotes.view', 'quotes.create', 'quotes.edit', 'calendar.view', 'calendar.create', 'calendar.edit', 'calendar.delete'],
+    permissions: ['clients.view', 'clients.create', 'projects.view', 'projects.create', 'projects.edit', 'quotes.view', 'quotes.create', 'quotes.edit', 'calendar.view', 'calendar.create', 'calendar.edit', 'calendar.delete', 'settings.edit'],
   };
   fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify([user]));
   const gmailDrafts = [];
   const gmail = {
-    status: () => ({ configured: true, clientId: 'test.apps.googleusercontent.com', connected: true, email: 'ufficio@example.test', callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail' }),
+    status: () => ({ configured: true, clientId: 'test.apps.googleusercontent.com', connected: true, email: 'ufficio@example.test', callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail', driveBackupReady: false }),
     configure: () => gmail.status(),
     beginAuthorization: () => ({ url: 'https://accounts.google.com/test' }),
     completeAuthorization: async () => gmail.status(),
     disconnect: () => ({ configured: true, clientId: 'test.apps.googleusercontent.com', connected: false, email: null, callbackUrl: 'http://127.0.0.1:3001/oauth2/gmail' }),
     createDraft: async (payload) => { gmailDrafts.push(payload); return { id: 'gmail-draft-ci', gmailUrl: 'https://mail.google.com/mail/u/0/#drafts' }; },
+    getDriveAccessToken: async () => ({ token: 'drive-token' }),
+  };
+  let driveBackupConfig = {
+    enabled: true,
+    intervalHours: 24,
+    retentionCount: 30,
+    connected: true,
+    accountEmail: 'admin@example.test',
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastError: null,
+    lastSnapshotName: null,
+    remoteBackupCount: 0,
+  };
+  const googleDriveBackups = {
+    status: () => driveBackupConfig,
+    configure: (input) => {
+      driveBackupConfig = { ...driveBackupConfig, ...input };
+      return driveBackupConfig;
+    },
+    isDue: () => false,
+    uploadSnapshot: async ({ snapshot, snapshotDirectory }) => {
+      assert.ok(fs.existsSync(path.join(snapshotDirectory, 'crm-marmeria.db')));
+      driveBackupConfig = {
+        ...driveBackupConfig,
+        lastSuccessAt: new Date().toISOString(),
+        lastSnapshotName: snapshot.name,
+        remoteBackupCount: 1,
+      };
+      return { snapshot: snapshot.name, status: driveBackupConfig };
+    },
   };
   let instance;
   try {
-    instance = await createCrmServer({ port: 0, host: '127.0.0.1', dataDir, backupDir: path.join(root, 'backups'), attachmentsDir: path.join(root, 'attachments'), gmail });
+    instance = await createCrmServer({ port: 0, host: '127.0.0.1', dataDir, backupDir: path.join(root, 'backups'), attachmentsDir: path.join(root, 'attachments'), gmail, googleDriveBackups });
     const baseUrl = `http://127.0.0.1:${instance.port}/api`;
     const login = await requestJson(baseUrl, '/auth/login', { method: 'POST', body: JSON.stringify({ username: user.username, password: 'Feature-password-123' }) });
     assert.equal(login.response.status, 200);
     const headers = { Authorization: `Bearer ${login.body.token}` };
+    const driveBackupStatus = await requestJson(baseUrl, '/integrations/google-drive-backups/status', { headers });
+    assert.equal(driveBackupStatus.response.status, 200);
+    const driveBackupConfigResponse = await requestJson(baseUrl, '/integrations/google-drive-backups/config', { method: 'PUT', headers, body: JSON.stringify({ intervalHours: 6, retentionCount: 7 }) });
+    assert.equal(driveBackupConfigResponse.response.status, 200);
+    assert.equal(driveBackupConfigResponse.body.intervalHours, 6);
+    const driveBackupRun = await requestJson(baseUrl, '/integrations/google-drive-backups/run', { method: 'POST', headers });
+    assert.equal(driveBackupRun.response.status, 201);
+    assert.ok(driveBackupRun.body.snapshot);
     const customer = await requestJson(baseUrl, '/clients', { method: 'POST', headers, body: JSON.stringify({ name: 'Cliente Word', email: 'cliente@example.test', phone: '+39 333 1234567' }) });
     const project = await requestJson(baseUrl, '/projects', { method: 'POST', headers, body: JSON.stringify({ name: 'Cucina marmo', clientId: customer.body.id }) });
     assert.equal(customer.response.status, 201); assert.equal(project.response.status, 201);

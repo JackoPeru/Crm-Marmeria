@@ -9,6 +9,7 @@ const multer = require('multer');
 const WebSocket = require('ws');
 const { renderQuoteDocument } = require('./quote-document');
 const { createGmailDraftService } = require('./gmail-drafts');
+const { createGoogleDriveBackupService } = require('./google-drive-backups');
 const { CrmDatabase, ENTITY_TYPES } = require('./database');
 const {
   authenticateToken,
@@ -519,8 +520,11 @@ async function createCrmServer(options = {}) {
   const attachmentsDir = options.attachmentsDir || path.join(dataDir, 'attachments');
   const gmail = options.gmail || createGmailDraftService({
     dataDir,
-    callbackUrl: options.gmailCallbackUrl || `${options.tls ? 'https' : 'http'}://127.0.0.1:${requestedPort}/oauth2/gmail`,
+    // Google OAuth per app desktop accetta il callback solo sul loopback HTTP.
+    // Il codice resta locale, è monouso e vincolato al state/PKCE.
+    callbackUrl: options.gmailCallbackUrl || `http://127.0.0.1:${requestedPort}/oauth2/gmail`,
   });
+  const googleDriveBackups = options.googleDriveBackups || createGoogleDriveBackupService({ dataDir, google: gmail });
   const setupSecret = options.setupSecret || process.env.CRM_SETUP_SECRET || null;
   const webRoot = options.webRoot && fs.existsSync(path.join(options.webRoot, 'index.html'))
     ? path.resolve(options.webRoot)
@@ -588,6 +592,7 @@ async function createCrmServer(options = {}) {
       || route === '/api/backup/import'
       || route === '/api/backup/restore'
       || route === '/api/backup/clear'
+      || route === '/api/integrations/google-drive-backups/run'
       || /^\/api\/backups\/[^/]+\/restore$/.test(route);
   };
   app.use('/api', (req, res, next) => {
@@ -647,6 +652,22 @@ async function createCrmServer(options = {}) {
     if (snapshotLabel) await db.createSnapshot(snapshotLabel);
     return action();
   });
+  let googleDriveBackupQueue = Promise.resolve();
+  const runGoogleDriveBackup = (force = false) => {
+    const task = googleDriveBackupQueue.then(async () => {
+      if (!force && !googleDriveBackups.isDue()) return null;
+      const status = googleDriveBackups.status();
+      if (!status.enabled) throw Object.assign(new Error('Backup Google Drive disattivato'), { status: 409 });
+      if (!status.connected) throw Object.assign(new Error('Ricollega account Google dal PC server per autorizzare Google Drive'), { status: 409 });
+      const snapshot = await runMaintenance(null, () => db.createSnapshot('google-drive'));
+      return googleDriveBackups.uploadSnapshot({
+        snapshot,
+        snapshotDirectory: path.join(backupDir, snapshot.name),
+      });
+    });
+    googleDriveBackupQueue = task.catch(() => undefined);
+    return task;
+  };
 
   app.get('/api/health', (req, res) => res.json({
     status: mutationBarrier.isMaintenance ? 'maintenance' : 'ok',
@@ -1441,6 +1462,21 @@ async function createCrmServer(options = {}) {
       return respondError(res, error);
     }
   });
+  app.get('/api/integrations/google-drive-backups/status', authenticateToken, requirePermission('settings.edit'), (req, res) => res.json(googleDriveBackups.status()));
+  app.put('/api/integrations/google-drive-backups/config', authenticateToken, requirePermission('settings.edit'), (req, res) => {
+    try {
+      return res.json(googleDriveBackups.configure(req.body || {}));
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+  app.post('/api/integrations/google-drive-backups/run', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
+    try {
+      return res.status(201).json(await runGoogleDriveBackup(true));
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
   app.get('/oauth2/gmail', async (req, res) => {
     try {
       if (!isLoopback(req)) return res.status(403).type('text').send('Autorizzazione Gmail consentita solo dal PC server.');
@@ -1632,20 +1668,28 @@ async function createCrmServer(options = {}) {
   };
   await ensureDailyBackup();
   const backupTimer = setInterval(ensureDailyBackup, 60 * 60 * 1000);
+  const googleDriveBackupTimer = setInterval(() => {
+    void runGoogleDriveBackup(false).catch((error) => console.error('Backup Google Drive automatico fallito:', error.message));
+  }, 15 * 60 * 1000);
+  void runGoogleDriveBackup(false).catch((error) => console.error('Backup Google Drive automatico fallito:', error.message));
 
   return {
     app,
     server,
     db,
+    googleDriveBackups,
     port: actualPort,
     host,
-    close: async () => gracefulShutdown({
-      barrier: mutationBarrier,
-      server,
-      websocketServer: realtime.wss,
-      database: db,
-      timer: backupTimer,
-    }),
+    close: async () => {
+      clearInterval(googleDriveBackupTimer);
+      return gracefulShutdown({
+        barrier: mutationBarrier,
+        server,
+        websocketServer: realtime.wss,
+        database: db,
+        timer: backupTimer,
+      });
+    },
   };
 }
 

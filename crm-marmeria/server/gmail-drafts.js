@@ -4,6 +4,8 @@ const path = require('path');
 const { writePrivateTextAtomically } = require('./runtime-files');
 
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.compose';
+const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const GOOGLE_SCOPES = `${GMAIL_SCOPE} ${DRIVE_FILE_SCOPE}`;
 const AUTHORIZATION_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GMAIL_PROFILE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/profile';
@@ -68,9 +70,10 @@ const createGmailDraftService = ({ dataDir, callbackUrl, fetchImpl = global.fetc
         clientId: String(raw.clientId || '').trim(),
         email: String(raw.email || '').trim(),
         token: raw.token && typeof raw.token === 'object' ? raw.token : null,
+        scopeVersion: Number(raw.scopeVersion || 1),
       };
     } catch {
-      return { clientId: '', email: '', token: null };
+      return { clientId: '', email: '', token: null, scopeVersion: 1 };
     }
   };
   const writeConfig = (value) => writePrivateTextAtomically(configPath, `${JSON.stringify(value, null, 2)}\n`);
@@ -100,7 +103,15 @@ const createGmailDraftService = ({ dataDir, callbackUrl, fetchImpl = global.fetc
   };
   const status = () => {
     const config = readConfig();
-    return { configured: Boolean(config.clientId), clientId: config.clientId || '', connected: Boolean(config.token && config.email), email: config.email || null, callbackUrl };
+    const connected = Boolean(config.token && config.email);
+    return {
+      configured: Boolean(config.clientId),
+      clientId: config.clientId || '',
+      connected,
+      email: config.email || null,
+      callbackUrl,
+      driveBackupReady: connected && config.scopeVersion >= 2,
+    };
   };
   const configure = ({ clientId }) => {
     const normalized = String(clientId || '').trim();
@@ -109,7 +120,12 @@ const createGmailDraftService = ({ dataDir, callbackUrl, fetchImpl = global.fetc
     }
     const previous = readConfig();
     const keepConnection = previous.clientId === normalized;
-    writeConfig({ clientId: normalized, email: keepConnection ? previous.email : '', token: keepConnection ? previous.token : null });
+    writeConfig({
+      clientId: normalized,
+      email: keepConnection ? previous.email : '',
+      token: keepConnection ? previous.token : null,
+      scopeVersion: keepConnection ? previous.scopeVersion : 1,
+    });
     return status();
   };
   const beginAuthorization = () => {
@@ -124,7 +140,7 @@ const createGmailDraftService = ({ dataDir, callbackUrl, fetchImpl = global.fetc
       client_id: config.clientId,
       redirect_uri: callbackUrl,
       response_type: 'code',
-      scope: GMAIL_SCOPE,
+      scope: GOOGLE_SCOPES,
       access_type: 'offline',
       prompt: 'consent',
       state,
@@ -154,7 +170,12 @@ const createGmailDraftService = ({ dataDir, callbackUrl, fetchImpl = global.fetc
     if (!profile.ok) return apiError(profile, 'Impossibile leggere account Gmail');
     const email = String((await profile.json()).emailAddress || '').trim();
     if (!validEmail(email)) throw integrationError('Google non ha restituito indirizzo Gmail valido', 502);
-    writeConfig({ clientId: config.clientId, email, token: encrypt({ refreshToken: tokens.refresh_token }) });
+    writeConfig({
+      clientId: config.clientId,
+      email,
+      token: encrypt({ refreshToken: tokens.refresh_token }),
+      scopeVersion: 2,
+    });
     return status();
   };
   const accessToken = async () => {
@@ -184,10 +205,31 @@ const createGmailDraftService = ({ dataDir, callbackUrl, fetchImpl = global.fetc
   };
   const disconnect = () => {
     const config = readConfig();
-    writeConfig({ clientId: config.clientId, email: '', token: null });
+    writeConfig({ clientId: config.clientId, email: '', token: null, scopeVersion: 1 });
     return status();
   };
-  return { status, configure, beginAuthorization, completeAuthorization, createDraft, disconnect };
+  const getDriveAccessToken = async () => {
+    const config = readConfig();
+    if (config.scopeVersion < 2) {
+      throw integrationError('Ricollega account Google per autorizzare Backup Google Drive', 409);
+    }
+    return accessToken();
+  };
+  return {
+    status,
+    configure,
+    beginAuthorization,
+    completeAuthorization,
+    createDraft,
+    getDriveAccessToken,
+    disconnect,
+  };
 };
 
-module.exports = { GMAIL_SCOPE, createMimeDraft, createGmailDraftService };
+module.exports = {
+  GMAIL_SCOPE,
+  DRIVE_FILE_SCOPE,
+  GOOGLE_SCOPES,
+  createMimeDraft,
+  createGmailDraftService,
+};
