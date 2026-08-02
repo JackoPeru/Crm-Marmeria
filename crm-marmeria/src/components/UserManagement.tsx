@@ -25,7 +25,7 @@ interface UserForm {
   isActive: boolean;
 }
 
-const CRUD_SECTIONS = ['clients', 'projects', 'materials', 'quotes', 'invoices', 'orders', 'calendar'];
+const CRUD_SECTIONS = ['clients', 'suppliers', 'projects', 'materials', 'quotes', 'invoices', 'payments', 'orders', 'calendar'];
 const allCrudPermissions = CRUD_SECTIONS.flatMap((section) => [
   `${section}.view`,
   `${section}.create`,
@@ -72,10 +72,12 @@ const permissionLabel = (permission: string) => {
   const sections: Record<string, string> = {
     dashboard: 'Dashboard',
     clients: 'Clienti',
+    suppliers: 'Fornitori',
     projects: 'Progetti',
     materials: 'Materiali',
     quotes: 'Preventivi',
     invoices: 'Fatture',
+    payments: 'Incassi',
     orders: 'Ordini',
     calendar: 'Calendario',
     settings: 'Impostazioni',

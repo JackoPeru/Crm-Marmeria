@@ -13,7 +13,7 @@ const {
   validateUsers,
 } = require('./restore-safety');
 
-const ENTITY_TYPES = ['client', 'order', 'project', 'material', 'quote', 'invoice', 'appointment', 'quote_template'];
+const ENTITY_TYPES = ['client', 'supplier', 'order', 'project', 'material', 'quote', 'invoice', 'payment', 'purchase_order', 'delivery_note', 'service_case', 'message_draft', 'appointment', 'quote_template'];
 const DOCUMENT_CONFIG = {
   quote: { field: 'quoteNumber', prefix: 'PREV' },
   invoice: { field: 'invoiceNumber', prefix: 'FATT' },
@@ -151,7 +151,7 @@ class CrmDatabase {
   normalizeData(type, input) {
     const data = clone(input) || {};
 
-    for (const key of ['id', 'clientId', 'customerId', 'projectId', 'quoteId']) {
+    for (const key of ['id', 'clientId', 'customerId', 'supplierId', 'projectId', 'quoteId', 'invoiceId']) {
       if (data[key] != null && data[key] !== '') data[key] = String(data[key]);
     }
 
@@ -205,12 +205,77 @@ class CrmDatabase {
       };
     }
 
+    if (type === 'supplier') {
+      return {
+        ...data,
+        type: 'supplier', entityType: 'supplier',
+        name: String(data.name || '').trim(),
+        email: String(data.email || '').trim(), phone: String(data.phone || '').trim(),
+        address: String(data.address || '').trim(), vatNumber: String(data.vatNumber || '').trim(),
+        fiscalCode: String(data.fiscalCode || '').trim(), notes: String(data.notes || '').trim(),
+      };
+    }
+
     if (type === 'quote_template') {
       return {
         ...data,
         type: 'quote_template',
         entityType: 'quote_template',
         name: String(data.name || ''),
+      };
+    }
+
+    if (type === 'payment') {
+      return {
+        ...data,
+        type: 'payment',
+        entityType: 'payment',
+        date: String(data.date || '').slice(0, 10),
+        amount: Number(numeric(data.amount).toFixed(2)),
+        method: String(data.method || '').trim(),
+        reference: String(data.reference || '').trim(),
+        notes: String(data.notes || '').trim(),
+        source: String(data.source || 'manual').trim() || 'manual',
+      };
+    }
+
+    if (type === 'project') {
+      const costItems = Array.isArray(data.costItems) ? data.costItems.map((item) => ({
+        category: String(item.category || 'Altro').trim(),
+        description: String(item.description || '').trim(),
+        quantity: numeric(item.quantity ?? 1),
+        unitCost: numeric(item.unitCost ?? item.cost),
+      })) : [];
+      const technicalSheet = data.technicalSheet && typeof data.technicalSheet === 'object'
+        ? Object.fromEntries(Object.entries(data.technicalSheet).map(([key, value]) => [key, String(value || '').trim()]))
+        : {};
+      return {
+        ...data,
+        type: 'project', entityType: 'project',
+        title: data.title ?? data.name ?? '', name: data.name ?? data.title ?? '',
+        deadline: data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '',
+        endDate: data.endDate ?? data.deadline ?? data.estimatedDelivery ?? '',
+        budget: numeric(data.budget), costItems, technicalSheet,
+        laborHours: numeric(data.laborHours), laborRate: numeric(data.laborRate),
+        transportCost: numeric(data.transportCost), otherCosts: numeric(data.otherCosts),
+      };
+    }
+
+    if (['purchase_order', 'delivery_note', 'service_case', 'message_draft'].includes(type)) {
+      return {
+        ...data,
+        type,
+        entityType: type,
+        title: String(data.title || data.subject || '').trim(),
+        date: String(data.date || '').slice(0, 10),
+        status: String(data.status || '').trim(),
+        amount: data.amount == null ? undefined : Number(numeric(data.amount).toFixed(2)),
+        items: Array.isArray(data.items) ? data.items.map((item) => ({
+          ...item,
+          description: String(item.description || '').trim(),
+          quantity: numeric(item.quantity),
+          unitPrice: numeric(item.unitPrice),
+        })) : [],
       };
     }
 
@@ -384,6 +449,55 @@ class CrmDatabase {
       `).run(type, id, JSON.stringify(data), timestamp, timestamp);
       this.writeAudit({ user, type, id, action: 'create', previous: null, next: data });
       const response = { item: data };
+      this.storeOperation(operationId, response);
+      return response;
+    })();
+  }
+
+  importHistory(operations, user, operationId) {
+    const replay = this.getOperation(operationId);
+    if (replay) return { ...replay, replayed: true };
+    if (!Array.isArray(operations) || !operations.length) {
+      const error = new Error('Nessun dato valido da importare');
+      error.status = 400;
+      throw error;
+    }
+
+    return this.db.transaction(() => {
+      const imported = [];
+      const skipped = [];
+      for (const operation of operations) {
+        const type = String(operation?.type || '');
+        const input = operation?.input;
+        this.assertType(type);
+        if (!input || typeof input !== 'object') {
+          const error = new Error('Riga di importazione non valida');
+          error.status = 400;
+          throw error;
+        }
+        const id = String(input.id || crypto.randomUUID());
+        if (this.get(type, id)) {
+          skipped.push({ type, id });
+          continue;
+        }
+        const timestamp = now();
+        let payload = this.normalizeData(type, { ...clone(input), id });
+        payload = this.prepareDocumentNumber(type, payload, null, true);
+        const data = {
+          ...payload,
+          id,
+          version: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        this.db.prepare(`
+          INSERT INTO entities(entity_type, id, data_json, version, created_at, updated_at)
+          VALUES (?, ?, ?, 1, ?, ?)
+        `).run(type, id, JSON.stringify(data), timestamp, timestamp);
+        this.writeAudit({ user, type, id, action: 'import.excel', previous: null, next: data });
+        imported.push(data);
+      }
+      const response = { imported, skipped };
       this.storeOperation(operationId, response);
       return response;
     })();
@@ -727,13 +841,31 @@ class CrmDatabase {
       }
     }
 
-    this.db.transaction(() => {
-      this.db.prepare('DELETE FROM attachments').run();
+    const orphanedAttachments = this.db.transaction(() => {
       this.db.prepare('DELETE FROM operations').run();
       this.db.prepare('DELETE FROM entities').run();
       for (const type of ENTITY_TYPES) {
         backup.data[type].forEach((item) => this.importEntity(type, item));
       }
+      // Il formato JSON esporta dati strutturati, non file binari. Conserva
+      // gli allegati dei record che restano nel JSON invece di cancellarli
+      // silenziosamente durante un normale scambio dati.
+      const orphaned = this.db.prepare(`
+        SELECT * FROM attachments
+        WHERE NOT EXISTS (
+          SELECT 1 FROM entities
+          WHERE entities.entity_type = attachments.entity_type
+            AND entities.id = attachments.entity_id
+        )
+      `).all().map((row) => this.attachmentRecord(row));
+      this.db.prepare(`
+        DELETE FROM attachments
+        WHERE NOT EXISTS (
+          SELECT 1 FROM entities
+          WHERE entities.entity_type = attachments.entity_type
+            AND entities.id = attachments.entity_id
+        )
+      `).run();
       this.writeAudit({
         user,
         type: 'database',
@@ -742,10 +874,11 @@ class CrmDatabase {
         previous: null,
         next: { exportedAt: backup.exportedAt },
       });
+      return orphaned;
     })();
 
-    fs.rmSync(this.attachmentsDir, { recursive: true, force: true });
-    fs.mkdirSync(this.attachmentsDir, { recursive: true });
+    this.removeAttachmentFiles(orphanedAttachments);
+    return { preservedAttachments: this.db.prepare('SELECT COUNT(*) AS count FROM attachments').get().count };
   }
 
   snapshotName(label) {

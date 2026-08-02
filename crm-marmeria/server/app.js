@@ -7,6 +7,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const WebSocket = require('ws');
+const PizZip = require('pizzip');
 const { renderQuoteDocument } = require('./quote-document');
 const { createGmailDraftService } = require('./gmail-drafts');
 const { createGoogleDriveBackupService } = require('./google-drive-backups');
@@ -39,12 +40,18 @@ const {
 
 const ROUTES = {
   clients: { type: 'client', permission: 'clients' },
+  suppliers: { type: 'supplier', permission: 'suppliers' },
   orders: { type: 'order', permission: 'orders' },
   projects: { type: 'project', permission: 'projects' },
   materials: { type: 'material', permission: 'materials' },
   quotes: { type: 'quote', permission: 'quotes' },
   'quote-templates': { type: 'quote_template', permission: 'quotes' },
   invoices: { type: 'invoice', permission: 'invoices' },
+  payments: { type: 'payment', permission: 'payments' },
+  'purchase-orders': { type: 'purchase_order', permission: 'orders' },
+  'delivery-notes': { type: 'delivery_note', permission: 'orders' },
+  'service-cases': { type: 'service_case', permission: 'projects' },
+  'message-drafts': { type: 'message_draft', permission: 'clients' },
   appointments: { type: 'appointment', permission: 'calendar' },
 };
 
@@ -74,7 +81,7 @@ const WORKER_FIELDS = {
 
 const FINANCIAL_FIELDS = new Set([
   'amount', 'bankAccount', 'budget', 'cost', 'discount', 'fiscalCode',
-  'iban', 'margin', 'minPrice', 'paymentDetails', 'price', 'profit',
+  'iban', 'margin', 'minPrice', 'paymentDetails', 'price', 'profit', 'costItems',
   'purchasePrice', 'salePrice', 'subtotal', 'taxRate', 'taxTotal', 'total',
   'totalPrice', 'unitPrice', 'vatNumber',
 ]);
@@ -223,7 +230,7 @@ const redactFinancials = (value) => {
 };
 const presentEntity = (user, type, item) => {
   if (item == null || canViewFinancials(user)) return item;
-  return ['project', 'order', 'material', 'quote', 'invoice', 'client'].includes(type)
+  return ['project', 'order', 'material', 'quote', 'invoice', 'payment', 'purchase_order', 'delivery_note', 'service_case', 'message_draft', 'client', 'supplier'].includes(type)
     ? redactFinancials(item)
     : item;
 };
@@ -235,7 +242,7 @@ const presentAudit = (user, item) => ({
 
 const normalize = (type, raw = {}, { defaults = false } = {}) => {
   const data = { ...raw };
-  for (const key of ['id', 'clientId', 'customerId', 'projectId', 'quoteId', 'materialId']) {
+  for (const key of ['id', 'clientId', 'customerId', 'supplierId', 'projectId', 'quoteId', 'invoiceId', 'materialId']) {
     if (data[key] != null && data[key] !== '') data[key] = String(data[key]);
   }
   if (Array.isArray(data.items)) {
@@ -281,6 +288,12 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     data.entityType = 'appointment';
     if (hasOwn(data, 'title')) data.title = String(data.title || '').trim();
   }
+  if (type === 'supplier') {
+    data.type = 'supplier'; data.entityType = 'supplier';
+    for (const key of ['name', 'email', 'phone', 'address', 'vatNumber', 'fiscalCode', 'notes']) {
+      if (hasOwn(data, key)) data[key] = String(data[key] || '').trim();
+    }
+  }
   if (type === 'quote_template') {
     data.type = 'quote_template';
     data.entityType = 'quote_template';
@@ -300,6 +313,37 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     if (type === 'project' && hasOwn(data, 'budget')) data.budget = numeric(data.budget, { strict: true, field: 'budget' });
     if (hasAny(data, ['amount', 'total'])) data.amount = numeric(data.amount ?? data.total, { strict: true, field: 'importo' });
   }
+  if (type === 'payment') {
+    data.type = 'payment';
+    data.entityType = 'payment';
+    if (hasOwn(data, 'amount')) data.amount = numeric(data.amount, { strict: true, field: 'importo incasso' });
+    for (const key of ['date', 'method', 'reference', 'notes', 'source']) {
+      if (hasOwn(data, key)) data[key] = String(data[key] || '').trim();
+    }
+  }
+  if (type === 'project') {
+    if (hasOwn(data, 'technicalSheet') && (!data.technicalSheet || typeof data.technicalSheet !== 'object' || Array.isArray(data.technicalSheet))) {
+      const error = new Error('Scheda tecnica non valida'); error.status = 400; throw error;
+    }
+    if (hasOwn(data, 'technicalSheet')) data.technicalSheet = Object.fromEntries(Object.entries(data.technicalSheet).map(([key, value]) => [key, String(value || '').trim()]));
+    if (hasOwn(data, 'costItems')) {
+      if (!Array.isArray(data.costItems)) { const error = new Error('Costi progetto non validi'); error.status = 400; throw error; }
+      data.costItems = data.costItems.map((item) => ({
+        category: String(item?.category || 'Altro').trim(), description: String(item?.description || '').trim(),
+        quantity: numeric(item?.quantity ?? 1, { strict: true, field: 'quantità costo' }),
+        unitCost: numeric(item?.unitCost ?? item?.cost, { strict: true, field: 'costo unitario' }),
+      }));
+    }
+    for (const key of ['laborHours', 'laborRate', 'transportCost', 'otherCosts']) {
+      if (hasOwn(data, key)) data[key] = numeric(data[key], { strict: true, field: key });
+    }
+  }
+  if (['purchase_order', 'delivery_note', 'service_case', 'message_draft'].includes(type)) {
+    data.type = type; data.entityType = type;
+    if (hasOwn(data, 'title') || hasOwn(data, 'subject')) data.title = String(data.title || data.subject || '').trim();
+    if (hasOwn(data, 'date')) data.date = String(data.date || '').slice(0, 10);
+    if (hasOwn(data, 'amount')) data.amount = numeric(data.amount, { strict: true, field: 'importo' });
+  }
   return data;
 };
 
@@ -318,10 +362,16 @@ const sanitizePatch = (user, type, input = {}) => {
 const validateEntity = (type, payload) => {
   const required = {
     client: ['name'],
+    supplier: ['name'],
     material: ['name'],
     project: ['name'],
     quote: ['date', 'customerId'],
     invoice: ['date', 'customerId'],
+    payment: ['clientId', 'date', 'amount'],
+    purchase_order: ['title', 'supplier', 'date'],
+    delivery_note: ['title', 'date'],
+    service_case: ['clientId', 'title', 'date'],
+    message_draft: ['clientId', 'message'],
     order: ['title'],
     appointment: ['title', 'startAt', 'endAt'],
     quote_template: ['name'],
@@ -375,6 +425,36 @@ const validateEntity = (type, payload) => {
     error.status = 400;
     throw error;
   }
+  if (type === 'payment') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(payload.date || '')) || !parseLocalDay(payload.date)) {
+      const error = new Error('Data incasso non valida');
+      error.status = 400;
+      throw error;
+    }
+    if (!Number.isFinite(payload.amount) || payload.amount <= 0) {
+      const error = new Error('L\'importo incassato deve essere maggiore di zero');
+      error.status = 400;
+      throw error;
+    }
+  }
+  if (type === 'project') {
+    for (const item of payload.costItems || []) {
+      if (item.quantity < 0 || item.unitCost < 0) {
+        const error = new Error('I costi progetto non possono essere negativi'); error.status = 400; throw error;
+      }
+    }
+    for (const key of ['laborHours', 'laborRate', 'transportCost', 'otherCosts']) {
+      if (payload[key] != null && numeric(payload[key]) < 0) {
+        const error = new Error(`${key} non può essere negativo`); error.status = 400; throw error;
+      }
+    }
+  }
+  if (['purchase_order', 'delivery_note', 'service_case', 'message_draft'].includes(type) && payload.date && !parseLocalDay(payload.date)) {
+    const error = new Error('Data non valida'); error.status = 400; throw error;
+  }
+  if (type === 'message_draft' && String(payload.channel || 'whatsapp') !== 'whatsapp') {
+    const error = new Error('Canale bozza non supportato'); error.status = 400; throw error;
+  }
   if (type === 'appointment') {
     const start = new Date(payload.startAt);
     const end = new Date(payload.endAt);
@@ -384,6 +464,75 @@ const validateEntity = (type, payload) => {
       throw error;
     }
   }
+};
+
+const validatePaymentLinks = (db, payload) => {
+  const client = db.get('client', payload.clientId);
+  if (!client) {
+    const error = new Error('Cliente dell\'incasso non trovato');
+    error.status = 400;
+    throw error;
+  }
+  if (!payload.invoiceId) return;
+  const invoice = db.get('invoice', payload.invoiceId);
+  if (!invoice) {
+    const error = new Error('Fattura dell\'incasso non trovata');
+    error.status = 400;
+    throw error;
+  }
+  if (String(invoice.customerId) !== String(payload.clientId)) {
+    const error = new Error('La fattura selezionata non appartiene al cliente');
+    error.status = 400;
+    throw error;
+  }
+};
+
+const projectFinancialSummary = (db, projectId) => {
+  const project = db.get('project', projectId);
+  if (!project) return null;
+  const invoices = db.list('invoice').filter((item) => String(item.projectId || '') === String(project.id));
+  const revenue = invoices.reduce((sum, item) => sum + Number(item.total ?? item.amount ?? 0), 0);
+  const materialCosts = (project.costItems || []).reduce(
+    (sum, item) => sum + Number(item.quantity || 0) * Number(item.unitCost || 0), 0,
+  );
+  const laborCost = Number(project.laborHours || 0) * Number(project.laborRate || 0);
+  const transportCost = Number(project.transportCost || 0);
+  const otherCosts = Number(project.otherCosts || 0);
+  const totalCost = materialCosts + laborCost + transportCost + otherCosts;
+  const expectedRevenue = Number(project.budget || 0);
+  const basis = revenue > 0 ? revenue : expectedRevenue;
+  const margin = basis - totalCost;
+  return {
+    revenue: Number(revenue.toFixed(2)), expectedRevenue: Number(expectedRevenue.toFixed(2)),
+    materialCosts: Number(materialCosts.toFixed(2)), laborCost: Number(laborCost.toFixed(2)),
+    transportCost: Number(transportCost.toFixed(2)), otherCosts: Number(otherCosts.toFixed(2)),
+    totalCost: Number(totalCost.toFixed(2)), margin: Number(margin.toFixed(2)),
+    marginPercent: basis > 0 ? Number(((margin / basis) * 100).toFixed(2)) : null,
+  };
+};
+
+const invoiceSchedule = (db) => {
+  const today = localToday();
+  const soon = localDateKey(addDays(parseLocalDay(today), 7));
+  const paymentsByInvoice = db.list('payment').reduce((result, payment) => {
+    if (payment.invoiceId) result[payment.invoiceId] = (result[payment.invoiceId] || 0) + Number(payment.amount || 0);
+    return result;
+  }, {});
+  return db.list('invoice').map((invoice) => {
+    const total = Number(invoice.total ?? invoice.amount ?? 0);
+    const paid = Number(paymentsByInvoice[invoice.id] || 0);
+    const remaining = invoice.status === 'Pagata' ? 0 : Math.max(0, total - paid);
+    const dueDate = localDateKey(invoice.dueDate || invoice.date);
+    const kind = remaining <= 0 ? 'paid' : dueDate < today ? 'overdue' : dueDate <= soon ? 'due_soon' : 'open';
+    return { ...invoice, dueDate, paid: Number(paid.toFixed(2)), remaining: Number(remaining.toFixed(2)), kind };
+  }).filter((item) => item.kind !== 'paid').sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+};
+
+const whatsappDestination = (phone) => {
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.length === 10 && digits.startsWith('3')) digits = `39${digits}`;
+  return digits;
 };
 
 const expectedVersionFrom = (req, required = false) => {
@@ -421,6 +570,12 @@ const normalizeBackupPayload = (raw) => {
       ...raw,
       data: {
         ...data,
+        supplier: Array.isArray(data.supplier) ? data.supplier : [],
+        payment: Array.isArray(data.payment) ? data.payment : [],
+        purchase_order: Array.isArray(data.purchase_order) ? data.purchase_order : [],
+        delivery_note: Array.isArray(data.delivery_note) ? data.delivery_note : [],
+        service_case: Array.isArray(data.service_case) ? data.service_case : [],
+        message_draft: Array.isArray(data.message_draft) ? data.message_draft : [],
         appointment: Array.isArray(data.appointment) ? data.appointment : [],
         quote_template: Array.isArray(data.quote_template) ? data.quote_template : [],
       },
@@ -443,13 +598,140 @@ const normalizeBackupPayload = (raw) => {
     ...raw,
     data: {
       client: Array.isArray(data.clients) ? data.clients : [],
+      supplier: [],
       order: legacyOrders.filter((item) => !item?.type || item.type === 'order'),
       project: Array.isArray(data.projects) ? data.projects : typedOrders('project'),
       material: Array.isArray(data.materials) ? data.materials : [],
       quote: Array.isArray(data.quotes) ? data.quotes : typedOrders('quote'),
       invoice: Array.isArray(data.invoices) ? data.invoices : typedOrders('invoice'),
+      payment: [],
+      purchase_order: [],
+      delivery_note: [],
+      service_case: [],
+      message_draft: [],
+      appointment: [],
+      quote_template: [],
     },
   };
+};
+
+const decodeXml = (value) => String(value || '')
+  .replace(/&amp;/g, '&')
+  .replace(/&lt;/g, '<')
+  .replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"')
+  .replace(/&#39;/g, "'");
+const columnIndex = (reference) => {
+  const letters = String(reference || '').match(/[A-Z]+/i)?.[0]?.toUpperCase() || '';
+  return [...letters].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0) - 1;
+};
+const parseCsvRow = (line) => {
+  const cells = [];
+  let cell = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && quoted && line[index + 1] === '"') {
+      cell += '"'; index += 1;
+    } else if (character === '"') quoted = !quoted;
+    else if (character === ';' && !quoted) { cells.push(cell.trim()); cell = ''; }
+    else cell += character;
+  }
+  cells.push(cell.trim());
+  return cells;
+};
+const parseCsv = (buffer) => String(buffer || '').replace(/^\uFEFF/, '')
+  .split(/\r?\n/).filter((row) => row.trim()).map(parseCsvRow);
+const extractXlsxRows = (buffer) => {
+  const zip = new PizZip(buffer);
+  const sharedStringsXml = zip.file('xl/sharedStrings.xml')?.asText() || '';
+  const sharedStrings = [...sharedStringsXml.matchAll(/<si>([\s\S]*?)<\/si>/g)]
+    .map((match) => decodeXml([...match[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)]
+      .map((item) => item[1]).join('')));
+  const worksheet = zip.file('xl/worksheets/sheet1.xml');
+  if (!worksheet) throw Object.assign(new Error('Il file Excel non contiene il primo foglio leggibile'), { status: 400 });
+  return [...worksheet.asText().matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].map((row) => {
+    const cells = [];
+    for (const cell of row[1].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
+      const index = columnIndex(cell[1].match(/\br="([^"]+)"/)?.[1]);
+      const type = cell[1].match(/\bt="([^"]+)"/)?.[1];
+      const body = cell[2];
+      const inline = body.match(/<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/is>/)?.[1];
+      const raw = body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? inline ?? '';
+      cells[index] = type === 's' ? sharedStrings[Number(raw)] || '' : decodeXml(raw);
+    }
+    return cells;
+  });
+};
+const normalizedHeader = (value) => String(value || '').toLocaleLowerCase('it-IT')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9]+/g, ' ').trim();
+const HISTORY_IMPORT_FIELDS = [
+  'clientName', 'projectTitle', 'workDate', 'invoiceNumber', 'invoiceDate',
+  'invoiceTotal', 'paymentAmount', 'paymentDate', 'paymentMethod', 'notes',
+];
+const HEADER_ALIASES = {
+  clientName: ['cliente', 'ragione sociale', 'nominativo', 'intestatario'],
+  projectTitle: ['lavoro', 'progetto', 'descrizione lavoro', 'descrizione'],
+  workDate: ['data lavoro', 'data intervento', 'data'],
+  invoiceNumber: ['fattura', 'numero fattura', 'n fattura', 'n fatt'],
+  invoiceDate: ['data fattura', 'data documento'],
+  invoiceTotal: ['totale fattura', 'importo fattura', 'totale', 'importo lavoro'],
+  paymentAmount: ['pagato', 'incassato', 'importo pagato', 'importo incassato'],
+  paymentDate: ['data pagamento', 'data incasso'],
+  paymentMethod: ['metodo pagamento', 'pagamento', 'metodo'],
+  notes: ['note', 'annotazioni', 'osservazioni'],
+};
+const suggestHistoryMapping = (headers) => Object.fromEntries(HISTORY_IMPORT_FIELDS.map((field) => {
+  const aliases = HEADER_ALIASES[field].map(normalizedHeader);
+  const header = headers.find((value) => aliases.includes(normalizedHeader(value)));
+  return [field, header || ''];
+}));
+const spreadsheetRows = (file) => {
+  const extension = path.extname(String(file?.originalname || '')).toLowerCase();
+  if (!['.xlsx', '.csv'].includes(extension)) {
+    throw Object.assign(new Error('Carica un file .xlsx o .csv'), { status: 400 });
+  }
+  const rows = extension === '.csv' ? parseCsv(file.buffer) : extractXlsxRows(file.buffer);
+  const [rawHeaders = [], ...rawRows] = rows;
+  const headers = rawHeaders.map((value) => String(value || '').trim());
+  if (!headers.filter(Boolean).length) throw Object.assign(new Error('Intestazioni colonne non trovate'), { status: 400 });
+  return { headers, rows: rawRows.filter((row) => row.some((value) => String(value || '').trim())) };
+};
+const dateFromSpreadsheet = (value) => {
+  const raw = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw) && parseLocalDay(raw)) return raw;
+  const italian = raw.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);
+  if (italian) {
+    const result = `${italian[3]}-${italian[2].padStart(2, '0')}-${italian[1].padStart(2, '0')}`;
+    if (parseLocalDay(result)) return result;
+  }
+  const serial = Number(raw);
+  if (Number.isFinite(serial) && serial > 20000 && serial < 100000) {
+    return localDateKey(new Date(Date.UTC(1899, 11, 30) + serial * 86400000));
+  }
+  return '';
+};
+const moneyFromSpreadsheet = (value) => numeric(String(value || '').replace(/[^0-9,.-]/g, ''), { strict: true, field: 'importo Excel' });
+const importRowsFromSpreadsheet = (file, mapping) => {
+  const sheet = spreadsheetRows(file);
+  const indexes = Object.fromEntries(HISTORY_IMPORT_FIELDS.map((field) => [
+    field, sheet.headers.findIndex((header) => header === String(mapping?.[field] || '')),
+  ]));
+  if (indexes.clientName < 0) throw Object.assign(new Error('Seleziona la colonna Cliente'), { status: 400 });
+  const rows = sheet.rows.map((values, offset) => {
+    const value = (field) => indexes[field] < 0 ? '' : String(values[indexes[field]] ?? '').trim();
+    return {
+      rowNumber: offset + 2,
+      clientName: value('clientName'), projectTitle: value('projectTitle'), notes: value('notes'),
+      workDate: dateFromSpreadsheet(value('workDate')), invoiceNumber: value('invoiceNumber'),
+      invoiceDate: dateFromSpreadsheet(value('invoiceDate')), invoiceTotal: moneyFromSpreadsheet(value('invoiceTotal')),
+      paymentAmount: moneyFromSpreadsheet(value('paymentAmount')), paymentDate: dateFromSpreadsheet(value('paymentDate')),
+      paymentMethod: value('paymentMethod'),
+    };
+  }).filter((row) => row.clientName);
+  if (!rows.length) throw Object.assign(new Error('Nessuna riga con un cliente da importare'), { status: 400 });
+  return { headers: sheet.headers, rows };
 };
 
 const createRealtime = (server) => {
@@ -592,6 +874,7 @@ async function createCrmServer(options = {}) {
       || route === '/api/backup/import'
       || route === '/api/backup/restore'
       || route === '/api/backup/clear'
+      || route === '/api/imports/history/commit'
       || route === '/api/integrations/google-drive-backups/run'
       || /^\/api\/backups\/[^/]+\/restore$/.test(route);
   };
@@ -651,6 +934,16 @@ async function createCrmServer(options = {}) {
     await drainUserMutations();
     if (snapshotLabel) await db.createSnapshot(snapshotLabel);
     return action();
+  });
+  const historyImportUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+    fileFilter: (req, file, callback) => {
+      const extension = path.extname(String(file.originalname || '')).toLowerCase();
+      callback(extension === '.xlsx' || extension === '.csv'
+        ? null
+        : Object.assign(new Error('Carica un file .xlsx o .csv'), { status: 400 }), extension === '.xlsx' || extension === '.csv');
+    },
   });
   let googleDriveBackupQueue = Promise.resolve();
   const runGoogleDriveBackup = (force = false) => {
@@ -981,6 +1274,249 @@ async function createCrmServer(options = {}) {
     });
   });
 
+  app.get('/api/invoices/schedule', authenticateToken, requirePermission('invoices.view'), (req, res) => {
+    const rows = invoiceSchedule(db);
+    const canSeeFinancials = canViewFinancials(req.user);
+    res.json(rows.map((item) => ({
+      ...presentEntity(req.user, 'invoice', item),
+      paid: canSeeFinancials ? item.paid : null,
+      remaining: canSeeFinancials ? item.remaining : null,
+      kind: item.kind,
+    })));
+  });
+
+  app.post('/api/invoices/:id/whatsapp-reminder', authenticateToken, requirePermission('invoices.view'), (req, res) => {
+    try {
+      if (!canViewFinancials(req.user)) return res.status(403).json({ error: 'Permessi finanziari insufficienti' });
+      const entry = invoiceSchedule(db).find((item) => String(item.id) === String(req.params.id));
+      if (!entry) return res.status(409).json({ error: 'Fattura già saldata o non presente nello scadenziario' });
+      const client = db.get('client', entry.customerId);
+      const phone = whatsappDestination(client?.phone);
+      if (!phone) return res.status(400).json({ error: 'Il cliente non ha un numero WhatsApp valido' });
+      const message = `Buongiorno ${client.name || ''}, promemoria per fattura ${entry.invoiceNumber || ''} con scadenza ${entry.dueDate}. Residuo: € ${entry.remaining.toFixed(2)}.`;
+      const result = db.create('message_draft', {
+        clientId: String(client.id), date: localToday(), channel: 'whatsapp', message, title: `Sollecito ${entry.invoiceNumber || 'fattura'}`,
+        status: 'Da approvare', referenceType: 'invoice', referenceId: String(entry.id),
+      }, req.user, operationIdFrom(req, `invoice-reminder:${entry.id}`));
+      if (!result.replayed) realtime.broadcast({ event: 'message-drafts.created', entityType: 'message_draft', item: result.item, actor: publicActor(req.user) }, 'clients.view');
+      return res.status(result.replayed ? 200 : 201).json({ draft: result.item, whatsappUrl: `https://wa.me/${phone}?text=${encodeURIComponent(message)}`, sendMode: 'manual-confirmation' });
+    } catch (error) { return respondError(res, error); }
+  });
+
+  app.get('/api/projects/:id/financials', authenticateToken, requirePermission('projects.view'), (req, res) => {
+    if (!canViewFinancials(req.user)) return res.status(403).json({ error: 'Permessi finanziari insufficienti' });
+    const summary = projectFinancialSummary(db, req.params.id);
+    if (!summary) return res.status(404).json({ error: 'Progetto non trovato' });
+    return res.json(summary);
+  });
+
+  app.post('/api/communications/whatsapp-draft', authenticateToken, requirePermission('clients.create'), (req, res) => {
+    try {
+      const client = db.get('client', req.body?.clientId);
+      if (!client) return res.status(404).json({ error: 'Cliente non trovato' });
+      const message = String(req.body?.message || '').trim();
+      const phone = whatsappDestination(client.phone);
+      if (!phone) return res.status(400).json({ error: 'Il cliente non ha un numero WhatsApp valido' });
+      if (!message) return res.status(400).json({ error: 'Testo messaggio richiesto' });
+      const result = db.create('message_draft', {
+        clientId: String(client.id), date: localToday(), channel: 'whatsapp', message,
+        title: String(req.body?.title || 'Bozza WhatsApp'), status: 'Da approvare',
+        referenceType: String(req.body?.referenceType || ''), referenceId: String(req.body?.referenceId || ''),
+      }, req.user, operationIdFrom(req, 'whatsapp-draft'));
+      if (!result.replayed) realtime.broadcast({ event: 'message-drafts.created', entityType: 'message_draft', item: result.item, actor: publicActor(req.user) }, 'clients.view');
+      return res.status(result.replayed ? 200 : 201).json({
+        draft: presentEntity(req.user, 'message_draft', result.item),
+        whatsappUrl: `https://wa.me/${phone}?text=${encodeURIComponent(message)}`,
+        sendMode: 'manual-confirmation',
+      });
+    } catch (error) { return respondError(res, error); }
+  });
+
+  app.get('/api/clients/:id/history', authenticateToken, requirePermission('clients.view'), (req, res) => {
+    const client = db.get('client', req.params.id);
+    if (!client) return res.status(404).json({ error: 'Cliente non trovato' });
+    const clientId = String(client.id);
+    const projects = db.list('project').filter((item) => String(item.clientId || item.customerId || '') === clientId);
+    const quotes = db.list('quote').filter((item) => String(item.customerId || item.clientId || '') === clientId);
+    const invoices = db.list('invoice').filter((item) => String(item.customerId || item.clientId || '') === clientId);
+    const serviceCases = db.list('service_case').filter((item) => String(item.clientId || '') === clientId);
+    const messageDrafts = db.list('message_draft').filter((item) => String(item.clientId || '') === clientId);
+    const canSeeFinancials = canViewFinancials(req.user);
+    const canSeePayments = canSeeFinancials && hasEntityPermission(req.user, 'payment', 'view');
+    const payments = canSeePayments
+      ? db.list('payment').filter((item) => String(item.clientId) === clientId)
+      : [];
+    const paymentByInvoice = payments.reduce((result, payment) => {
+      if (!payment.invoiceId) return result;
+      result[payment.invoiceId] = (result[payment.invoiceId] || 0) + Number(payment.amount || 0);
+      return result;
+    }, {});
+    const invoiceRows = invoices.map((invoice) => {
+      const total = Number(invoice.total ?? invoice.amount ?? 0);
+      const paid = Number((paymentByInvoice[invoice.id] || 0).toFixed(2));
+      const remaining = Number(Math.max(0, total - paid).toFixed(2));
+      const computedStatus = !canSeePayments || paid === 0
+        ? invoice.status || 'Non Pagata'
+        : remaining === 0 ? 'Pagata' : 'Pagata Parzialmente';
+      return {
+        ...presentEntity(req.user, 'invoice', invoice),
+        paymentSummary: canSeePayments ? { paid, remaining, computedStatus } : null,
+      };
+    });
+    const invoiceTotal = invoices.reduce((sum, item) => sum + Number(item.total ?? item.amount ?? 0), 0);
+    const paidTotal = payments.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    return res.json({
+      client: presentEntity(req.user, 'client', client),
+      projects: projects.map((item) => presentEntity(req.user, 'project', item)),
+      quotes: quotes.map((item) => presentEntity(req.user, 'quote', item)),
+      invoices: invoiceRows,
+      serviceCases: serviceCases.map((item) => presentEntity(req.user, 'service_case', item)),
+      messageDrafts: messageDrafts.map((item) => presentEntity(req.user, 'message_draft', item)),
+      payments: payments.map((item) => presentEntity(req.user, 'payment', item)),
+      summary: canSeeFinancials ? {
+        invoiceTotal: Number(invoiceTotal.toFixed(2)),
+        recordedPaidTotal: canSeePayments ? Number(paidTotal.toFixed(2)) : null,
+        recordedOutstanding: canSeePayments ? Number(Math.max(0, invoiceTotal - paidTotal).toFixed(2)) : null,
+      } : null,
+    });
+  });
+
+  const historyImportPreview = (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'File Excel richiesto' });
+      const sheet = spreadsheetRows(req.file);
+      return res.json({
+        fileName: req.file.originalname,
+        fileHash: crypto.createHash('sha256').update(req.file.buffer).digest('hex'),
+        headers: sheet.headers,
+        suggestedMapping: suggestHistoryMapping(sheet.headers),
+        sampleRows: sheet.rows.slice(0, 20).map((row, index) => Object.fromEntries(
+          sheet.headers.map((header, column) => [header || `Colonna ${column + 1}`, String(row[column] ?? '')]),
+        )),
+        totalRows: sheet.rows.length,
+      });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  };
+  app.post('/api/imports/history/preview', authenticateToken, requireRole('admin'), historyImportUpload.single('file'), historyImportPreview);
+  app.post('/api/imports/history/commit', authenticateToken, requireRole('admin'), historyImportUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'File Excel richiesto' });
+      let mapping;
+      try { mapping = JSON.parse(String(req.body.mapping || '{}')); } catch { throw Object.assign(new Error('Mappatura colonne non valida'), { status: 400 }); }
+      const parsed = importRowsFromSpreadsheet(req.file, mapping);
+      const fileHash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+      const clientsByName = new Map(db.list('client').map((item) => [normalizedHeader(item.name), item]));
+      const projectsByKey = new Map(db.list('project').map((item) => [
+        `${item.clientId || item.customerId || ''}|${normalizedHeader(item.name || item.title)}`, item,
+      ]));
+      const invoicesByKey = new Map(db.list('invoice').filter((item) => item.invoiceNumber).map((item) => [
+        `${item.customerId || item.clientId || ''}|${normalizedHeader(item.invoiceNumber)}`, item,
+      ]));
+      const paymentImportKeys = new Set(db.list('payment').map((item) => String(item.importKey || '')).filter(Boolean));
+      const operations = [];
+      const generatedClients = new Map();
+      const generatedProjects = new Map();
+      const generatedInvoices = new Map();
+      for (const row of parsed.rows) {
+        const clientKey = normalizedHeader(row.clientName);
+        let client = clientsByName.get(clientKey) || generatedClients.get(clientKey);
+        if (!client) {
+          client = { id: crypto.randomUUID(), name: row.clientName, source: 'excel', importKey: `excel:${fileHash}:client:${clientKey}` };
+          generatedClients.set(clientKey, client);
+          operations.push({ type: 'client', input: client });
+        }
+        const clientId = String(client.id);
+        let project = null;
+        if (row.projectTitle) {
+          const projectKey = `${clientId}|${normalizedHeader(row.projectTitle)}`;
+          project = projectsByKey.get(projectKey) || generatedProjects.get(projectKey);
+          if (!project) {
+            project = {
+              id: crypto.randomUUID(), name: row.projectTitle, clientId,
+              startDate: row.workDate || '', notes: row.notes, source: 'excel',
+              importKey: `excel:${fileHash}:project:${row.rowNumber}`,
+            };
+            generatedProjects.set(projectKey, project);
+            operations.push({ type: 'project', input: project });
+          }
+        }
+        let invoice = null;
+        if (row.invoiceNumber || row.invoiceTotal > 0) {
+          const invoiceKey = row.invoiceNumber ? `${clientId}|${normalizedHeader(row.invoiceNumber)}` : `file:${fileHash}:row:${row.rowNumber}`;
+          invoice = invoicesByKey.get(invoiceKey) || generatedInvoices.get(invoiceKey);
+          if (!invoice) {
+            invoice = {
+              id: crypto.randomUUID(), customerId: clientId, projectId: project?.id || null,
+              invoiceNumber: row.invoiceNumber || '', date: row.invoiceDate || row.workDate || localToday(),
+              status: 'Importata', source: 'excel', importKey: `excel:${fileHash}:invoice:${row.rowNumber}`,
+              items: [{ description: row.projectTitle || 'Import storico Excel', quantity: 1, unitPrice: row.invoiceTotal, taxRate: 0 }],
+            };
+            generatedInvoices.set(invoiceKey, invoice);
+            operations.push({ type: 'invoice', input: invoice });
+          }
+        }
+        if (row.paymentAmount > 0) {
+          const importKey = `excel:${fileHash}:payment:${row.rowNumber}`;
+          if (!paymentImportKeys.has(importKey)) operations.push({
+            type: 'payment', input: {
+              id: crypto.randomUUID(), clientId, invoiceId: invoice?.id || null, projectId: project?.id || null,
+              date: row.paymentDate || row.invoiceDate || row.workDate || localToday(), amount: row.paymentAmount,
+              method: row.paymentMethod, notes: row.notes, source: 'excel',
+              importKey,
+            },
+          });
+        }
+      }
+      if (!operations.length) return res.json({ processedRows: parsed.rows.length, imported: {}, skipped: parsed.rows.length, alreadyImported: true });
+      const snapshot = await runMaintenance(null, async () => {
+        const backup = await db.createSnapshot('pre-import-excel');
+        const result = db.importHistory(operations, req.user, operationIdFrom(req, `history-import:${fileHash}`));
+        return { backup, result };
+      });
+      for (const item of snapshot.result.imported) {
+        const route = Object.entries(ROUTES).find(([, config]) => config.type === item.type)?.[0];
+        const permission = item.type === 'payment' ? 'payments' : ROUTES[route]?.permission;
+        if (route) realtime.broadcast({ event: `${route}.created`, entityType: item.type, item, actor: publicActor(req.user) }, `${permission}.view`);
+      }
+      return res.status(201).json({
+        backup: snapshot.backup, processedRows: parsed.rows.length,
+        imported: snapshot.result.imported.reduce((counts, item) => ({ ...counts, [item.entityType]: (counts[item.entityType] || 0) + 1 }), {}),
+        skipped: snapshot.result.skipped.length,
+      });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
+  app.get('/api/suppliers/:id/history', authenticateToken, requirePermission('suppliers.view'), (req, res) => {
+    const supplier = db.get('supplier', req.params.id);
+    if (!supplier) return res.status(404).json({ error: 'Fornitore non trovato' });
+    const supplierId = String(supplier.id);
+    const supplierName = String(supplier.name || '').trim().toLocaleLowerCase('it-IT');
+    const belongsToSupplier = (item) => String(item.supplierId || '') === supplierId
+      || (!item.supplierId && String(item.supplier || '').trim().toLocaleLowerCase('it-IT') === supplierName);
+    const purchaseOrders = db.list('purchase_order').filter(belongsToSupplier);
+    const deliveryNotes = db.list('delivery_note').filter(belongsToSupplier);
+    const materials = db.list('material').filter((item) => String(item.supplier || '').trim().toLocaleLowerCase('it-IT') === supplierName);
+    const totalOrdered = purchaseOrders.reduce((sum, item) => {
+      const explicitAmount = Number(item.amount);
+      if (Number.isFinite(explicitAmount) && explicitAmount > 0) return sum + explicitAmount;
+      return sum + (item.items || []).reduce(
+        (itemsTotal, row) => itemsTotal + Number(row.quantity || 0) * Number(row.unitPrice || 0),
+        0,
+      );
+    }, 0);
+    return res.json({
+      supplier: presentEntity(req.user, 'supplier', supplier),
+      purchaseOrders: purchaseOrders.map((item) => presentEntity(req.user, 'purchase_order', item)),
+      deliveryNotes: deliveryNotes.map((item) => presentEntity(req.user, 'delivery_note', item)),
+      materials: materials.map((item) => presentEntity(req.user, 'material', item)),
+      summary: canViewFinancials(req.user) ? { totalOrdered: Number(totalOrdered.toFixed(2)), orderCount: purchaseOrders.length, deliveryCount: deliveryNotes.length, materialCount: materials.length } : { orderCount: purchaseOrders.length, deliveryCount: deliveryNotes.length, materialCount: materials.length },
+    });
+  });
+
   app.get('/api/materials/search', authenticateToken, requirePermission('materials.view'), (req, res) => {
     const query = String(req.query.q || '').toLowerCase();
     res.json(db.list('material')
@@ -1090,6 +1626,7 @@ async function createCrmServer(options = {}) {
           : normalize(config.type, req.body, { defaults: true });
         if (!payload) return res.status(403).json({ error: 'Nessun campo modificabile per questo ruolo' });
         validateEntity(config.type, payload);
+        if (config.type === 'payment') validatePaymentLinks(db, payload);
         const result = db.create(
           config.type, payload, req.user, operationIdFrom(req, `${config.type}:create`),
         );
@@ -1113,6 +1650,7 @@ async function createCrmServer(options = {}) {
         const current = db.get(config.type, req.params.id);
         if (!current) return res.status(404).json({ error: 'Elemento non trovato' });
         validateEntity(config.type, { ...current, ...patch });
+        if (config.type === 'payment') validatePaymentLinks(db, { ...current, ...patch });
         const result = db.update(
           config.type, req.params.id, patch, expectedVersionFrom(req, true), req.user,
           operationIdFrom(req, `${config.type}:update:${req.params.id}`),
@@ -1565,10 +2103,10 @@ async function createCrmServer(options = {}) {
   app.post('/api/backup/import', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       const backup = normalizeBackupPayload(req.body);
-      await runMaintenance('pre-importazione', () => db.restoreJson(backup, req.user));
+      const restored = await runMaintenance('pre-importazione', () => db.restoreJson(backup, req.user));
       rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored' });
-      return res.json({ message: 'Backup importato' });
+      return res.json({ message: 'Backup importato', preservedAttachments: restored.preservedAttachments });
     } catch (error) {
       return respondError(res, error);
     }
@@ -1577,10 +2115,10 @@ async function createCrmServer(options = {}) {
   app.post('/api/backup/restore', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
       const backup = normalizeBackupPayload(req.body);
-      await runMaintenance('pre-ripristino', () => db.restoreJson(backup, req.user));
+      const restored = await runMaintenance('pre-ripristino', () => db.restoreJson(backup, req.user));
       rotateAuthEpoch();
       realtime.broadcast({ event: 'database.restored' });
-      return res.json({ message: 'Backup ripristinato' });
+      return res.json({ message: 'Backup ripristinato', preservedAttachments: restored.preservedAttachments });
     } catch (error) {
       return respondError(res, error);
     }

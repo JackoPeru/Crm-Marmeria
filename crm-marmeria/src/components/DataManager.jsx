@@ -90,10 +90,10 @@ const DataManager = () => {
     void run(async () => {
       const parsed = JSON.parse(await file.text());
       if (!window.confirm(
-        `Importare ${file.name}? I dati correnti e gli allegati saranno sostituiti. Prima dell’operazione verrà creato un backup completo.`,
+        `Importare ${file.name}? I dati correnti saranno sostituiti. Gli allegati dei record presenti nel JSON verranno mantenuti; quelli di record assenti saranno rimossi. Prima dell’operazione verrà creato un backup completo.`,
       )) return;
       await apiClient.post('/backup/import', parsed);
-      setStatus({ type: 'success', message: 'Importazione completata. La pagina verrà ricaricata.' });
+      setStatus({ type: 'success', message: 'Importazione completata. Allegati compatibili mantenuti. La pagina verrà ricaricata.' });
       window.setTimeout(() => window.location.reload(), 800);
     });
   };

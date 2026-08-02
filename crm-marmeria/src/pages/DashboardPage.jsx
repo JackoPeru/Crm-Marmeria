@@ -11,6 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
 import { createId } from '../utils/ids';
 import { observeServerScope, stableServerKey } from '../utils/serverScope';
+import { apiClient } from '../services/api';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -42,6 +43,8 @@ const DashboardPage = () => {
   const [editText, setEditText] = useState('');
   const [completingId, setCompletingId] = useState(null);
   const [notesScopeRevision, setNotesScopeRevision] = useState(0);
+  const [invoiceSchedule, setInvoiceSchedule] = useState([]);
+  const [remindingInvoice, setRemindingInvoice] = useState(null);
 
   const canViewProjects = hasPermission('projects.view');
   const canEditProjects = hasPermission('projects.edit');
@@ -72,6 +75,13 @@ const DashboardPage = () => {
       setNotesReady(true);
     }
   }, [notesKey]);
+
+  useEffect(() => {
+    if (!canViewFinancials) { setInvoiceSchedule([]); return; }
+    apiClient.get('/invoices/schedule')
+      .then((response) => setInvoiceSchedule(response.data || []))
+      .catch(() => setInvoiceSchedule([]));
+  }, [canViewFinancials, invoices]);
 
   useEffect(() => {
     if (notesReady) localStorage.setItem(notesKey, JSON.stringify(notes));
@@ -182,11 +192,25 @@ const DashboardPage = () => {
     if (project.client || project.clientName) return project.client || project.clientName;
     return customers.find((customer) => String(customer.id) === String(project.clientId))?.name || '-';
   };
+  const sendReminder = async (invoice) => {
+    setRemindingInvoice(String(invoice.id));
+    try {
+      const response = await apiClient.post(`/invoices/${encodeURIComponent(invoice.id)}/whatsapp-reminder`);
+      window.open(response.data.whatsappUrl, '_blank', 'noopener,noreferrer');
+    } catch (error) { console.error('Bozza sollecito non creata', error); }
+    finally { setRemindingInvoice(null); }
+  };
 
   return (
     <div className="p-4 md:p-6 lg:p-8 space-y-6 bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text">
       <WelcomeHeader userName={user?.firstName || user?.username || 'Utente'} />
       <DashboardStats stats={stats} />
+
+      {canViewFinancials && <section className="bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
+        <h2 className="text-xl font-semibold mb-1">Scadenziario incassi</h2>
+        <p className="mb-4 text-sm text-gray-500">Aggiornato automaticamente da scadenze fatture e incassi registrati. WhatsApp apre solo bozza: invio manuale.</p>
+        {invoiceSchedule.length ? <div className="space-y-2">{invoiceSchedule.map((invoice) => <div key={invoice.id} className={`flex flex-wrap items-center justify-between gap-3 rounded border p-3 ${invoice.kind === 'overdue' ? 'border-red-300 bg-red-50 dark:bg-red-950/30' : 'border-amber-300 bg-amber-50 dark:bg-amber-950/30'}`}><div><b>{invoice.invoiceNumber || 'Fattura senza numero'}</b><p className="text-sm">Scadenza: {invoice.dueDate} · Residuo: {formatEuro(invoice.remaining)}</p></div><button type="button" onClick={() => void sendReminder(invoice)} disabled={remindingInvoice === String(invoice.id)} className="rounded bg-green-600 px-3 py-2 text-sm text-white disabled:bg-gray-400">{remindingInvoice === String(invoice.id) ? 'Creo bozza…' : 'Prepara sollecito WhatsApp'}</button></div>)}</div> : <p className="text-gray-500">Nessuna fattura aperta o in scadenza.</p>}
+      </section>}
 
       <section className="bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
         <h2 className="text-xl font-semibold mb-4">Appunti rapidi personali</h2>

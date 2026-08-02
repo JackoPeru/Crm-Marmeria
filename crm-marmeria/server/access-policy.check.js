@@ -7,7 +7,7 @@ const {
 
 assert.deepEqual(
   ensureRolePermissions('admin', []),
-  ['settings.view'],
+  ['settings.view', 'payments.view', 'payments.create', 'payments.edit', 'payments.delete', 'suppliers.view', 'suppliers.create', 'suppliers.edit', 'suppliers.delete'],
   'Un amministratore deve poter raggiungere la gestione amministrativa',
 );
 assert.deepEqual(
