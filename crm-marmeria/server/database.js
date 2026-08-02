@@ -164,6 +164,7 @@ class CrmDatabase {
         quantity: numeric(item.quantity),
         unitPrice: numeric(item.unitPrice),
         taxRate: numeric(item.taxRate),
+        taxNature: String(item.taxNature || '').trim().toUpperCase(),
       }));
     }
 
@@ -173,6 +174,12 @@ class CrmDatabase {
       data.type = commercialType;
       data.clientType = commercialType;
       data.entityType = 'client';
+      for (const key of ['name', 'firstName', 'lastName', 'email', 'phone', 'address', 'streetNumber', 'zip', 'city', 'province', 'country', 'vatNumber', 'fiscalCode', 'recipientCode', 'recipientPec', 'notes']) {
+        if (data[key] != null) data[key] = String(data[key] || '').trim();
+      }
+      data.province = String(data.province || '').toUpperCase();
+      data.country = String(data.country || 'IT').toUpperCase();
+      data.recipientCode = String(data.recipientCode || '').toUpperCase();
       return data;
     }
 

@@ -7,12 +7,21 @@ import CustomerHistoryModal, { HistoryImportModal } from '../components/Customer
 
 const emptyCustomer = {
   name: '',
+  firstName: '',
+  lastName: '',
   email: '',
   phone: '',
   address: '',
   type: 'Privato',
   vatNumber: '',
   fiscalCode: '',
+  recipientCode: '0000000',
+  recipientPec: '',
+  streetNumber: '',
+  zip: '',
+  city: '',
+  province: '',
+  country: 'IT',
   notes: '',
 };
 
@@ -34,6 +43,7 @@ const CustomerForm = ({ value, setValue }) => (
       <span className="block text-sm font-medium mb-1">Nome *</span>
       <input required value={value.name || ''} onChange={(event) => setValue({ ...value, name: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" />
     </label>
+    {(value.type || value.clientType || 'Privato') === 'Privato' && <><label className="block"><span className="block text-sm font-medium mb-1">Nome persona (SdI)</span><input value={value.firstName || ''} onChange={(event) => setValue({ ...value, firstName: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label><label className="block"><span className="block text-sm font-medium mb-1">Cognome persona (SdI)</span><input value={value.lastName || ''} onChange={(event) => setValue({ ...value, lastName: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label></>}
     <label className="block">
       <span className="block text-sm font-medium mb-1">Email</span>
       <input type="email" value={value.email || ''} onChange={(event) => setValue({ ...value, email: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" />
@@ -43,9 +53,13 @@ const CustomerForm = ({ value, setValue }) => (
       <input type="tel" value={value.phone || ''} onChange={(event) => setValue({ ...value, phone: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" />
     </label>
     <label className="block md:col-span-2">
-      <span className="block text-sm font-medium mb-1">Indirizzo</span>
+      <span className="block text-sm font-medium mb-1">Via/Piazza</span>
       <input value={value.address || ''} onChange={(event) => setValue({ ...value, address: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" />
     </label>
+    <label className="block"><span className="block text-sm font-medium mb-1">Numero civico</span><input value={value.streetNumber || ''} onChange={(event) => setValue({ ...value, streetNumber: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
+    <label className="block"><span className="block text-sm font-medium mb-1">CAP</span><input value={value.zip || ''} onChange={(event) => setValue({ ...value, zip: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
+    <label className="block"><span className="block text-sm font-medium mb-1">Comune</span><input value={value.city || ''} onChange={(event) => setValue({ ...value, city: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
+    <label className="block"><span className="block text-sm font-medium mb-1">Provincia</span><input maxLength="2" value={value.province || ''} onChange={(event) => setValue({ ...value, province: event.target.value.toUpperCase() })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
     <label className="block">
       <span className="block text-sm font-medium mb-1">Tipo</span>
       <select value={value.type || value.clientType || 'Privato'} onChange={(event) => setValue({ ...value, type: event.target.value, clientType: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input">
@@ -61,6 +75,9 @@ const CustomerForm = ({ value, setValue }) => (
       <span className="block text-sm font-medium mb-1">Codice fiscale</span>
       <input value={value.fiscalCode || ''} onChange={(event) => setValue({ ...value, fiscalCode: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" />
     </label>
+    <div className="md:col-span-2 rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">Dati fatturazione elettronica: per fatture SdI servono indirizzo completo, codice fiscale o Partita IVA e codice destinatario/PEC.</div>
+    <label className="block"><span className="block text-sm font-medium mb-1">Codice destinatario</span><input maxLength="7" value={value.recipientCode || '0000000'} onChange={(event) => setValue({ ...value, recipientCode: event.target.value.toUpperCase() })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /><span className="mt-1 block text-xs text-gray-500">`0000000` se privato o destinatario PEC.</span></label>
+    <label className="block"><span className="block text-sm font-medium mb-1">PEC destinatario</span><input type="email" value={value.recipientPec || ''} onChange={(event) => setValue({ ...value, recipientPec: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
     <label className="block md:col-span-2">
       <span className="block text-sm font-medium mb-1">Note</span>
       <textarea rows={3} value={value.notes || ''} onChange={(event) => setValue({ ...value, notes: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" />

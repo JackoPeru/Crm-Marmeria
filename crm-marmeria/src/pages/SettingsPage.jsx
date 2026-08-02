@@ -129,6 +129,51 @@ const GoogleDriveBackupPanel = () => {
   </Section>;
 };
 
+const SdiPecPanel = () => {
+  const [status, setStatus] = useState(null);
+  const [company, setCompany] = useState({ legalName: '', vatNumber: '', fiscalCode: '', taxRegime: 'RF01', address: '', streetNumber: '', zip: '', city: '', province: '', country: 'IT' });
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try {
+      const next = (await apiClient.get('/integrations/sdi-pec/status')).data;
+      setStatus(next); setCompany((previous) => ({ ...previous, ...(next.company || {}) })); setEmail(next.email || '');
+    } catch (error) { toast.error(error.response?.data?.error || 'Stato PEC SdI non disponibile'); }
+  };
+  useEffect(() => { void load(); }, []);
+  const save = async () => {
+    setBusy(true);
+    try {
+      const next = (await apiClient.put('/integrations/sdi-pec/config', { company, email, password })).data;
+      setStatus(next); setPassword(''); toast.success('Configurazione PEC Aruba salvata');
+    } catch (error) { toast.error(error.response?.data?.error || 'Configurazione PEC non riuscita'); } finally { setBusy(false); }
+  };
+  const test = async () => {
+    setBusy(true);
+    try { const next = await apiClient.post('/integrations/sdi-pec/test'); toast.success(`PEC Aruba verificata: ${next.data.email}`); await load(); } catch (error) { toast.error(error.response?.data?.error || 'Test PEC non riuscito'); } finally { setBusy(false); }
+  };
+  const updateCompany = (key, value) => setCompany((previous) => ({ ...previous, [key]: value }));
+  return <Section icon={FileDigit} title="Fatturazione elettronica SdI — PEC Aruba" iconClass="text-orange-600">
+    <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">Invio XML FatturaPA a SdI, archivio invii e lettura automatica delle ricevute. Inserisci dati solo dal CRM aperto sul PC server: password cifrata localmente e mai mostrata.</p>
+    <div className="grid gap-4 md:grid-cols-2">
+      <label className="block md:col-span-2"><span className="mb-1 block text-sm font-medium">Ragione sociale / ditta *</span><input value={company.legalName || ''} onChange={(event) => updateCompany('legalName', event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Partita IVA *</span><input inputMode="numeric" value={company.vatNumber || ''} onChange={(event) => updateCompany('vatNumber', event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Codice fiscale *</span><input value={company.fiscalCode || ''} onChange={(event) => updateCompany('fiscalCode', event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Regime fiscale</span><input value={company.taxRegime || 'RF01'} onChange={(event) => updateCompany('taxRegime', event.target.value.toUpperCase())} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Via/Piazza *</span><input value={company.address || ''} onChange={(event) => updateCompany('address', event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Numero civico</span><input value={company.streetNumber || ''} onChange={(event) => updateCompany('streetNumber', event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">CAP *</span><input value={company.zip || ''} onChange={(event) => updateCompany('zip', event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Comune *</span><input value={company.city || ''} onChange={(event) => updateCompany('city', event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Provincia *</span><input maxLength="2" value={company.province || ''} onChange={(event) => updateCompany('province', event.target.value.toUpperCase())} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">PEC Aruba *</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Password PEC / password app *</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={status?.hasPassword ? 'Lascia vuoto per non modificarla' : ''} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
+    </div>
+    <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={() => void save()} className="rounded-md border px-4 py-2 disabled:opacity-50">Salva configurazione</button><button type="button" disabled={busy || !status?.configured} onClick={() => void test()} className="rounded-md bg-orange-600 px-4 py-2 text-white disabled:opacity-50">{busy ? 'Operazione...' : 'Testa SMTP e IMAP'}</button>{status?.configured ? <span className="text-sm text-green-700 dark:text-green-400">Pronta: {status.email}</span> : <span className="text-sm text-amber-700 dark:text-amber-300">Completa dati azienda e PEC prima di inviare.</span>}</div>
+    <p className="mt-3 text-xs text-gray-500">Aruba: SMTP <code>smtps.pec.aruba.it:465</code>, IMAP <code>imaps.pec.aruba.it:993</code>, SSL/TLS. Se Aruba 2FA è attiva usa password per programma.</p>
+  </Section>;
+};
+
 const SettingsPage = () => {
   const { theme, userPreferences, changeTheme, updatePreferences } = useUI();
   const { user, updateUser } = useAuth();
@@ -246,6 +291,7 @@ const SettingsPage = () => {
       {user?.role === 'admin' && <ServerUpdatePanel />}
       {user?.role === 'admin' && <GmailPanel />}
       {user?.role === 'admin' && <GoogleDriveBackupPanel />}
+      {user?.role === 'admin' && <SdiPecPanel />}
       {user?.role === 'admin' && <UserManagement />}
 
       <Section icon={Bell} title="Notifiche" iconClass="text-green-500">

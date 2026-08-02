@@ -21,6 +21,18 @@ Il server conserva già snapshot locali completi. Da **Impostazioni → Account 
 
 Ogni copia remota contiene database SQLite, account e allegati nella cartella Drive `CRM Marmeria - Backup automatici`. I token OAuth restano cifrati solo nella cartella dati del server; nessun token viene inviato ai browser client.
 
+## Fatturazione elettronica SdI con PEC Aruba
+
+Da **Impostazioni → Fatturazione elettronica SdI — PEC Aruba**, aprendo il CRM direttamente sul PC server, l'amministratore configura ragione sociale, dati fiscali, sede, indirizzo PEC e password della casella. La password resta cifrata nella cartella dati del server e non viene mai restituita al browser.
+
+1. Per Aruba il CRM usa SMTP `smtps.pec.aruba.it:465` e IMAP `imaps.pec.aruba.it:993`, entrambi SSL/TLS. Con verifica in due passaggi Aruba usa la password dedicata per programmi di posta.
+2. Salva configurazione e premi **Testa SMTP e IMAP** prima di emettere una fattura.
+3. Completa nei clienti dati anagrafici/fiscali, indirizzo, CAP, comune, provincia e codice destinatario o PEC. Per persone fisiche completa anche nome e cognome SdI.
+4. In una fattura l'amministratore usa **Invia a SdI via PEC**: CRM esegue il preflight, genera XML FatturaPA, richiede conferma esplicita e lo invia a `sdi01@pec.fatturapa.it`.
+5. XML, invio e ricevute restano archiviati sul PC server. Il CRM legge periodicamente la PEC e mostra `scartata`, `consegnata` oppure `mancata consegna`. Una fattura trasmessa non è più modificabile o eliminabile; per rettificarla crea documento `TD04 — Nota di credito`.
+
+Non usare il primo invio come prova tecnica: un invio PEC accettato è un'operazione fiscale. Attiva inoltre il servizio di conservazione elettronica a norma nell'area **Fatture e Corrispettivi** dell'Agenzia delle Entrate oppure usa il servizio del commercialista.
+
 ## Sviluppo
 
 ```bash
