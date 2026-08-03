@@ -151,6 +151,12 @@ const LoginForm: React.FC = () => {
             </div>
           )}
 
+          {!setupRequired && serverReachable && (
+            <div className="mb-5 rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-sm text-yellow-900 dark:border-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-100">
+              <strong>Accesso base:</strong> username <code>admin</code> — password <code>marmo2026!</code>
+            </div>
+          )}
+
           {submitError && (
             <div className="mb-5 p-3 rounded-lg bg-red-50 text-red-800 border border-red-200 text-sm dark:bg-red-900/20 dark:text-red-200 dark:border-red-800" role="alert">
               {submitError}
