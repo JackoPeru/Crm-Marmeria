@@ -27,7 +27,7 @@ const main = async () => {
     git(['init', '--bare', remote], temp);
     fs.mkdirSync(applicationRoot, { recursive: true });
     write(path.join(applicationRoot, 'package.json'), '{"version":"1.0.0"}\n');
-    write(path.join(applicationRoot, 'server', 'data', 'seed.json'), '[]\n');
+    write(path.join(applicationRoot, 'server', 'data', 'users.json'), '[{"username":"admin"}]\n');
     write(path.join(applicationRoot, 'README.md'), 'versione iniziale\n');
     git(['init', '-b', 'main'], seed);
     git(['config', 'user.email', 'test@crm.local'], seed);
@@ -40,11 +40,14 @@ const main = async () => {
     git(['clone', remote, local], temp);
     git(['config', 'user.email', 'test@crm.local'], local);
     git(['config', 'user.name', 'CRM update test'], local);
-    write(path.join(local, 'crm-marmeria', 'server', 'data', 'runtime.json'), '{}\n');
+    write(path.join(local, 'crm-marmeria', 'server', 'data', 'users.json'), '[{"username":"cliente-reale"}]\n');
 
     git(['clone', '--branch', 'main', remote, publisher], temp);
     git(['config', 'user.email', 'test@crm.local'], publisher);
     git(['config', 'user.name', 'CRM update test'], publisher);
+    fs.rmSync(path.join(publisher, 'crm-marmeria', 'server', 'data', 'users.json'));
+    write(path.join(publisher, 'crm-marmeria', '.gitignore'), 'server/data/*\n!server/data/.gitkeep\n');
+    write(path.join(publisher, 'crm-marmeria', 'server', 'data', '.gitkeep'));
     write(path.join(publisher, 'crm-marmeria', 'README.md'), 'versione aggiornata\n');
     commit(publisher, 'update');
     git(['push'], publisher);
@@ -64,6 +67,7 @@ const main = async () => {
     assert.equal(applied.updateAvailable, false);
     assert.equal(fs.existsSync(path.join(local, 'crm-marmeria', '.crm-update-pending')), true);
     assert.equal(git(['rev-list', '--count', 'HEAD..origin/main'], local), '0');
+    assert.equal(fs.readFileSync(path.join(local, 'crm-marmeria', 'server', 'data', 'users.json'), 'utf8'), '[{"username":"cliente-reale"}]\n');
 
     fs.rmSync(path.join(local, 'crm-marmeria', '.crm-update-pending'));
     write(path.join(local, 'uncommitted.txt'), 'unsafe\n');
