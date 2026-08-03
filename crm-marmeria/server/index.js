@@ -4,6 +4,7 @@ const { readUsers } = require('./middleware/auth');
 const { readOrCreateServerId, readOrCreateSetupSecret } = require('./runtime-files');
 const { upgradeLegacySnapshots } = require('./snapshot-compat');
 const { readOrCreateTlsIdentity } = require('./tls-identity');
+const { markUpdateReady } = require('./update-progress');
 
 let instance = null;
 
@@ -65,6 +66,7 @@ const start = async () => {
     bootstrapAdmin: defaultAdmin(),
     onUpdateApplied: () => void shutdown(),
   });
+  markUpdateReady(dataDir);
 
   const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
   if (upgradedSnapshots > 0) {

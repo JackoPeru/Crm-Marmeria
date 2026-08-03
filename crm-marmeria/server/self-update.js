@@ -1,6 +1,7 @@
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { readUpdateProgress, writeUpdateProgress } = require('./update-progress');
 
 const REPOSITORY = 'github.com/jackoperu/crm-marmeria';
 const defaultApplicationRoot = path.resolve(__dirname, '..');
@@ -11,6 +12,7 @@ const createServerUpdateService = ({
   repository = REPOSITORY,
 } = {}) => {
   const updateMarker = path.join(applicationRoot, '.crm-update-pending');
+  const dataDir = path.join(applicationRoot, 'server', 'data');
   const runtimeDataPath = path.relative(repositoryRoot, path.join(applicationRoot, 'server', 'data'))
     .replace(/\\/g, '/')
     .toLowerCase();
@@ -124,6 +126,7 @@ const createServerUpdateService = ({
     remoteRevision,
     updateAvailable: pendingCommits > 0,
     pendingCommits,
+    progress: readUpdateProgress(dataDir),
   };
   };
 
@@ -131,13 +134,22 @@ const createServerUpdateService = ({
   if (updateInProgress) throw updateError('Aggiornamento gia in corso.', 409);
   updateInProgress = true;
   try {
+    writeUpdateProgress(dataDir, { stage: 'checking', percent: 10, message: 'Controllo aggiornamento su GitHub...' });
     await workingTreeIsSafe();
     const status = await checkForServerUpdate({ refresh: true });
-    if (!status.updateAvailable) return { ...status, updated: false, restartRequired: false };
+    if (!status.updateAvailable) {
+      const progress = writeUpdateProgress(dataDir, { stage: 'ready', percent: 100, message: 'CRM già aggiornato e pronto per l’uso.' });
+      return { ...status, progress, updated: false, restartRequired: false };
+    }
+    writeUpdateProgress(dataDir, { stage: 'installing', percent: 25, message: 'Scarico e installo nuovo codice...' });
     await applyRemoteCode(status.branch);
+    const progress = writeUpdateProgress(dataDir, { stage: 'restarting', percent: 35, message: 'Codice aggiornato. Riavvio server...' });
     fs.writeFileSync(updateMarker, 'install dependencies after server update\n', 'utf8');
     const updated = await checkForServerUpdate({ refresh: false });
-    return { ...updated, updated: true, restartRequired: true };
+    return { ...updated, progress, updated: true, restartRequired: true };
+  } catch (error) {
+    writeUpdateProgress(dataDir, { stage: 'error', percent: 0, message: error.message || 'Aggiornamento non riuscito.', error: true });
+    throw error;
   } finally {
     updateInProgress = false;
   }
