@@ -41,6 +41,18 @@ const createServerUpdateService = ({
     return normalized === runtimeDataPath || normalized.startsWith(`${runtimeDataPath}/`);
   };
   const updateError = (message, status = 503) => Object.assign(new Error(message), { status });
+  const pathsFromOutput = (output) => String(output || '')
+    .split('\0')
+    .filter(Boolean)
+    .map((file) => file.replace(/\\/g, '/'));
+  const repositoryPath = (file) => {
+    const resolved = path.resolve(repositoryRoot, file);
+    const relative = path.relative(repositoryRoot, resolved);
+    if (!relative || path.isAbsolute(relative) || relative.startsWith('..')) {
+      throw updateError('Percorso aggiornamento Git non valido.');
+    }
+    return resolved;
+  };
 
   const ensureRepository = async () => {
     if (!fs.existsSync(path.join(repositoryRoot, '.git'))) {
@@ -60,6 +72,34 @@ const createServerUpdateService = ({
     if (unsafe.length) {
       throw updateError(`Aggiornamento bloccato da modifiche locali: ${unsafe.slice(0, 3).join(', ')}`, 409);
     }
+  };
+
+  const applyRemoteCode = async (branch) => {
+    const remoteRef = `origin/${branch}`;
+    const changed = pathsFromOutput(await command([
+      'diff', '--no-renames', '--diff-filter=ACMRTUXB', '--name-only', '-z', 'HEAD', remoteRef,
+    ], 30000, false)).filter((file) => !isRuntimeFile(file));
+    const deleted = pathsFromOutput(await command([
+      'diff', '--no-renames', '--diff-filter=D', '--name-only', '-z', 'HEAD', remoteRef,
+    ], 30000, false)).filter((file) => !isRuntimeFile(file));
+
+    for (const file of [...changed, ...deleted]) repositoryPath(file);
+
+    // Il server continua a usare server/data mentre prepara il riavvio: non
+    // spostare, staccare o ripristinare mai quei file durante l'aggiornamento.
+    const batchSize = 80;
+    for (let index = 0; index < changed.length; index += batchSize) {
+      await command([
+        'restore', '--source', remoteRef, '--staged', '--worktree', '--', ...changed.slice(index, index + batchSize),
+      ], 60000);
+    }
+    for (const file of deleted) {
+      fs.rmSync(repositoryPath(file), { force: true });
+    }
+
+    // Aggiorna branch e index senza toccare il working tree. Cosi anche le
+    // installazioni storiche, dove users.json era tracciato, mantengono dati.
+    await command(['reset', '--mixed', remoteRef], 30000);
   };
 
   const checkForServerUpdate = async ({ refresh = false } = {}) => {
@@ -94,7 +134,7 @@ const createServerUpdateService = ({
     await workingTreeIsSafe();
     const status = await checkForServerUpdate({ refresh: true });
     if (!status.updateAvailable) return { ...status, updated: false, restartRequired: false };
-    await command(['pull', '--ff-only', 'origin', status.branch], 90000);
+    await applyRemoteCode(status.branch);
     fs.writeFileSync(updateMarker, 'install dependencies after server update\n', 'utf8');
     const updated = await checkForServerUpdate({ refresh: false });
     return { ...updated, updated: true, restartRequired: true };
