@@ -10,6 +10,11 @@ const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const nodeCommand = process.execPath;
 const forceRepair = process.argv.includes('--force');
 const updateMarker = path.join(root, '.crm-update-pending');
+const { writeUpdateProgress } = require('./server/update-progress');
+const updateInProgress = fs.existsSync(updateMarker);
+const progress = (stage, percent, message, error = false) => {
+  if (updateInProgress) writeUpdateProgress(path.join(root, 'server', 'data'), { stage, percent, message, error });
+};
 
 const npmCliPath = () => {
   const candidates = [
@@ -197,20 +202,24 @@ function ensureDependencySet(config) {
 function rebuildWebAfterUpdate() {
   if (!fs.existsSync(updateMarker)) return;
 
+  progress('build', 75, 'Compilo interfaccia web aggiornata...');
   console.log('[AGGIORNAMENTO] Compilo interfaccia web aggiornata...');
   const build = run(npmCommand, ['run', 'build'], root, { inherit: true });
   if (!build.ok) {
     throw new Error('Build dell\'interfaccia web non riuscita dopo aggiornamento.');
   }
+  progress('restarting', 95, 'Build completata. Avvio CRM aggiornato...');
 }
 
 try {
+  progress('dependencies', 45, 'Verifico dipendenze applicazione...');
   const npmVersion = run(npmCommand, ['--version'], root);
   if (!npmVersion.ok) {
     throw new Error('npm non disponibile. Installa o ripara Node.js LTS.');
   }
 
-  for (const config of dependencySets) {
+  for (const [index, config] of dependencySets.entries()) {
+    progress('dependencies', 50 + index * 12, `Verifico dipendenze ${config.label}...`);
     ensureDependencySet(config);
   }
 
@@ -218,5 +227,6 @@ try {
 
   console.log('\n[OK] Tutte le dipendenze richieste sono pronte.');
 } catch (error) {
+  progress('error', 0, error && error.message ? error.message : String(error), true);
   fail(error && error.message ? error.message : String(error));
 }

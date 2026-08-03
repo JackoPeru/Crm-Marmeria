@@ -65,6 +65,7 @@ const main = async () => {
     assert.equal(applied.updated, true);
     assert.equal(applied.restartRequired, true);
     assert.equal(applied.updateAvailable, false);
+    assert.equal(applied.progress.percent, 35);
     assert.equal(fs.existsSync(path.join(local, 'crm-marmeria', '.crm-update-pending')), true);
     assert.equal(git(['rev-list', '--count', 'HEAD..origin/main'], local), '0');
     assert.equal(fs.readFileSync(path.join(local, 'crm-marmeria', 'server', 'data', 'users.json'), 'utf8'), '[{"username":"cliente-reale"}]\n');
