@@ -41,7 +41,7 @@ const DashboardStats = ({ stats }) => {
       visible: stats.projectsVisible,
     },
     {
-      title: 'Progetti in Corso',
+      title: 'Progetti in Lavorazione',
       value: stats.projectsInProgress,
       icon: TrendingUp,
       className: 'bg-yellow-500 dark:bg-yellow-600 text-white',

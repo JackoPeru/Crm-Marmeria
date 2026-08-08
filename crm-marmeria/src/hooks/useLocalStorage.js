@@ -17,7 +17,7 @@ const defaultData = {
       id: '1',
       title: 'Progetto Demo',
       customerId: '1',
-      status: 'In corso',
+      status: 'In Lavorazione',
       startDate: new Date().toISOString(),
       endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       createdAt: new Date().toISOString(),
