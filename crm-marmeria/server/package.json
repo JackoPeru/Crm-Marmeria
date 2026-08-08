@@ -11,7 +11,7 @@
   "license": "MIT",
   "dependencies": {
     "bcrypt": "^6.0.0",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
     "docxtemplater": "^3.67.7",
     "express": "^4.22.2",
