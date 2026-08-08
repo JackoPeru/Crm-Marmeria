@@ -27,6 +27,7 @@ import DashboardPage from './pages/DashboardPage';
 import CustomersPage from './pages/CustomersPage';
 import ProjectsPage from './pages/ProjectsPage';
 import MaterialsPage from './pages/MaterialsPage';
+import ListinoPage from './pages/ListinoPage';
 import QuotesPage from './pages/QuotesPage';
 import InvoicesPage from './pages/InvoicesPage';
 import SettingsPage from './pages/SettingsPage';
@@ -41,6 +42,7 @@ const navItems = [
   { id: 'suppliers', label: 'Fornitori', icon: Truck, component: SuppliersPage, permission: 'suppliers.view' },
   { id: 'projects', label: 'Progetti', icon: Briefcase, component: ProjectsPage, permission: 'projects.view' },
   { id: 'materials', label: 'Materiali', icon: Layers, component: MaterialsPage, permission: 'materials.view' },
+  { id: 'price-list', label: 'Listino', icon: Layers, component: ListinoPage, permission: 'materials.view' },
   { id: 'quotes', label: 'Preventivi', icon: FileText, component: QuotesPage, permission: 'quotes.view' },
   { id: 'calendar', label: 'Calendario', icon: CalendarDays, component: CalendarPage, permission: 'calendar.view' },
   { id: 'invoices', label: 'Fatture', icon: DollarSign, component: InvoicesPage, permission: 'invoices.view' },

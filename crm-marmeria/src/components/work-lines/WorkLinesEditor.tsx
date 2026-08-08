@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { ChevronDown, ChevronUp, Copy, GripVertical, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, GripVertical, Info, Plus, Settings, Trash2 } from 'lucide-react';
 import { formatEuro, parseLocaleNumber } from '../../utils/numbers';
 import { createId } from '../../utils/ids';
 import {
@@ -34,6 +34,7 @@ export interface WorkLinesEditorProps {
   showPrices?: boolean;
   readOnly?: boolean;
   className?: string;
+  onOpenEdgeCatalog?: () => void;
 }
 
 const inputClass = 'w-full rounded border p-2 bg-light-bg dark:bg-dark-input';
@@ -100,25 +101,29 @@ const EdgeConfigurator = ({
   edgeCatalog,
   onEdgeChange,
   disabled,
+  showPrices,
 }: {
   line: WorkLine;
   edgeCatalog: EdgeCatalogItem[];
   onEdgeChange: (key: EdgeKey, patch: Record<string, unknown>) => void;
   disabled: boolean;
+  showPrices: boolean;
 }) => (
   <details className="mt-4 rounded border bg-gray-50 p-3 dark:bg-gray-900/30" open>
     <summary className="cursor-pointer font-semibold">Bordi e angoli</summary>
     <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
       {EDGE_KEYS.map((key) => {
         const edge = line.edges?.[key] || edgeDefaults(line.lengthCm, line.widthCm)[key];
-        const matchedCatalog = selectEdgeCatalogItem(edgeCatalog, {
-          type: edge?.type,
+        const catalogMatch = edge?.catalogId || edge?.type;
+        const matchedCatalog = catalogMatch ? selectEdgeCatalogItem(edgeCatalog, {
+          type: catalogMatch,
           materialId: line.materialId,
           thickness: line.thickness,
-        });
+        }) : undefined;
         const displayPrice = edge?.unitPrice ?? matchedCatalog?.unitPrice ?? matchedCatalog?.price ?? 0;
         const edgeTypes = uniqueEdgeCatalogItems(edgeCatalog);
-        const selectedType = edge?.type || matchedCatalog?.name || '';
+        const selectedType = edge?.catalogId || (edge?.type ? matchedCatalog?.id || edge.type : '');
+        const catalogSelected = Boolean(edge?.catalogId);
         return (
           <div key={key} className="rounded border bg-white p-3 dark:bg-dark-card">
             <label className="flex items-center gap-2 text-sm font-medium">
@@ -137,6 +142,14 @@ const EdgeConfigurator = ({
                   value={selectedType}
                   onChange={(event) => {
                     const selectedType = event.target.value;
+                    if (!selectedType) {
+                      onEdgeChange(key, {
+                        catalogId: undefined,
+                        type: '',
+                        nameSnapshot: '',
+                      });
+                      return;
+                    }
                     const selection = edgeSelectionFromCatalog(edgeCatalog, {
                       type: selectedType,
                       materialId: line.materialId,
@@ -148,12 +161,16 @@ const EdgeConfigurator = ({
                   className={`${inputClass} text-xs`}
                 >
                   <option value="">Tipo generico</option>
-                  {edgeTypes.map((item) => <option key={item.id} value={item.name || String(item.id)}>{item.name || String(item.id)}</option>)}
+                  {edgeTypes.map((item) => <option key={item.id} value={String(item.id)}>{item.name || String(item.id)}</option>)}
                 </select>
               </label>
               <NumericInput label="Lunghezza cm" value={edge?.lengthCm || ''} onChange={(value) => onEdgeChange(key, { lengthCm: value, lengthMeters: undefined })} disabled={disabled} />
-              <NumericInput label="Prezzo €/ml" value={displayPrice || ''} onChange={(value) => onEdgeChange(key, { unitPrice: value, priceSnapshot: value })} disabled={disabled} />
-              <div className="text-xs text-gray-500 sm:pt-6">Costo: <strong>{formatEuro(calculateEdge(edge, line.quantity))}</strong></div>
+              {catalogSelected
+                ? <div className="text-sm sm:pt-0"><span className="mb-1 block font-medium">{showPrices ? 'Prezzo automatico €/ml' : 'Prezzo catalogo'}</span>{showPrices && <output className="block rounded border bg-gray-100 p-2 dark:bg-gray-800" aria-label="Prezzo automatico dal catalogo">{formatEuro(displayPrice)}</output>}<span className="mt-1 block text-xs text-gray-500">Fonte: catalogo bordi{!showPrices && ' (prezzo protetto)'}</span></div>
+                : showPrices
+                  ? <NumericInput label="Prezzo manuale €/ml" value={displayPrice || ''} onChange={(value) => onEdgeChange(key, { unitPrice: value, priceSnapshot: value, catalogId: undefined })} disabled={disabled} />
+                  : <div className="text-sm text-gray-500 sm:pt-0"><span className="mb-1 block font-medium">Prezzo manuale</span><span>Prezzo protetto</span></div>}
+              {showPrices && <div className="text-xs text-gray-500 sm:pt-6">Costo: <strong>{formatEuro(calculateEdge(edge, line.quantity))}</strong></div>}
             </div>
           </div>
         );
@@ -192,6 +209,7 @@ const LineCard = ({
   onDelete,
   onDuplicate,
   onMove,
+  onOpenEdgeCatalog,
 }: {
   line: WorkLine;
   index: number;
@@ -205,6 +223,7 @@ const LineCard = ({
   onDelete: () => void;
   onDuplicate: () => void;
   onMove: (direction: -1 | 1) => void;
+  onOpenEdgeCatalog?: () => void;
 }) => {
   const calculated = calculateWorkLine(line);
   const material = materials.find((item) => String(item.id) === String(line.materialId || ''));
@@ -234,6 +253,7 @@ const LineCard = ({
         {!readOnly && <div className="flex items-center gap-1">
           <button type="button" onClick={() => onMove(-1)} disabled={index === 0} className="rounded p-1 text-gray-600 disabled:opacity-30" title="Sposta su"><ChevronUp size={17} /></button>
           <button type="button" onClick={() => onMove(1)} className="rounded p-1 text-gray-600" title="Sposta giù"><ChevronDown size={17} /></button>
+          {line.type === 'surface' && onOpenEdgeCatalog && <button type="button" onClick={onOpenEdgeCatalog} className="rounded p-1 text-indigo-600" title="Impostazioni catalogo bordi" aria-label="Apri impostazioni catalogo bordi"><Settings size={17} /></button>}
           <button type="button" onClick={onDuplicate} className="rounded p-1 text-blue-600" title="Duplica"><Copy size={17} /></button>
           <button type="button" onClick={onDelete} className="rounded p-1 text-red-600" title="Elimina"><Trash2 size={17} /></button>
         </div>}
@@ -259,12 +279,12 @@ const LineCard = ({
           <Field label="Variante / finitura" value={line.variant} onChange={(value) => onChange({ variant: value })} disabled={readOnly} placeholder="es. lucido" />
         </>}
         <NumericInput label={showPrices ? 'Prezzo unitario' : 'Prezzo (protetto)'} value={line.unitPrice} onChange={(value) => onChange({ unitPrice: value })} disabled={readOnly || !showPrices} />
-        {showPrices && <NumericInput label="Extra riga" value={line.extraCost || 0} onChange={(value) => onChange({ extraCost: value })} disabled={readOnly} />}
+        {showPrices && <label className="block text-sm"><span className="mb-1 flex items-center gap-1 font-medium">Extra riga <span className="group relative inline-flex cursor-help" tabIndex={0} aria-describedby={'extra-help-' + line.id}><Info size={15} className="text-blue-600" /><span id={'extra-help-' + line.id} role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-64 rounded bg-gray-900 p-2 text-xs font-normal text-white shadow-lg group-hover:block group-focus:block">Extra fisso su questa riga: per esempio foro, sagoma o trasporto. Viene aggiunto una sola volta al totale della riga.</span></span></span><input type="text" inputMode="decimal" value={numberText(line.extraCost || 0)} onChange={(event) => onChange({ extraCost: parseLocaleNumber(event.target.value) })} disabled={readOnly} className={inputClass + ' disabled:opacity-60'} /></label>}
         {invoiceMode && <NumericInput label="IVA %" value={line.taxRate ?? 22} onChange={(value) => onChange({ taxRate: value })} disabled={readOnly} />}
         {invoiceMode && <Field label="Natura IVA" value={line.taxNature} onChange={(value) => onChange({ taxNature: value.toUpperCase() })} disabled={readOnly} placeholder="Solo se IVA 0%" />}
       </div>
 
-      {line.type === 'surface' && <EdgeConfigurator line={line} edgeCatalog={edgeCatalog} disabled={readOnly} onEdgeChange={(key, patch) => onChange({ edges: { ...line.edges, [key]: { ...(line.edges?.[key] || {}), ...patch } } })} />}
+      {line.type === 'surface' && <EdgeConfigurator line={line} edgeCatalog={edgeCatalog} disabled={readOnly} showPrices={showPrices} onEdgeChange={(key, patch) => onChange({ edges: { ...line.edges, [key]: { ...(line.edges?.[key] || {}), ...patch } } })} />}
       <label className="mt-3 block text-sm"><span className="mb-1 block font-medium">Note lavorazione</span><textarea rows={2} value={line.notes || ''} onChange={(event) => onChange({ notes: event.target.value })} disabled={readOnly} className={`${inputClass} disabled:opacity-60`} /></label>
       {showPrices && <div className="mt-3 grid grid-cols-2 gap-2 rounded bg-gray-50 p-3 text-sm dark:bg-gray-900/40 md:grid-cols-4">
         {line.type === 'surface' && <p>Superficie: <strong>{calculated.squareMeters.toFixed(2)} m²</strong></p>}
@@ -288,6 +308,7 @@ export const WorkLinesEditor: React.FC<WorkLinesEditorProps> = ({
   showPrices = true,
   readOnly = false,
   className = '',
+  onOpenEdgeCatalog,
 }) => {
   const lines = useMemo(() => value.map((line, index) => normalizeWorkLine(line, index)), [value]);
   const summary = useMemo(() => summarizeWorkLines(lines), [lines]);
@@ -314,7 +335,7 @@ export const WorkLinesEditor: React.FC<WorkLinesEditorProps> = ({
     </div>
     {!lines.length && <p className="rounded border border-dashed p-4 text-sm text-gray-500">Nessuna lavorazione. Aggiungi una riga m², ml o manuale.</p>}
     <div className="space-y-3">
-      {lines.map((line, index) => <LineCard key={line.id} line={line} index={index} materials={materials} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} invoiceMode={invoiceMode} showPrices={showPrices} readOnly={readOnly} onChange={(patch) => update(index, patch)} onDelete={() => replaceLines(lines.filter((_, lineIndex) => lineIndex !== index))} onDuplicate={() => duplicate(index)} onMove={(direction) => move(index, direction)} />)}
+      {lines.map((line, index) => <LineCard key={line.id} line={line} index={index} materials={materials} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} invoiceMode={invoiceMode} showPrices={showPrices} readOnly={readOnly} onChange={(patch) => update(index, patch)} onDelete={() => replaceLines(lines.filter((_, lineIndex) => lineIndex !== index))} onDuplicate={() => duplicate(index)} onMove={(direction) => move(index, direction)} onOpenEdgeCatalog={onOpenEdgeCatalog} />)}
     </div>
     {showPrices && <div className="grid grid-cols-2 gap-3 rounded-lg border bg-white p-4 text-sm dark:bg-dark-card md:grid-cols-3 lg:grid-cols-6">
       <p>Totale m²<br /><strong>{summary.surfaceSquareMeters.toFixed(2)}</strong></p>

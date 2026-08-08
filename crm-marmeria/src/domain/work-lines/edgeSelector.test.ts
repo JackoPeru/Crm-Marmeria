@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { edgeSelectionFromCatalog, selectEdgeCatalogItem, uniqueEdgeCatalogItems } from './edgeSelector';
+import { edgeSelectionFromCatalog, refreshCatalogEdgePrices, selectEdgeCatalogItem, uniqueEdgeCatalogItems } from './edgeSelector';
 
 describe('edge catalog specificity', () => {
   const catalog = [
@@ -27,5 +27,26 @@ describe('edge catalog specificity', () => {
 
   it('salva lo snapshot del match piu specifico', () => {
     expect(edgeSelectionFromCatalog(catalog, { type: 'Lucido', materialId: 'marmo-1', thickness: '3' })).toMatchObject({ catalogId: 'exact', type: 'Lucido', nameSnapshot: 'Lucido', unitPrice: 18, priceSnapshot: 18 });
+  });
+
+  it('aggiorna solo gli edge collegati al catalogo nel draft corrente', () => {
+    const lines = [{
+      id: 'line-1',
+      type: 'surface' as const,
+      quantity: 1,
+      lengthCm: 100,
+      widthCm: 50,
+      unitPrice: 100,
+      total: 0,
+      edges: {
+        front: { active: true, catalogId: 'exact', unitPrice: 18, priceSnapshot: 18, lengthCm: 100 },
+        back: { active: true, unitPrice: 7, priceSnapshot: 7, lengthCm: 100 },
+      },
+      sortOrder: 0,
+    }];
+    const refreshed = refreshCatalogEdgePrices(lines, catalog.map((item) => item.id === 'exact' ? { ...item, unitPrice: 25 } : item));
+    expect(refreshed[0].edges?.front?.unitPrice).toBe(25);
+    expect(refreshed[0].edges?.front?.priceSnapshot).toBe(25);
+    expect(refreshed[0].edges?.back?.unitPrice).toBe(7);
   });
 });

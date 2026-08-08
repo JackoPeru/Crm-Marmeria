@@ -101,15 +101,16 @@ const appendExportPhotos = (zip, documentXml, attachments) => {
 };
 
 const quoteTemplateData = ({ quote, customer, project, attachments = [] }) => {
-  const validUntil = quote.validityDays && quote.date
+  const validityDays = Number(quote.validityDays);
+  const validUntil = Number.isInteger(validityDays) && validityDays > 0 && quote.date
     ? new Date(new Date(`${String(quote.date).slice(0, 10)}T00:00:00`).getTime()
-      + Number(quote.validityDays) * 86400000)
+      + validityDays * 86400000)
     : null;
   const items = Array.isArray(quote.items) ? quote.items : [];
   return {
     quote_number: text(quote.quoteNumber),
     quote_date: formatDate(quote.date),
-    quote_valid_until: validUntil ? date.format(validUntil) : '',
+    quote_valid_until: validUntil ? date.format(validUntil) : 'Senza scadenza',
     quote_status: text(quote.status),
     quote_notes: text(quote.notes),
     payment_details: text(quote.paymentDetails),

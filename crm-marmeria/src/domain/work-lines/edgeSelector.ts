@@ -1,4 +1,5 @@
-import type { EdgeCatalogItem, EdgeSelection } from './types';
+import { withCalculatedWorkLine } from './calculations';
+import type { EdgeCatalogItem, EdgeSelection, WorkLine } from './types';
 
 const key = (value: unknown): string => String(value ?? '').trim().toLocaleLowerCase('it-IT');
 
@@ -74,3 +75,25 @@ export const edgeCatalogLabel = (item: EdgeCatalogItem): string => [
   item.materialId ? `materiale ${item.materialId}` : 'generico',
   item.thickness ? `${item.thickness} mm` : '',
 ].filter(Boolean).join(' · ');
+
+export const refreshCatalogEdgePrices = (
+  lines: WorkLine[] = [],
+  catalog: EdgeCatalogItem[] = [],
+): WorkLine[] => lines.map((line) => {
+  if (line.type !== 'surface' || !line.edges) return line;
+  const edges = Object.fromEntries(Object.entries(line.edges).map(([edgeKey, edge]) => {
+    if (!edge?.catalogId) return [edgeKey, edge];
+    const item = catalog.find((candidate) => String(candidate.id) === String(edge.catalogId));
+    if (!item) return [edgeKey, edge];
+    const price = item.unitPrice ?? item.price ?? edge.unitPrice ?? edge.priceSnapshot ?? 0;
+    return [edgeKey, {
+      ...edge,
+      type: item.name || edge.type,
+      nameSnapshot: item.name || edge.nameSnapshot,
+      unitPrice: price,
+      priceSnapshot: price,
+      materialId: item.materialId == null ? edge.materialId : String(item.materialId),
+    }];
+  }));
+  return withCalculatedWorkLine({ ...line, edges });
+});

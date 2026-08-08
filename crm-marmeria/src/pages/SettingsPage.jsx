@@ -7,6 +7,7 @@ import {
   Mail,
   Palette,
   Printer,
+  Settings,
   User,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -15,7 +16,9 @@ import UserManagement from '../components/UserManagement';
 import ServerUpdatePanel from '../components/ServerUpdatePanel';
 import useUI from '../hooks/useUI';
 import { useAuth } from '../contexts/AuthContext';
+import { useData } from '../hooks/useData';
 import { apiClient } from '../services/api';
+import CatalogManager from '../components/catalog/CatalogManager';
 
 const AnimatedSwitch = ({ id, checked, onChange, label }) => (
   <div className="flex items-center justify-between py-3">
@@ -44,6 +47,41 @@ const Section = ({ icon: Icon, title, iconClass, children }) => (
     {children}
   </section>
 );
+
+const CatalogSettingsPanel = () => {
+  const { materials = [] } = useData();
+  const { user, hasPermission } = useAuth();
+  const [edgeTypes, setEdgeTypes] = useState([]);
+  const [linearItems, setLinearItems] = useState([]);
+  const canView = hasPermission('materials.view');
+  const canCreate = hasPermission('materials.create');
+  const canEdit = hasPermission('materials.edit');
+  const canDelete = hasPermission('materials.delete');
+  const showPrices = ['admin', 'manager'].includes(user?.role || '');
+
+  useEffect(() => {
+    if (!canView) return undefined;
+    let mounted = true;
+    Promise.all([
+      apiClient.get('/edge-types').catch(() => ({ data: [] })),
+      apiClient.get('/linear-items').catch(() => ({ data: [] })),
+    ]).then(([edges, linear]) => {
+      if (!mounted) return;
+      setEdgeTypes(Array.isArray(edges.data) ? edges.data : []);
+      setLinearItems(Array.isArray(linear.data) ? linear.data : []);
+    });
+    return () => { mounted = false; };
+  }, [canView]);
+
+  if (!canView) return null;
+  return <Section icon={Settings} title="Cataloghi per preventivi" iconClass="text-indigo-500">
+    <p className="mb-5 text-sm text-gray-600 dark:text-gray-300">Bordi, angoli e lavorazioni lineari alimentano i selettori e i prezzi delle righe nei preventivi. Le modifiche valgono per le nuove selezioni.</p>
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+      <CatalogManager kind="edge" endpoint="/edge-types" title="Bordi e angoli" description="Tipi e prezzi al metro per i lati delle superfici." items={edgeTypes} materials={materials} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} showPrices={showPrices} onItemsChange={setEdgeTypes} />
+      <CatalogManager kind="linear" endpoint="/linear-items" title="Lavorazioni lineari" description="Voci e prezzi al metro per lavorazioni lineari." items={linearItems} materials={materials} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} showPrices={showPrices} onItemsChange={setLinearItems} />
+    </div>
+  </Section>;
+};
 
 const GmailPanel = () => {
   const [status, setStatus] = useState(null);
@@ -288,6 +326,7 @@ const SettingsPage = () => {
         </button>
       </Section>
 
+      <CatalogSettingsPanel />
       {user?.role === 'admin' && <ServerUpdatePanel />}
       {user?.role === 'admin' && <GmailPanel />}
       {user?.role === 'admin' && <GoogleDriveBackupPanel />}

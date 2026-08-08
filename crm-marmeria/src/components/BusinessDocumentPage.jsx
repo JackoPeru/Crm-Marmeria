@@ -7,8 +7,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
 import AttachmentsPanel from './AttachmentsPanel';
 import WorkLinesEditor from './work-lines/WorkLinesEditor';
+import EdgeCatalogOverlay from './catalog/EdgeCatalogOverlay';
 import { copyWorkLines, mergeImportedWorkLines } from '../domain/work-lines/import';
 import { createWorkLine, normalizeWorkLines, workLinesToDocumentItems } from '../domain/work-lines/normalize';
+import { refreshCatalogEdgePrices } from '../domain/work-lines/edgeSelector';
 
 const emptyItem = (invoice) => ({
   description: '',
@@ -29,7 +31,7 @@ const emptyDocument = (kind) => ({
   items: [emptyItem(kind === 'invoice')],
   notes: '',
   status: kind === 'invoice' ? 'Non Pagata' : 'Bozza',
-  validityDays: 30,
+  validityDays: '',
   paymentDetails: '',
   paymentMethod: 'MP05',
   templateId: '',
@@ -48,6 +50,7 @@ const normalizeDocument = (document, kind) => ({
   date: document.date ? String(document.date).slice(0, 10) : '',
   documentType: kind === 'invoice' ? String(document.documentType || 'TD01').toUpperCase() : '',
   dueDate: document.dueDate ? String(document.dueDate).slice(0, 10) : '',
+  validityDays: Number.isInteger(Number(document.validityDays)) && Number(document.validityDays) > 0 ? Number(document.validityDays) : '',
   items: Array.isArray(document.items) && document.items.length
     ? document.items.map((item) => ({
       ...emptyItem(kind === 'invoice'),
@@ -82,6 +85,11 @@ const formatDate = (value) => {
     ? new Date(`${value}T00:00:00`)
     : new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('it-IT');
+};
+
+const formatQuoteValidity = (document) => {
+  const days = Number(document?.validityDays);
+  return Number.isInteger(days) && days > 0 ? String(days) + ' giorni' : 'Senza scadenza';
 };
 
 const Modal = ({ title, onClose, children, wide = false }) => (
@@ -126,10 +134,24 @@ const importSourceIntoDocument = (previous, source, sourceType, invoice) => {
   };
 };
 
-const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, materials, quoteTemplates = [], edgeCatalog = [], linearCatalog = [], showPrices = true }) => {
+const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, materials, quoteTemplates = [], edgeCatalog = [], linearCatalog = [], showPrices = true, onEdgeCatalogUpdated }) => {
   const invoice = kind === 'invoice';
+  const { hasPermission } = useAuth();
+  const [edgeSettingsOpen, setEdgeSettingsOpen] = useState(false);
   const lines = normalizeWorkLines(value.workLines, value.items);
   const currentTotals = totals(workLinesToDocumentItems(lines, invoice, value.items), invoice);
+
+  const handleEdgeCatalogChange = (nextCatalog) => {
+    onEdgeCatalogUpdated?.(nextCatalog);
+    setValue((previous) => {
+      const nextLines = refreshCatalogEdgePrices(normalizeWorkLines(previous.workLines, previous.items), nextCatalog);
+      return {
+        ...previous,
+        workLines: nextLines,
+        items: workLinesToDocumentItems(nextLines, invoice, previous.items),
+      };
+    });
+  };
 
   const selectQuote = (quoteId) => {
     const quote = quotes.find((item) => String(item.id) === String(quoteId));
@@ -193,7 +215,8 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
         ) : (
           <label className="block">
             <span className="mb-1 block text-sm font-medium">Validità (giorni)</span>
-            <input type="number" min="1" value={value.validityDays ?? 30} onChange={(event) => setValue((previous) => ({ ...previous, validityDays: Math.max(1, Number(event.target.value) || 1) }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
+            <input type="number" min="1" step="1" inputMode="numeric" placeholder="Lascia vuoto" value={value.validityDays ?? ''} onChange={(event) => { const raw = event.target.value; const days = Number(raw); setValue((previous) => ({ ...previous, validityDays: raw === '' ? '' : (Number.isInteger(days) && days > 0 ? days : '') })); }} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
+            <span className="mt-1 block text-xs text-gray-500">Vuoto = <strong>Senza scadenza</strong>. Inserisci un numero intero positivo solo se vuoi una validità.</span>
           </label>
         )}
 
@@ -248,7 +271,9 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
         linearCatalog={linearCatalog}
         invoiceMode={invoice}
         showPrices={showPrices}
+        onOpenEdgeCatalog={!invoice ? () => setEdgeSettingsOpen(true) : undefined}
       />
+      {!invoice && <EdgeCatalogOverlay open={edgeSettingsOpen} items={edgeCatalog} materials={materials} canCreate={hasPermission('materials.create')} canEdit={hasPermission('materials.edit')} canDelete={hasPermission('materials.delete')} showPrices={showPrices} onItemsChange={handleEdgeCatalogChange} onClose={() => setEdgeSettingsOpen(false)} />}
 
 
 
@@ -382,6 +407,7 @@ const BusinessDocumentPage = ({
       customerId: String(form.customerId),
       projectId: form.projectId ? String(form.projectId) : null,
       quoteId: invoice && form.quoteId ? String(form.quoteId) : null,
+      validityDays: Number.isInteger(Number(form.validityDays)) && Number(form.validityDays) > 0 ? Number(form.validityDays) : null,
       workLines,
       items,
     };
@@ -594,7 +620,7 @@ const BusinessDocumentPage = ({
       {isModalOpen(`${kind}-add`) && (
         <Modal title={`Nuovo ${singular}`} onClose={() => hideModal(`${kind}-add`)} wide>
           <form onSubmit={submitAdd}>
-            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} />
+            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} onEdgeCatalogUpdated={setEdgeCatalog} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-add`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Crea'}</button></div>
           </form>
         </Modal>
@@ -603,7 +629,7 @@ const BusinessDocumentPage = ({
       {isModalOpen(`${kind}-edit`) && editing && (
         <Modal title={`Modifica ${singular}`} onClose={() => hideModal(`${kind}-edit`)} wide>
           <form onSubmit={submitEdit}>
-            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} />
+            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} onEdgeCatalogUpdated={setEdgeCatalog} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-edit`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button></div>
           </form>
         </Modal>
@@ -614,6 +640,7 @@ const BusinessDocumentPage = ({
           <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
             <div><span className="text-gray-500">Data</span><p>{formatDate(viewing.date)}</p></div>
             {invoice && <div><span className="text-gray-500">Scadenza</span><p>{formatDate(viewing.dueDate)}</p></div>}
+            {!invoice && <div><span className="text-gray-500">Validità</span><p className={formatQuoteValidity(viewing) === 'Senza scadenza' ? 'text-green-700 dark:text-green-400' : ''}>{formatQuoteValidity(viewing)}</p></div>}
             <div><span className="text-gray-500">Cliente</span><p>{documentCustomer(viewing)}</p></div>
             <div><span className="text-gray-500">Stato</span><p>{viewing.status || '-'}</p></div>
             {invoice && <div><span className="text-gray-500">Esito SdI</span><p>{electronicStatus(viewing).replace(/_/g, ' ')}</p></div>}

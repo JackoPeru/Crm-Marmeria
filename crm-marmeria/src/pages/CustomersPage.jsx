@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Edit, Eye, FileSpreadsheet, Filter, Plus, Search, Trash, X } from 'lucide-react';
+import { ArrowDownAZ, ArrowUpAZ, Edit, Eye, FileSpreadsheet, Filter, Plus, Search, Trash, X } from 'lucide-react';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
@@ -92,6 +92,7 @@ const CustomersPage = () => {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [vatFilter, setVatFilter] = useState('');
+  const [order, setOrder] = useState('asc');
   const [showFilters, setShowFilters] = useState(false);
   const [form, setForm] = useState(emptyCustomer);
   const [selected, setSelected] = useState(null);
@@ -126,8 +127,11 @@ const CustomersPage = () => {
       const hasVat = Boolean(String(customer.vatNumber || '').trim());
       const matchesVat = !vatFilter || (vatFilter === 'si' ? hasVat : !hasVat);
       return matchesSearch && matchesType && matchesVat;
-    }).sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' }));
-  }, [customers, search, typeFilter, vatFilter]);
+    }).sort((left, right) => {
+      const result = String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' });
+      return order === 'asc' ? result : -result;
+    });
+  }, [customers, order, search, typeFilter, vatFilter]);
 
   const submitAdd = async (event) => {
     event.preventDefault();
@@ -200,7 +204,8 @@ const CustomersPage = () => {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
               <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cerca cliente..." className="w-full pl-10 pr-4 py-2 border rounded-md bg-light-bg dark:bg-dark-input" />
             </div>
-            <button onClick={() => setShowFilters((value) => !value)} className="px-4 py-2 border rounded-md flex items-center gap-2"><Filter className="w-5 h-5" /> Filtri</button>
+            <button type="button" onClick={() => setShowFilters((value) => !value)} className="px-4 py-2 border rounded-md flex items-center gap-2"><Filter className="w-5 h-5" /> Filtri</button>
+            <button type="button" onClick={() => setOrder((value) => value === 'asc' ? 'desc' : 'asc')} className="px-4 py-2 border rounded-md flex items-center gap-2" aria-label={"Ordine " + (order === 'asc' ? 'A-Z' : 'Z-A')}>{order === 'asc' ? <ArrowDownAZ className="h-5 w-5" /> : <ArrowUpAZ className="h-5 w-5" />}{order === 'asc' ? 'A-Z' : 'Z-A'}</button>
           </div>
           {showFilters && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 max-w-xl">
