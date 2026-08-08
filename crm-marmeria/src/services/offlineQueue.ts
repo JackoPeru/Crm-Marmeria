@@ -68,7 +68,7 @@ export const queueResourceKey = (
   data?: unknown,
 ): string => {
   const clean = cleanRelativeUrl(url);
-  const createMatch = clean.match(/^\/(clients|orders|projects|materials|quotes|invoices)$/);
+  const createMatch = clean.match(/^\/(clients|orders|projects|materials|edge-types|linear-items|quotes|invoices)$/);
   if (String(method).toLowerCase() === 'post' && createMatch && isObject(data) && data.id) {
     return `${clean}/${String(data.id)}`;
   }

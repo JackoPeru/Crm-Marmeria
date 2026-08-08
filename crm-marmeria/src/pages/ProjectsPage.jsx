@@ -1,11 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Edit, Eye, Filter, Plus, Search, Trash, X } from 'lucide-react';
+import toast from 'react-hot-toast';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
 import AttachmentsPanel from '../components/AttachmentsPanel';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
 import { apiClient } from '../services/api';
+import { PROJECT_STATUS_OPTIONS } from '../utils/constants';
+import WorkLinesEditor from '../components/work-lines/WorkLinesEditor';
+import WorkLinesReadOnly from '../components/work-lines/WorkLinesReadOnly';
+import { copyWorkLines, mergeImportedWorkLines } from '../domain/work-lines/import';
+import { normalizeWorkLines } from '../domain/work-lines/normalize';
 
 const emptyProject = {
   name: '',
@@ -16,138 +22,43 @@ const emptyProject = {
   status: 'In Attesa',
   phase: '',
   productionNotes: '',
-  technicalSheet: { measurements: '', material: '', finish: '', survey: '', installation: '', accessNotes: '' },
-  costItems: [],
-  laborHours: 0,
-  laborRate: 0,
-  transportCost: 0,
-  otherCosts: 0,
+  workLines: [],
 };
 
-const ProjectForm = ({ value, setValue, customers, operationalOnly = false }) => (
-  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
-    {!operationalOnly && (
-      <>
-        <label className="block">
-          <span className="block text-sm font-medium mb-1">Nome progetto *</span>
-          <input
-            value={value.name || ''}
-            onChange={(event) => setValue({ ...value, name: event.target.value })}
-            required
-            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-          />
-        </label>
-        <label className="block">
-          <span className="block text-sm font-medium mb-1">Cliente *</span>
-          <select
-            value={String(value.clientId || '')}
-            onChange={(event) => {
-              const clientId = String(event.target.value);
-              const client = customers.find((item) => String(item.id) === clientId);
-              setValue({
-                ...value,
-                clientId,
-                client: client?.name || 'Cliente non specificato',
-              });
-            }}
-            required
-            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-          >
-            <option value="">Seleziona cliente</option>
-            {customers.map((customer) => (
-              <option key={customer.id} value={String(customer.id)}>{customer.name}</option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="block text-sm font-medium mb-1">Data inizio *</span>
-          <input
-            type="date"
-            value={value.startDate || ''}
-            onChange={(event) => setValue({ ...value, startDate: event.target.value })}
-            required
-            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-          />
-        </label>
-        <label className="block">
-          <span className="block text-sm font-medium mb-1">Scadenza *</span>
-          <input
-            type="date"
-            value={value.deadline || ''}
-            onChange={(event) => setValue({ ...value, deadline: event.target.value })}
-            required
-            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-          />
-        </label>
-        <label className="block">
-          <span className="block text-sm font-medium mb-1">Budget (€) *</span>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={value.budget ?? ''}
-            onChange={(event) => setValue({ ...value, budget: event.target.value })}
-            required
-            className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-          />
-        </label>
-      </>
-    )}
-    <label className="block">
-      <span className="block text-sm font-medium mb-1">Stato</span>
-      <select
-        value={value.status || 'In Attesa'}
-        onChange={(event) => setValue({ ...value, status: event.target.value })}
-        className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-      >
-        <option>In Attesa</option>
-        <option>In Corso</option>
-        <option>In Lavorazione</option>
-        <option>Completato</option>
-        <option>Annullato</option>
-      </select>
-    </label>
-    <label className="block">
-      <span className="block text-sm font-medium mb-1">Fase di lavorazione</span>
-      <input
-        value={value.phase || ''}
-        onChange={(event) => setValue({ ...value, phase: event.target.value })}
-        placeholder="Taglio, lucidatura, posa..."
-        className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-      />
-    </label>
-    <label className="block md:col-span-2">
-      <span className="block text-sm font-medium mb-1">Note di produzione</span>
-      <textarea
-        value={value.productionNotes || ''}
-        onChange={(event) => setValue({ ...value, productionNotes: event.target.value })}
-        rows={4}
-        className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input"
-      />
-    </label>
-    {!operationalOnly && <>
-      <div className="md:col-span-2 mt-2 rounded-md border p-4">
-        <h3 className="mb-3 font-semibold">Scheda tecnica</h3>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          {[
-            ['measurements', 'Misure'], ['material', 'Materiale / lastra'], ['finish', 'Finitura'], ['survey', 'Rilievo / sagoma'], ['installation', 'Posa'], ['accessNotes', 'Accesso e note cantiere'],
-          ].map(([key, label]) => <label key={key} className={key === 'accessNotes' ? 'md:col-span-2' : ''}><span className="mb-1 block text-sm font-medium">{label}</span><input value={value.technicalSheet?.[key] || ''} onChange={(event) => setValue({ ...value, technicalSheet: { ...(value.technicalSheet || {}), [key]: event.target.value } })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>)}
-        </div>
-      </div>
-      <div className="md:col-span-2 mt-2 rounded-md border p-4">
-        <h3 className="mb-3 font-semibold">Costi reali</h3>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <label><span className="mb-1 block text-sm">Ore manodopera</span><input type="number" min="0" step="0.25" value={value.laborHours ?? 0} onChange={(event) => setValue({ ...value, laborHours: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
-          <label><span className="mb-1 block text-sm">Costo ora</span><input type="number" min="0" step="0.01" value={value.laborRate ?? 0} onChange={(event) => setValue({ ...value, laborRate: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
-          <label><span className="mb-1 block text-sm">Trasporto</span><input type="number" min="0" step="0.01" value={value.transportCost ?? 0} onChange={(event) => setValue({ ...value, transportCost: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
-          <label><span className="mb-1 block text-sm">Altri costi</span><input type="number" min="0" step="0.01" value={value.otherCosts ?? 0} onChange={(event) => setValue({ ...value, otherCosts: event.target.value })} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input" /></label>
-        </div>
-        <div className="mt-3 space-y-2">{(value.costItems || []).map((item, index) => <div key={index} className="grid grid-cols-1 gap-2 md:grid-cols-5"><input placeholder="Categoria" value={item.category || ''} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, category: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><input placeholder="Descrizione" value={item.description || ''} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, description: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><input type="number" min="0" step="0.01" placeholder="Quantità" value={item.quantity ?? 1} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, quantity: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><input type="number" min="0" step="0.01" placeholder="Costo unitario" value={item.unitCost ?? 0} onChange={(event) => { const costItems = [...value.costItems]; costItems[index] = { ...item, unitCost: event.target.value }; setValue({ ...value, costItems }); }} className="border rounded p-2 dark:bg-dark-input" /><button type="button" onClick={() => setValue({ ...value, costItems: value.costItems.filter((_, itemIndex) => itemIndex !== index) })} className="rounded border text-red-600">Rimuovi</button></div>)}</div>
-        <button type="button" onClick={() => setValue({ ...value, costItems: [...(value.costItems || []), { category: 'Materiale', description: '', quantity: 1, unitCost: 0 }] })} className="mt-3 rounded border px-3 py-1.5 text-sm">Aggiungi costo</button>
-      </div>
-    </>}
-  </div>
-);
+const ProjectForm = ({ value, setValue, customers, materials = [], quotes = [], edgeCatalog = [], linearCatalog = [], canViewFinancials = true, operationalOnly = false }) => {
+  const lines = normalizeWorkLines(value.workLines, value.items);
+  const importQuote = (quoteId) => {
+    const quote = quotes.find((item) => String(item.id) === String(quoteId));
+    if (!quote) return;
+    const imported = copyWorkLines(quote.workLines?.length ? quote.workLines : quote.items, 'quote', quote.id, quote.version);
+    let mode = lines.length ? String(window.prompt('Il progetto contiene giÃ  righe. Scrivi sostituisci, aggiungi o annulla.', 'sostituisci') || '').trim().toLowerCase() : 'replace';
+    mode = mode === 'sostituisci' || mode === 'replace' ? 'replace' : mode === 'aggiungi' || mode === 'add' ? 'add' : 'cancel';
+    if (mode === 'cancel') return;
+    setValue({
+      ...value,
+      clientId: quote.customerId == null ? value.clientId : String(quote.customerId),
+      name: value.name || `Progetto ${quote.quoteNumber || ''}`.trim(),
+      workLines: mergeImportedWorkLines(lines, imported, mode),
+      importSource: { sourceType: 'quote', sourceId: String(quote.id), sourceVersion: quote.version, importedAt: new Date().toISOString() },
+    });
+  };
+  return <div className="space-y-5">
+    {!operationalOnly && <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <label className="block"><span className="mb-1 block text-sm font-medium">Nome progetto *</span><input required value={value.name || ''} onChange={(event) => setValue({ ...value, name: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Cliente *</span><select required value={String(value.clientId || '')} onChange={(event) => { const clientId = event.target.value; const client = customers.find((item) => String(item.id) === clientId); setValue({ ...value, clientId, client: client?.name || 'Cliente non specificato' }); }} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input"><option value="">Seleziona cliente</option>{[...customers].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' })).map((customer) => <option key={customer.id} value={String(customer.id)}>{customer.name}</option>)}</select></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Data inizio *</span><input required type="date" value={value.startDate || ''} onChange={(event) => setValue({ ...value, startDate: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Scadenza (opzionale)</span><input type="date" value={value.deadline || ''} onChange={(event) => setValue({ ...value, deadline: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>
+      {canViewFinancials && <label className="block"><span className="mb-1 block text-sm font-medium">Budget (€)</span><input type="number" min="0" step="0.01" value={value.budget ?? ''} onChange={(event) => setValue({ ...value, budget: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>}
+      <label className="block"><span className="mb-1 block text-sm font-medium">Importa da preventivo</span><select value="" onChange={(event) => importQuote(event.target.value)} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input"><option value="">Seleziona preventivo</option>{quotes.map((quote) => <option key={quote.id} value={String(quote.id)}>{quote.quoteNumber || quote.id}</option>)}</select></label>
+    </div>}
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <label className="block"><span className="mb-1 block text-sm font-medium">Stato</span><select value={value.status || 'In Attesa'} onChange={(event) => setValue({ ...value, status: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">{PROJECT_STATUS_OPTIONS.map((status) => <option key={status}>{status}</option>)}</select></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium">Fase di lavorazione</span><input value={value.phase || ''} onChange={(event) => setValue({ ...value, phase: event.target.value })} placeholder="Taglio, lucidatura, posa..." className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>
+      <label className="block md:col-span-2"><span className="mb-1 block text-sm font-medium">Note di produzione</span><textarea rows={3} value={value.productionNotes || ''} onChange={(event) => setValue({ ...value, productionNotes: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>
+    </div>
+    {!operationalOnly && <WorkLinesEditor value={lines} onChange={(workLines) => setValue({ ...value, workLines })} materials={materials} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} />}
+  </div>;
+};
 
 const Modal = ({ title, onClose, children, wide = false }) => (
   <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50">
@@ -164,8 +75,8 @@ const Modal = ({ title, onClose, children, wide = false }) => (
 );
 
 const ProjectsPage = () => {
-  const { isModalOpen, showModal, hideModal, setBreadcrumbs } = useUI();
-  const { projects = [], customers = [], addProject, updateProject, deleteProject } = useData();
+  const { isModalOpen, showModal, hideModal, setBreadcrumbs, userPreferences, updatePreferences } = useUI();
+  const { projects = [], customers = [], materials = [], quotes = [], addProject, updateProject, deleteProject } = useData();
   const { user, hasPermission } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -175,16 +86,56 @@ const ProjectsPage = () => {
   const [deleteId, setDeleteId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [financials, setFinancials] = useState(null);
+  const [edgeCatalog, setEdgeCatalog] = useState([]);
+  const [linearCatalog, setLinearCatalog] = useState([]);
 
   const canCreate = hasPermission('projects.create');
   const canEdit = hasPermission('projects.edit');
   const canDelete = hasPermission('projects.delete');
-  const canViewFinancials = ['admin', 'manager'].includes(user?.role || '');
+  const canViewFinancials = ['admin', 'manager'].includes(user?.role || '') && hasPermission('invoices.view');
   const operationalOnly = !canViewFinancials;
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Progetti' }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    if (!hasPermission('materials.view')) return undefined;
+    let active = true;
+    Promise.all([
+      apiClient.get('/edge-types').catch(() => ({ data: [] })),
+      apiClient.get('/linear-items').catch(() => ({ data: [] })),
+    ]).then(([edges, linear]) => {
+      if (active) { setEdgeCatalog(edges.data || []); setLinearCatalog(linear.data || []); }
+    });
+    return () => { active = false; };
+  }, [hasPermission]);
+
+  useEffect(() => {
+    const intent = userPreferences.pendingDocumentIntent;
+    if (!intent || intent.targetType !== 'project' || intent.sourceType !== 'quote') return;
+    const quote = quotes.find((item) => String(item.id) === String(intent.sourceId));
+    if (!quote) return;
+    setForm({
+      ...emptyProject,
+      name: `Progetto ${quote.quoteNumber || quote.id}`,
+      clientId: String(quote.customerId || ''),
+      startDate: new Date().toISOString().slice(0, 10),
+      workLines: copyWorkLines(quote.workLines?.length ? quote.workLines : quote.items, 'quote', quote.id, quote.version),
+      quoteId: String(quote.id),
+      importSource: { sourceType: 'quote', sourceId: String(quote.id), sourceVersion: quote.version, importedAt: new Date().toISOString() },
+    });
+    showModal({ id: 'addProject', type: 'add' });
+    updatePreferences({ pendingDocumentIntent: null });
+  }, [quotes, showModal, updatePreferences, userPreferences.pendingDocumentIntent]);
+
+  useEffect(() => {
+    if (userPreferences.openType !== 'project' || !userPreferences.openId) return;
+    const found = projects.find((project) => String(project.id) === String(userPreferences.openId));
+    if (!found) return;
+    void openView(found);
+    updatePreferences({ openId: null, openType: null });
+  }, [projects, userPreferences.openId, userPreferences.openType]);
 
   const filtered = useMemo(() => projects.filter((project) => {
     const query = searchTerm.trim().toLowerCase();
@@ -277,6 +228,28 @@ const ProjectsPage = () => {
     }
   };
 
+  const queueProjectIntent = (project, target) => {
+    const permission = target === 'quote' ? 'quotes.create' : 'invoices.create';
+    if (!hasPermission(permission)) return;
+    const includePhotos = target === 'invoice'
+      ? window.confirm('Copiare nella fattura le foto tecniche del progetto?')
+      : false;
+    updatePreferences({
+      currentPage: target === 'quote' ? 'quotes' : 'invoices',
+      pendingDocumentIntent: {
+        intentId: `project-${project.id}-${target}-${Date.now()}`,
+        targetType: target,
+        sourceType: 'project',
+        sourceId: String(project.id),
+        sourceVersion: project.version,
+        includePhotos,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    hideModal('viewProject');
+    toast.success('Modulo di creazione aperto: controlla e modifica prima di salvare');
+  };
+
   return (
     <div className="p-6 bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text">
       <div className="flex justify-between items-center mb-6">
@@ -309,11 +282,7 @@ const ProjectsPage = () => {
               <label className="block text-sm font-medium mb-1">Stato</label>
               <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="w-full p-2 border rounded-md bg-light-bg dark:bg-dark-input">
                 <option value="">Tutti</option>
-                <option>In Attesa</option>
-                <option>In Corso</option>
-                <option>In Lavorazione</option>
-                <option>Completato</option>
-                <option>Annullato</option>
+                {PROJECT_STATUS_OPTIONS.map((status) => <option key={status}>{status}</option>)}
               </select>
             </div>
           )}
@@ -373,7 +342,7 @@ const ProjectsPage = () => {
       {isModalOpen('addProject') && (
         <Modal title="Nuovo progetto" onClose={() => hideModal('addProject')}>
           <form onSubmit={submitAdd}>
-            <ProjectForm value={form} setValue={setForm} customers={customers} />
+            <ProjectForm value={form} setValue={setForm} customers={customers} materials={materials} quotes={quotes} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} canViewFinancials={canViewFinancials} />
             <div className="flex justify-end gap-3">
               <button type="button" onClick={() => hideModal('addProject')} className="px-4 py-2 border rounded-md">Annulla</button>
               <button disabled={saving} className="px-4 py-2 bg-light-primary text-white rounded-md disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Crea'}</button>
@@ -385,7 +354,7 @@ const ProjectsPage = () => {
       {isModalOpen('editProject') && selected && (
         <Modal title={operationalOnly ? 'Aggiorna lavorazione' : 'Modifica progetto'} onClose={() => hideModal('editProject')}>
           <form onSubmit={submitEdit}>
-            <ProjectForm value={form} setValue={setForm} customers={customers} operationalOnly={operationalOnly} />
+            <ProjectForm value={form} setValue={setForm} customers={customers} materials={materials} quotes={quotes} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} canViewFinancials={canViewFinancials} operationalOnly={operationalOnly} />
             <div className="flex justify-end gap-3">
               <button type="button" onClick={() => hideModal('editProject')} className="px-4 py-2 border rounded-md">Annulla</button>
               <button disabled={saving} className="px-4 py-2 bg-light-primary text-white rounded-md disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button>
@@ -406,10 +375,11 @@ const ProjectsPage = () => {
             )}
             <div><span className="text-gray-500">Stato / fase</span><p>{selected.status} {selected.phase ? `· ${selected.phase}` : ''}</p></div>
             <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selected.productionNotes || '-'}</p></div>
-            <div className="md:col-span-2"><span className="text-gray-500">Scheda tecnica</span><p className="whitespace-pre-wrap">{Object.entries(selected.technicalSheet || {}).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`).join('\n') || '-'}</p></div>
+            <div className="md:col-span-2"><span className="text-gray-500">Lavorazioni</span><WorkLinesReadOnly value={normalizeWorkLines(selected.workLines, selected.items)} showPrices={canViewFinancials} /></div>
             {canViewFinancials && financials && <div className="md:col-span-2 rounded-md bg-gray-50 p-4 dark:bg-gray-800"><p className="font-semibold">Margine reale</p><div className="mt-2 grid grid-cols-2 gap-2 text-sm md:grid-cols-4"><p>Ricavi: {formatEuro(financials.revenue || financials.expectedRevenue)}</p><p>Costi: {formatEuro(financials.totalCost)}</p><p>Margine: {formatEuro(financials.margin)}</p><p>Margine %: {financials.marginPercent == null ? '-' : `${financials.marginPercent}%`}</p></div></div>}
           </div>
           <AttachmentsPanel entityType="project" entityId={String(selected.id)} />
+          <div className="mt-4 flex flex-wrap gap-2">{hasPermission('quotes.create') && <button type="button" onClick={() => queueProjectIntent(selected, 'quote')} className="rounded border px-3 py-2 text-sm">Crea preventivo</button>}{hasPermission('invoices.create') && <button type="button" onClick={() => queueProjectIntent(selected, 'invoice')} className="rounded bg-light-primary px-3 py-2 text-sm text-white">Crea fattura</button>}{selected.quoteId && <button type="button" onClick={() => { updatePreferences({ currentPage: 'quotes', openId: String(selected.quoteId), openType: 'quote' }); hideModal('viewProject'); }} className="rounded border px-3 py-2 text-sm">Apri preventivo collegato</button>}</div>
           <div className="mt-6 flex justify-end"><button onClick={() => hideModal('viewProject')} className="px-4 py-2 border rounded-md">Chiudi</button></div>
         </Modal>
       )}

@@ -13,7 +13,7 @@ const {
   validateUsers,
 } = require('./restore-safety');
 
-const ENTITY_TYPES = ['client', 'supplier', 'order', 'project', 'material', 'quote', 'invoice', 'payment', 'purchase_order', 'delivery_note', 'service_case', 'message_draft', 'appointment', 'quote_template'];
+const ENTITY_TYPES = ['client', 'supplier', 'order', 'project', 'material', 'edge_type', 'linear_item', 'quote', 'invoice', 'payment', 'purchase_order', 'delivery_note', 'service_case', 'message_draft', 'appointment', 'quote_template'];
 const DOCUMENT_CONFIG = {
   quote: { field: 'quoteNumber', prefix: 'PREV' },
   invoice: { field: 'invoiceNumber', prefix: 'FATT' },
@@ -42,6 +42,110 @@ const numeric = (value) => {
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+const roundMoney = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+const EDGE_KEYS = ['front', 'back', 'left', 'right', 'cornerRight', 'cornerLeft'];
+const EDGE_DEFAULT_LENGTHS = { front: 0, back: 0, left: 0, right: 0, cornerRight: 4, cornerLeft: 4 };
+const text = (value) => String(value ?? '').trim();
+
+const normalizeServerEdge = (raw, fallbackLength) => {
+  const edge = raw && typeof raw === 'object' ? raw : {};
+  const lengthCm = edge.lengthCm != null
+    ? numeric(edge.lengthCm)
+    : edge.lengthMeters != null ? numeric(edge.lengthMeters) * 100 : fallbackLength;
+  const price = numeric(edge.unitPrice ?? edge.priceSnapshot);
+  return {
+    active: Boolean(edge.active),
+    type: text(edge.type),
+    nameSnapshot: text(edge.nameSnapshot || edge.name),
+    lengthCm,
+    lengthMeters: edge.lengthMeters == null ? undefined : numeric(edge.lengthMeters),
+    unitPrice: price,
+    priceSnapshot: numeric(edge.priceSnapshot ?? price),
+    materialId: edge.materialId == null || edge.materialId === '' ? undefined : String(edge.materialId),
+  };
+};
+
+const normalizeServerWorkLine = (raw = {}, index = 0) => {
+  const type = ['surface', 'linear', 'manual'].includes(String(raw.type)) ? String(raw.type) : 'manual';
+  const quantity = Math.max(numeric(raw.quantity ?? 1), 0);
+  const lengthCm = Math.max(numeric(raw.lengthCm), 0);
+  const widthCm = Math.max(numeric(raw.widthCm), 0);
+  const edges = type === 'surface'
+    ? Object.fromEntries(EDGE_KEYS.map((key) => [
+      key,
+      normalizeServerEdge(raw.edges?.[key], key === 'front' || key === 'back' ? lengthCm : key === 'left' || key === 'right' ? widthCm : EDGE_DEFAULT_LENGTHS[key]),
+    ]))
+    : undefined;
+  const unitPrice = Math.max(numeric(raw.unitPrice ?? raw.price), 0);
+  const extraCost = Math.max(numeric(raw.extraCost), 0);
+  const squareMeters = type === 'surface' ? quantity * (lengthCm / 100) * (widthCm / 100) : 0;
+  const linearMeters = type === 'linear' ? quantity * Math.max(numeric(raw.linearMeters), 0) : 0;
+  const materialCost = type === 'surface' ? squareMeters * unitPrice : type === 'linear' ? linearMeters * unitPrice : quantity * unitPrice;
+  const edgeCost = type === 'surface'
+    ? EDGE_KEYS.reduce((sum, key) => {
+      const edge = edges[key];
+      if (!edge.active) return sum;
+      return sum + quantity * numeric(edge.lengthMeters ?? edge.lengthCm / 100) * numeric(edge.unitPrice ?? edge.priceSnapshot);
+    }, 0)
+    : 0;
+  return {
+    id: raw.id == null || raw.id === '' ? `work-line-${index + 1}` : String(raw.id),
+    type,
+    description: text(raw.description || raw.linearItemNameSnapshot || raw.materialNameSnapshot || (type === 'manual' ? 'Voce manuale' : 'Lavorazione')),
+    quantity,
+    lengthCm: type === 'surface' ? lengthCm : undefined,
+    widthCm: type === 'surface' ? widthCm : undefined,
+    linearMeters: type === 'linear' ? Math.max(numeric(raw.linearMeters), 0) : undefined,
+    squareMeters: type === 'surface' ? squareMeters : undefined,
+    linearItemId: type === 'linear' && (raw.linearItemId ?? raw.linearCatalogId) != null
+      && (raw.linearItemId ?? raw.linearCatalogId) !== ''
+      ? String(raw.linearItemId ?? raw.linearCatalogId) : undefined,
+    linearItemNameSnapshot: type === 'linear' ? text(raw.linearItemNameSnapshot || raw.linearItemName) : undefined,
+    materialId: raw.materialId == null || raw.materialId === '' ? undefined : String(raw.materialId),
+    materialNameSnapshot: text(raw.materialNameSnapshot || raw.materialName),
+    thickness: raw.thickness == null || raw.thickness === '' ? undefined : raw.thickness,
+    variant: text(raw.variant),
+    unit: text(raw.unit || (type === 'surface' ? 'm²' : type === 'linear' ? 'ml' : 'pz')),
+    unitPrice,
+    materialCost: roundMoney(materialCost),
+    edgeCost: roundMoney(edgeCost),
+    extraCost,
+    total: roundMoney(materialCost + edgeCost + extraCost),
+    edges,
+    notes: text(raw.notes),
+    sortOrder: Number.isFinite(Number(raw.sortOrder)) ? Number(raw.sortOrder) : index,
+    taxRate: numeric(raw.taxRate),
+    taxNature: text(raw.taxNature).toUpperCase(),
+    importSource: raw.importSource && typeof raw.importSource === 'object' ? raw.importSource : undefined,
+  };
+};
+
+const normalizeServerWorkLines = (raw, legacyItems) => {
+  const source = Array.isArray(raw) ? raw : Array.isArray(legacyItems) ? legacyItems : [];
+  return source
+    .map((line, index) => normalizeServerWorkLine(line, index))
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((line, index) => ({ ...line, sortOrder: index }));
+};
+
+const workLineDescription = (line) => {
+  if (line.type === 'surface') return `${line.description} (${line.quantity} pz × ${line.lengthCm} × ${line.widthCm} cm, ${Number(line.squareMeters || 0).toFixed(2)} m²)`;
+  if (line.type === 'linear') return `${line.description} (${line.quantity} × ${line.linearMeters} ml)`;
+  return line.description || 'Voce manuale';
+};
+
+const workLinesToItems = (lines, existingItems, invoice) => lines.map((line, index) => ({
+  description: workLineDescription(line),
+  quantity: 1,
+  unitPrice: roundMoney(line.total),
+  taxRate: invoice ? numeric(existingItems?.[index]?.taxRate ?? line.taxRate ?? 22) : 0,
+  taxNature: invoice ? text(existingItems?.[index]?.taxNature || line.taxNature).toUpperCase() : '',
+  materialId: line.materialId || null,
+  workLineId: line.id,
+  workLineType: line.type,
+  workLine: line,
+}));
 
 class CrmDatabase {
   constructor({ dataDir, backupDir, attachmentsDir }) {
@@ -133,7 +237,34 @@ class CrmDatabase {
         value TEXT NOT NULL
       );
     `);
+    for (const statement of [
+      'ALTER TABLE attachments ADD COLUMN caption TEXT NOT NULL DEFAULT \'\'',
+      'ALTER TABLE attachments ADD COLUMN include_in_export INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE attachments ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0',
+    ]) {
+      try { this.db.exec(statement); } catch (error) {
+        if (!String(error.message || '').includes('duplicate column name')) throw error;
+      }
+    }
     this.cleanupOperations();
+    this.normalizeCompatibilityData();
+  }
+
+  normalizeCompatibilityData() {
+    const rows = this.db.prepare('SELECT * FROM entities').all();
+    const update = this.db.prepare(`
+      UPDATE entities SET data_json = ?, updated_at = ?
+      WHERE entity_type = ? AND id = ?
+    `);
+    this.db.transaction(() => {
+      rows.forEach((row) => {
+        const current = JSON.parse(row.data_json);
+        const normalized = this.normalizeData(row.entity_type, current);
+        if (JSON.stringify(current) === JSON.stringify(normalized)) return;
+        const timestamp = now();
+        update.run(JSON.stringify(normalized), timestamp, row.entity_type, row.id);
+      });
+    })();
   }
 
   close() {
@@ -151,7 +282,7 @@ class CrmDatabase {
   normalizeData(type, input) {
     const data = clone(input) || {};
 
-    for (const key of ['id', 'clientId', 'customerId', 'supplierId', 'projectId', 'quoteId', 'invoiceId']) {
+    for (const key of ['id', 'clientId', 'customerId', 'supplierId', 'projectId', 'quoteId', 'invoiceId', 'materialId']) {
       if (data[key] != null && data[key] !== '') data[key] = String(data[key]);
     }
 
@@ -165,6 +296,8 @@ class CrmDatabase {
         unitPrice: numeric(item.unitPrice),
         taxRate: numeric(item.taxRate),
         taxNature: String(item.taxNature || '').trim().toUpperCase(),
+        workLineId: item.workLineId == null || item.workLineId === '' ? undefined : String(item.workLineId),
+        workLineType: ['surface', 'linear', 'manual'].includes(String(item.workLineType)) ? String(item.workLineType) : undefined,
       }));
     }
 
@@ -198,6 +331,26 @@ class CrmDatabase {
         stock: stockQuantity,
         minStockLevel,
         minQuantity: minStockLevel,
+        thickness: data.thickness == null || data.thickness === '' ? undefined : data.thickness,
+        variant: text(data.variant),
+        active: data.active !== false,
+      };
+    }
+
+    if (type === 'edge_type' || type === 'linear_item') {
+      const unitPrice = numeric(data.unitPrice ?? data.price);
+      return {
+        ...data,
+        type,
+        entityType: type,
+        name: text(data.name),
+        unit: type === 'linear_item' ? text(data.unit || 'ml') : 'ml',
+        unitPrice,
+        price: unitPrice,
+        materialId: data.materialId == null || data.materialId === '' ? undefined : String(data.materialId),
+        thickness: data.thickness == null || data.thickness === '' ? undefined : data.thickness,
+        variant: text(data.variant),
+        active: data.active !== false,
       };
     }
 
@@ -260,11 +413,13 @@ class CrmDatabase {
         ...data,
         type: 'project', entityType: 'project',
         title: data.title ?? data.name ?? '', name: data.name ?? data.title ?? '',
-        deadline: data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '',
-        endDate: data.endDate ?? data.deadline ?? data.estimatedDelivery ?? '',
+        deadline: text(data.deadline ?? data.endDate ?? data.estimatedDelivery) || null,
+        endDate: text(data.endDate ?? data.deadline ?? data.estimatedDelivery) || null,
         budget: numeric(data.budget), costItems, technicalSheet,
         laborHours: numeric(data.laborHours), laborRate: numeric(data.laborRate),
         transportCost: numeric(data.transportCost), otherCosts: numeric(data.otherCosts),
+        status: data.status === 'In Corso' ? 'In Lavorazione' : text(data.status || 'In Attesa'),
+        workLines: normalizeServerWorkLines(data.workLines, data.items),
       };
     }
 
@@ -297,6 +452,21 @@ class CrmDatabase {
         data.deadline = data.deadline ?? data.endDate ?? data.estimatedDelivery ?? '';
         data.endDate = data.endDate ?? data.deadline;
       }
+      if (type === 'project') {
+        data.deadline = text(data.deadline) || null;
+        data.endDate = text(data.endDate) || null;
+        data.status = data.status === 'In Corso' ? 'In Lavorazione' : text(data.status || 'In Attesa');
+        data.workLines = normalizeServerWorkLines(data.workLines, data.items);
+      }
+    }
+
+    if (['quote', 'invoice'].includes(type)) {
+      const hasStructuredLines = Array.isArray(data.workLines);
+      data.workLines = normalizeServerWorkLines(hasStructuredLines ? data.workLines : undefined, data.items);
+      if (hasStructuredLines || data.workLines.length) {
+        data.items = workLinesToItems(data.workLines, data.items, type === 'invoice');
+      }
+      if (type === 'invoice') data.dueDate = text(data.dueDate || data.date) || null;
     }
 
     if (['quote', 'invoice'].includes(type) && Array.isArray(data.items)) {
@@ -710,6 +880,9 @@ class CrmDatabase {
       sizeBytes: row.size_bytes,
       createdBy: row.created_by,
       createdAt: row.created_at,
+      caption: row.caption || '',
+      includeInExport: Boolean(row.include_in_export),
+      sortOrder: Number(row.sort_order || 0),
     };
   }
 
@@ -727,12 +900,16 @@ class CrmDatabase {
         sizeBytes: Number(input.sizeBytes || 0),
         createdBy: user?.id ? String(user.id) : null,
         createdAt: now(),
+        caption: text(input.caption),
+        includeInExport: Boolean(input.includeInExport),
+        sortOrder: Number.isFinite(Number(input.sortOrder)) ? Number(input.sortOrder) : 0,
       };
       this.db.prepare(`
         INSERT INTO attachments(
           id, entity_type, entity_id, original_name, stored_name,
-          mime_type, size_bytes, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          mime_type, size_bytes, created_by, created_at, caption,
+          include_in_export, sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         record.id,
         record.entityType,
@@ -743,6 +920,9 @@ class CrmDatabase {
         record.sizeBytes,
         record.createdBy,
         record.createdAt,
+        record.caption,
+        record.includeInExport ? 1 : 0,
+        record.sortOrder,
       );
       this.writeAudit({
         user,
@@ -765,8 +945,53 @@ class CrmDatabase {
     return this.db.prepare(`
       SELECT * FROM attachments
       WHERE entity_type = ? AND entity_id = ?
-      ORDER BY created_at DESC
+      ORDER BY sort_order ASC, created_at ASC
     `).all(entityType, String(entityId)).map((row) => this.attachmentRecord(row));
+  }
+
+  updateAttachment(id, patch, user) {
+    const current = this.getAttachment(id);
+    if (!current) return null;
+    const next = {
+      ...current,
+      caption: patch.caption == null ? current.caption : text(patch.caption).slice(0, 500),
+      includeInExport: patch.includeInExport == null ? current.includeInExport : Boolean(patch.includeInExport),
+      sortOrder: patch.sortOrder == null ? current.sortOrder : Math.max(0, Number(patch.sortOrder) || 0),
+    };
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE attachments
+        SET caption = ?, include_in_export = ?, sort_order = ?
+        WHERE id = ?
+      `).run(next.caption, next.includeInExport ? 1 : 0, next.sortOrder, String(id));
+      this.writeAudit({ user, type: current.entityType, id: current.entityId, action: 'attachment.update', previous: current, next });
+    })();
+    return next;
+  }
+
+  copyAttachments(sourceType, sourceId, targetType, targetId, user, predicate = () => true) {
+    const source = this.listAttachments(sourceType, sourceId)
+      .map((item) => this.getAttachment(item.id))
+      .filter((item) => item && predicate(item));
+    if (!source.length) return [];
+    const destination = this.attachmentDirectory(targetType, targetId);
+    fs.mkdirSync(destination, { recursive: true });
+    const records = source.map((item, index) => {
+      const storedName = `${crypto.randomUUID()}${path.extname(item.originalName).slice(0, 20)}`;
+      fs.copyFileSync(item.absolutePath, path.join(destination, storedName));
+      return {
+        entityType: targetType,
+        entityId: String(targetId),
+        originalName: item.originalName,
+        storedName,
+        mimeType: item.mimeType,
+        sizeBytes: item.sizeBytes,
+        caption: item.caption,
+        includeInExport: item.includeInExport,
+        sortOrder: index,
+      };
+    });
+    return this.addAttachments(records, user);
   }
 
   getAttachment(id) {
@@ -830,7 +1055,11 @@ class CrmDatabase {
     }
 
     for (const type of ENTITY_TYPES) {
-      if (!Object.prototype.hasOwnProperty.call(backup.data, type) || !Array.isArray(backup.data[type])) {
+      const optionalNewCatalog = ['edge_type', 'linear_item'].includes(type);
+      if (!Object.prototype.hasOwnProperty.call(backup.data, type) && optionalNewCatalog) {
+        backup.data[type] = [];
+      }
+      if (!Array.isArray(backup.data[type])) {
         const error = new Error(`Il backup deve contenere la sezione completa ${type}`);
         error.status = 400;
         throw error;
@@ -1110,4 +1339,4 @@ class CrmDatabase {
 
 }
 
-module.exports = { CrmDatabase, ENTITY_TYPES };
+module.exports = { CrmDatabase, ENTITY_TYPES, normalizeServerWorkLines, workLinesToItems };

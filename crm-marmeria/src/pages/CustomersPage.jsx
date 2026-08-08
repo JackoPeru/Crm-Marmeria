@@ -118,13 +118,15 @@ const CustomersPage = () => {
         customer.email,
         customer.phone,
         customer.address,
+        customer.vatNumber,
+        customer.fiscalCode,
       ].some((value) => String(value || '').toLowerCase().includes(query));
       const customerType = customer.clientType || customer.type || 'Privato';
       const matchesType = !typeFilter || customerType === typeFilter;
       const hasVat = Boolean(String(customer.vatNumber || '').trim());
       const matchesVat = !vatFilter || (vatFilter === 'si' ? hasVat : !hasVat);
       return matchesSearch && matchesType && matchesVat;
-    });
+    }).sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' }));
   }, [customers, search, typeFilter, vatFilter]);
 
   const submitAdd = async (event) => {

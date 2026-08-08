@@ -12,7 +12,7 @@ const { renderQuoteDocument } = require('./quote-document');
 const { createGmailDraftService } = require('./gmail-drafts');
 const { createGoogleDriveBackupService } = require('./google-drive-backups');
 const { createSdiPecService } = require('./sdi-pec');
-const { CrmDatabase, ENTITY_TYPES } = require('./database');
+const { CrmDatabase, ENTITY_TYPES, normalizeServerWorkLines, workLinesToItems } = require('./database');
 const {
   authenticateToken,
   requirePermission,
@@ -45,6 +45,8 @@ const ROUTES = {
   orders: { type: 'order', permission: 'orders' },
   projects: { type: 'project', permission: 'projects' },
   materials: { type: 'material', permission: 'materials' },
+  'edge-types': { type: 'edge_type', permission: 'materials' },
+  'linear-items': { type: 'linear_item', permission: 'materials' },
   quotes: { type: 'quote', permission: 'quotes' },
   'quote-templates': { type: 'quote_template', permission: 'quotes' },
   invoices: { type: 'invoice', permission: 'invoices' },
@@ -54,6 +56,36 @@ const ROUTES = {
   'service-cases': { type: 'service_case', permission: 'projects' },
   'message-drafts': { type: 'message_draft', permission: 'clients' },
   appointments: { type: 'appointment', permission: 'calendar' },
+};
+
+const IMPORT_SOURCE_TYPES = {
+  project: ['quote'],
+  quote: ['project'],
+  invoice: ['quote', 'project'],
+};
+
+const resolveImportSource = (db, user, targetType, importSource) => {
+  if (importSource == null) return null;
+  const allowedTypes = IMPORT_SOURCE_TYPES[targetType] || [];
+  const sourceType = String(importSource?.sourceType || '');
+  const sourceId = String(importSource?.sourceId || '');
+  if (!allowedTypes.includes(sourceType) || !sourceId) {
+    const error = new Error('Sorgente import non consentita');
+    error.status = 400;
+    throw error;
+  }
+  if (!hasEntityPermission(user, sourceType, 'view')) {
+    const error = new Error('Permesso di visualizzazione della sorgente richiesto');
+    error.status = 403;
+    throw error;
+  }
+  const source = db.get(sourceType, sourceId);
+  if (!source) {
+    const error = new Error('Sorgente import non trovata');
+    error.status = 404;
+    throw error;
+  }
+  return { sourceType, sourceId, source };
 };
 
 const ADMIN_PERMISSIONS = [
@@ -231,7 +263,7 @@ const redactFinancials = (value) => {
 };
 const presentEntity = (user, type, item) => {
   if (item == null || canViewFinancials(user)) return item;
-  return ['project', 'order', 'material', 'quote', 'invoice', 'payment', 'purchase_order', 'delivery_note', 'service_case', 'message_draft', 'client', 'supplier'].includes(type)
+  return ['project', 'order', 'material', 'edge_type', 'linear_item', 'quote', 'invoice', 'payment', 'purchase_order', 'delivery_note', 'service_case', 'message_draft', 'client', 'supplier'].includes(type)
     ? redactFinancials(item)
     : item;
 };
@@ -290,6 +322,18 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
       data.minStockLevel = minStockLevel;
       data.minQuantity = minStockLevel;
     }
+    data.thickness = data.thickness == null || data.thickness === '' ? undefined : data.thickness;
+    data.variant = String(data.variant || '').trim();
+    data.active = data.active !== false;
+  }
+  if (type === 'edge_type' || type === 'linear_item') {
+    data.type = type; data.entityType = type;
+    data.name = String(data.name || '').trim();
+    data.unitPrice = numeric(data.unitPrice ?? data.price, { strict: true, field: 'prezzo unitario' });
+    data.price = data.unitPrice;
+    data.unit = type === 'linear_item' ? String(data.unit || 'ml') : 'ml';
+    data.materialId = data.materialId == null || data.materialId === '' ? null : String(data.materialId);
+    data.active = data.active !== false;
   }
   if (type === 'appointment') {
     data.type = 'appointment';
@@ -320,6 +364,20 @@ const normalize = (type, raw = {}, { defaults = false } = {}) => {
     }
     if (type === 'project' && hasOwn(data, 'budget')) data.budget = numeric(data.budget, { strict: true, field: 'budget' });
     if (hasAny(data, ['amount', 'total'])) data.amount = numeric(data.amount ?? data.total, { strict: true, field: 'importo' });
+    if (type === 'project') {
+      if (defaults || hasOwn(data, 'status')) data.status = data.status === 'In Corso' ? 'In Lavorazione' : String(data.status || 'In Attesa').trim();
+      if (defaults || hasAny(data, ['deadline', 'endDate', 'estimatedDelivery'])) {
+        data.deadline = String(data.deadline || data.endDate || data.estimatedDelivery || '').trim() || null;
+        data.endDate = data.deadline;
+      }
+      if (defaults || hasAny(data, ['workLines', 'items'])) data.workLines = Array.isArray(data.workLines) ? data.workLines : (Array.isArray(data.items) ? data.items : []);
+    }
+    if (type === 'invoice') data.dueDate = String(data.dueDate || data.date || '').trim() || null;
+  }
+  if (['quote', 'invoice'].includes(type) && (defaults || hasAny(data, ['workLines', 'items']))) {
+    const lines = normalizeServerWorkLines(data.workLines, data.items);
+    data.workLines = lines;
+    data.items = workLinesToItems(lines, data.items, type === 'invoice');
   }
   if (type === 'payment') {
     data.type = 'payment';
@@ -372,9 +430,11 @@ const validateEntity = (type, payload) => {
     client: ['name'],
     supplier: ['name'],
     material: ['name'],
+    edge_type: ['name'],
+    linear_item: ['name'],
     project: ['name'],
     quote: ['date', 'customerId'],
-    invoice: ['date', 'customerId'],
+    invoice: ['date', 'dueDate', 'customerId'],
     payment: ['clientId', 'date', 'amount'],
     purchase_order: ['title', 'supplier', 'date'],
     delivery_note: ['title', 'date'],
@@ -390,10 +450,40 @@ const validateEntity = (type, payload) => {
     error.status = 400;
     throw error;
   }
-  if (['quote', 'invoice'].includes(type) && (!Array.isArray(payload.items) || !payload.items.length)) {
+  if (['quote', 'invoice'].includes(type)
+    && (!Array.isArray(payload.items) || !payload.items.length)
+    && (!Array.isArray(payload.workLines) || !payload.workLines.length)) {
     const error = new Error('Inserire almeno una voce nel documento');
     error.status = 400;
     throw error;
+  }
+  if (['quote', 'invoice', 'project'].includes(type) && Array.isArray(payload.workLines)) {
+    payload.workLines.forEach((line, index) => {
+      const lineType = ['surface', 'linear', 'manual'].includes(String(line?.type)) ? String(line.type) : 'manual';
+      const quantity = numeric(line?.quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        const error = new Error(`Quantità lavorazione non valida nella riga ${index + 1}`); error.status = 400; throw error;
+      }
+      if (lineType === 'surface' && (numeric(line?.lengthCm) <= 0 || numeric(line?.widthCm) <= 0)) {
+        const error = new Error(`Misure superficie non valide nella riga ${index + 1}`); error.status = 400; throw error;
+      }
+      if (lineType === 'linear' && numeric(line?.linearMeters) <= 0) {
+        const error = new Error(`Metri lineari non validi nella riga ${index + 1}`); error.status = 400; throw error;
+      }
+      if (lineType === 'surface' && line?.edges && typeof line.edges === 'object') {
+        Object.entries(line.edges).forEach(([edgeKey, edge]) => {
+          if (!edge?.active) return;
+          if (numeric(edge.lengthMeters ?? (numeric(edge.lengthCm) / 100)) <= 0 || numeric(edge.unitPrice ?? edge.priceSnapshot) < 0) {
+            const error = new Error(`Bordo non valido nella riga ${index + 1}: ${edgeKey}`);
+            error.status = 400;
+            throw error;
+          }
+        });
+      }
+      if (lineType === 'manual' && !String(line?.description || '').trim()) {
+        const error = new Error(`Descrizione lavorazione mancante nella riga ${index + 1}`); error.status = 400; throw error;
+      }
+    });
   }
   if (['quote', 'invoice'].includes(type)) {
     payload.items.forEach((item, index) => {
@@ -427,6 +517,9 @@ const validateEntity = (type, payload) => {
         throw error;
       }
     }
+  }
+  if (['edge_type', 'linear_item'].includes(type) && payload.unitPrice != null && numeric(payload.unitPrice) < 0) {
+    const error = new Error('Il prezzo catalogo non può essere negativo'); error.status = 400; throw error;
   }
   if (type === 'project' && payload.budget != null && numeric(payload.budget) < 0) {
     const error = new Error('Il budget non può essere negativo');
@@ -628,7 +721,8 @@ const decodeXml = (value) => String(value || '')
   .replace(/&lt;/g, '<')
   .replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"')
-  .replace(/&#39;/g, "'");
+  .replace(/&#39;/g, "'")
+  .replace(/&#xA;/gi, '\n');
 const columnIndex = (reference) => {
   const letters = String(reference || '').match(/[A-Z]+/i)?.[0]?.toUpperCase() || '';
   return [...letters].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0) - 1;
@@ -650,27 +744,46 @@ const parseCsvRow = (line) => {
 };
 const parseCsv = (buffer) => String(buffer || '').replace(/^\uFEFF/, '')
   .split(/\r?\n/).filter((row) => row.trim()).map(parseCsvRow);
-const extractXlsxRows = (buffer) => {
+const parseWorksheetRows = (worksheetXml, sharedStrings) => [...String(worksheetXml || '').matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].map((row) => {
+  const cells = [];
+  for (const cell of row[1].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
+    const index = columnIndex(cell[1].match(/\br="([^"]+)"/)?.[1]);
+    const type = cell[1].match(/\bt="([^"]+)"/)?.[1];
+    const body = cell[2];
+    const inline = [...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((match) => match[1]).join('');
+    const raw = body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? inline ?? '';
+    cells[index] = type === 's' ? sharedStrings[Number(raw)] || '' : decodeXml(raw);
+  }
+  return cells;
+});
+
+const extractXlsxSheets = (buffer) => {
   const zip = new PizZip(buffer);
   const sharedStringsXml = zip.file('xl/sharedStrings.xml')?.asText() || '';
   const sharedStrings = [...sharedStringsXml.matchAll(/<si>([\s\S]*?)<\/si>/g)]
     .map((match) => decodeXml([...match[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)]
       .map((item) => item[1]).join('')));
-  const worksheet = zip.file('xl/worksheets/sheet1.xml');
-  if (!worksheet) throw Object.assign(new Error('Il file Excel non contiene il primo foglio leggibile'), { status: 400 });
-  return [...worksheet.asText().matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].map((row) => {
-    const cells = [];
-    for (const cell of row[1].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
-      const index = columnIndex(cell[1].match(/\br="([^"]+)"/)?.[1]);
-      const type = cell[1].match(/\bt="([^"]+)"/)?.[1];
-      const body = cell[2];
-      const inline = body.match(/<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/is>/)?.[1];
-      const raw = body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? inline ?? '';
-      cells[index] = type === 's' ? sharedStrings[Number(raw)] || '' : decodeXml(raw);
-    }
-    return cells;
-  });
+  const workbookXml = zip.file('xl/workbook.xml')?.asText() || '';
+  const relationshipsXml = zip.file('xl/_rels/workbook.xml.rels')?.asText() || '';
+  const relationships = Object.fromEntries([...relationshipsXml.matchAll(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)]
+    .map((match) => [match[1], match[2]]));
+  const entries = [...workbookXml.matchAll(/<sheet\b([^>]*)>/g)].map((match, index) => ({
+    name: decodeXml(match[1].match(/\bname="([^"]+)"/)?.[1] || `Foglio ${index + 1}`),
+    relationshipId: match[1].match(/\br:id="([^"]+)"/)?.[1],
+    index,
+  }));
+  const fallbackFiles = Object.keys(zip.files).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name)).sort();
+  const sheets = (entries.length ? entries : fallbackFiles.map((name, index) => ({ name: `Foglio ${index + 1}`, index, target: name })))
+    .map((entry) => {
+      const target = entry.target || relationships[entry.relationshipId] || `worksheets/sheet${entry.index + 1}.xml`;
+      const pathName = target.replace(/^\/+/, '').startsWith('xl/') ? target.replace(/^\/+/, '') : `xl/${target.replace(/^\/+/, '')}`;
+      const worksheet = zip.file(pathName);
+      return worksheet ? { name: entry.name, rows: parseWorksheetRows(worksheet.asText(), sharedStrings) } : null;
+    }).filter(Boolean);
+  if (!sheets.length) throw Object.assign(new Error('Il file Excel non contiene fogli leggibili'), { status: 400 });
+  return sheets;
 };
+const extractXlsxRows = (buffer) => extractXlsxSheets(buffer)[0].rows;
 const normalizedHeader = (value) => String(value || '').toLocaleLowerCase('it-IT')
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .replace(/[^a-z0-9]+/g, ' ').trim();
@@ -700,11 +813,21 @@ const spreadsheetRows = (file) => {
   if (!['.xlsx', '.csv'].includes(extension)) {
     throw Object.assign(new Error('Carica un file .xlsx o .csv'), { status: 400 });
   }
-  const rows = extension === '.csv' ? parseCsv(file.buffer) : extractXlsxRows(file.buffer);
+  const sheets = extension === '.csv'
+    ? [{ name: path.basename(String(file.originalname || 'CSV'), extension), rows: parseCsv(file.buffer) }]
+    : extractXlsxSheets(file.buffer);
+  const selected = sheets[0];
+  const rows = selected.rows;
   const [rawHeaders = [], ...rawRows] = rows;
   const headers = rawHeaders.map((value) => String(value || '').trim());
   if (!headers.filter(Boolean).length) throw Object.assign(new Error('Intestazioni colonne non trovate'), { status: 400 });
-  return { headers, rows: rawRows.filter((row) => row.some((value) => String(value || '').trim())) };
+  return {
+    sheetName: selected.name,
+    sheetNames: sheets.map((sheet) => sheet.name),
+    sheets,
+    headers,
+    rows: rawRows.filter((row) => row.some((value) => String(value || '').trim())),
+  };
 };
 const dateFromSpreadsheet = (value) => {
   const raw = String(value || '').trim();
@@ -740,6 +863,75 @@ const importRowsFromSpreadsheet = (file, mapping) => {
   }).filter((row) => row.clientName);
   if (!rows.length) throw Object.assign(new Error('Nessuna riga con un cliente da importare'), { status: 400 });
   return { headers: sheet.headers, rows };
+};
+
+const MATERIAL_IMPORT_FIELDS = ['name', 'thickness', 'unitPrice', 'variant', 'unit', 'category'];
+const MATERIAL_HEADER_ALIASES = {
+  name: ['nome', 'materiale', 'descrizione', 'articolo', 'prodotto'],
+  thickness: ['spessore', 'spessore mm', 'thickness'],
+  unitPrice: ['prezzo', 'prezzo unitario', 'prezzo euro', 'costo', 'price'],
+  variant: ['variante', 'finitura', 'versione'],
+  unit: ['unita', 'unità', 'unita misura', 'udm'],
+  category: ['categoria', 'tipo', 'classe'],
+};
+const suggestMaterialMapping = (headers) => Object.fromEntries(MATERIAL_IMPORT_FIELDS.map((field) => {
+  const aliases = MATERIAL_HEADER_ALIASES[field].map(normalizedHeader);
+  const header = headers.find((value) => aliases.includes(normalizedHeader(value)));
+  return [field, header || ''];
+}));
+const materialIdentity = (row) => [row.name, row.supplier, row.thickness, row.variant]
+  .map((value) => normalizedHeader(value)).join('|');
+const materialRowsFromSpreadsheet = (file, mapping = {}) => {
+  const extension = path.extname(String(file?.originalname || '')).toLowerCase();
+  if (extension !== '.xlsx') throw Object.assign(new Error('Il listino materiali richiede un file .xlsx'), { status: 400 });
+  const workbook = spreadsheetRows(file);
+  const sheets = workbook.sheets.map((sheet) => {
+    const headers = sheet.rows[0]?.map((value) => String(value || '').trim()) || [];
+    const rawRows = sheet.rows.slice(1).filter((row) => row.some((value) => String(value || '').trim()));
+    const selectedMapping = mapping?.sheets?.[sheet.name] || mapping?.[sheet.name] || suggestMaterialMapping(headers);
+    const indexes = Object.fromEntries(MATERIAL_IMPORT_FIELDS.map((field) => [field, headers.findIndex((header) => header === String(selectedMapping?.[field] || ''))]));
+    const invalid = [];
+    const rows = [];
+    rawRows.forEach((values, offset) => {
+      const value = (field) => indexes[field] < 0 ? '' : String(values[indexes[field]] ?? '').trim();
+      const name = value('name');
+      let unitPrice = 0;
+      try { unitPrice = numeric(value('unitPrice'), { strict: true, field: 'prezzo listino' }); } catch { invalid.push({ rowNumber: offset + 2, reason: 'Prezzo non valido', values }); return; }
+      if (!name || unitPrice < 0) { invalid.push({ rowNumber: offset + 2, reason: 'Nome o prezzo mancanti/non validi', values }); return; }
+      rows.push({
+        rowNumber: offset + 2,
+        name,
+        supplier: sheet.name,
+        thickness: value('thickness') || undefined,
+        unitPrice,
+        price: unitPrice,
+        variant: value('variant'),
+        unit: value('unit') || 'm²',
+        category: value('category') || 'Listino Excel',
+      });
+    });
+    return { name: sheet.name, headers, mapping: selectedMapping, rows, invalid, totalRows: rawRows.length };
+  });
+  return { fileHash: crypto.createHash('sha256').update(file.buffer).digest('hex'), sheets };
+};
+const materialImportAnalysis = (file, mapping = {}, database) => {
+  const parsed = materialRowsFromSpreadsheet(file, mapping);
+  const existingKeys = new Set(database.list('material').map(materialIdentity));
+  const seen = new Set();
+  let valid = 0;
+  let duplicates = 0;
+  parsed.sheets = parsed.sheets.map((sheet) => ({
+    ...sheet,
+    rows: sheet.rows.map((row) => {
+      valid += 1;
+      const key = materialIdentity(row);
+      const duplicate = existingKeys.has(key) || seen.has(key);
+      if (duplicate) duplicates += 1;
+      seen.add(key);
+      return { ...row, duplicate, importKey: `excel-material:${parsed.fileHash}:${normalizedHeader(sheet.name)}:${row.rowNumber}` };
+    }),
+  }));
+  return { ...parsed, valid, duplicates, invalid: parsed.sheets.reduce((sum, sheet) => sum + sheet.invalid.length, 0) };
 };
 
 const createRealtime = (server) => {
@@ -884,6 +1076,7 @@ async function createCrmServer(options = {}) {
       || route === '/api/backup/restore'
       || route === '/api/backup/clear'
       || route === '/api/imports/history/commit'
+      || route === '/api/imports/materials/commit'
       || route === '/api/integrations/google-drive-backups/run'
       || /^\/api\/invoices\/[^/]+\/electronic\/send$/.test(route)
       || /^\/api\/backups\/[^/]+\/restore$/.test(route);
@@ -1411,13 +1604,16 @@ async function createCrmServer(options = {}) {
     const client = db.get('client', req.params.id);
     if (!client) return res.status(404).json({ error: 'Cliente non trovato' });
     const clientId = String(client.id);
-    const projects = db.list('project').filter((item) => String(item.clientId || item.customerId || '') === clientId);
-    const quotes = db.list('quote').filter((item) => String(item.customerId || item.clientId || '') === clientId);
-    const invoices = db.list('invoice').filter((item) => String(item.customerId || item.clientId || '') === clientId);
-    const serviceCases = db.list('service_case').filter((item) => String(item.clientId || '') === clientId);
+    const canSeeProjects = hasEntityPermission(req.user, 'project', 'view');
+    const canSeeQuotes = hasEntityPermission(req.user, 'quote', 'view');
+    const canSeeInvoices = hasEntityPermission(req.user, 'invoice', 'view');
+    const projects = canSeeProjects ? db.list('project').filter((item) => String(item.clientId || item.customerId || '') === clientId) : [];
+    const quotes = canSeeQuotes ? db.list('quote').filter((item) => String(item.customerId || item.clientId || '') === clientId) : [];
+    const invoices = canSeeInvoices ? db.list('invoice').filter((item) => String(item.customerId || item.clientId || '') === clientId) : [];
+    const serviceCases = canSeeProjects ? db.list('service_case').filter((item) => String(item.clientId || '') === clientId) : [];
     const messageDrafts = db.list('message_draft').filter((item) => String(item.clientId || '') === clientId);
     const canSeeFinancials = canViewFinancials(req.user);
-    const canSeePayments = canSeeFinancials && hasEntityPermission(req.user, 'payment', 'view');
+    const canSeePayments = canSeeFinancials && canSeeInvoices && hasEntityPermission(req.user, 'payment', 'view');
     const payments = canSeePayments
       ? db.list('payment').filter((item) => String(item.clientId) === clientId)
       : [];
@@ -1426,33 +1622,51 @@ async function createCrmServer(options = {}) {
       result[payment.invoiceId] = (result[payment.invoiceId] || 0) + Number(payment.amount || 0);
       return result;
     }, {});
-    const invoiceRows = invoices.map((invoice) => {
+    const invoiceRows = [...invoices].sort((left, right) => String(right.date || right.createdAt || '').localeCompare(String(left.date || left.createdAt || ''))).map((invoice) => {
       const total = Number(invoice.total ?? invoice.amount ?? 0);
+      const invoicePayments = canSeePayments
+        ? payments.filter((payment) => String(payment.invoiceId || '') === String(invoice.id))
+        : [];
       const paid = Number((paymentByInvoice[invoice.id] || 0).toFixed(2));
-      const remaining = Number(Math.max(0, total - paid).toFixed(2));
+      const historicalPaid = String(invoice.status || '').toLowerCase() === 'pagata' && paid === 0;
+      const remaining = Number(Math.max(0, historicalPaid ? 0 : total - paid).toFixed(2));
       const computedStatus = !canSeePayments || paid === 0
         ? invoice.status || 'Non Pagata'
         : remaining === 0 ? 'Pagata' : 'Pagata Parzialmente';
       return {
         ...presentEntity(req.user, 'invoice', invoice),
-        paymentSummary: canSeePayments ? { paid, remaining, computedStatus } : null,
+        paymentSummary: canSeePayments ? { paid, remaining, computedStatus, payments: invoicePayments } : null,
       };
     });
+    const quoteTotal = quotes.reduce((sum, item) => sum + Number(item.total ?? item.amount ?? 0), 0);
     const invoiceTotal = invoices.reduce((sum, item) => sum + Number(item.total ?? item.amount ?? 0), 0);
     const paidTotal = payments.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const unassignedPayments = payments.filter((item) => !item.invoiceId);
+    const recordedOutstanding = canSeePayments
+      ? invoiceRows.reduce((sum, invoice) => sum + Number(invoice.paymentSummary?.remaining || 0), 0)
+      : null;
     return res.json({
       client: presentEntity(req.user, 'client', client),
-      projects: projects.map((item) => presentEntity(req.user, 'project', item)),
-      quotes: quotes.map((item) => presentEntity(req.user, 'quote', item)),
+      projects: projects.sort((a, b) => String(a.startDate || a.createdAt || '').localeCompare(String(b.startDate || b.createdAt || ''))).map((item) => ({
+        ...presentEntity(req.user, 'project', item),
+        deadline: item.deadline || null,
+      })),
+      quotes: quotes.sort((a, b) => String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || ''))).map((item) => presentEntity(req.user, 'quote', item)),
       invoices: invoiceRows,
       serviceCases: serviceCases.map((item) => presentEntity(req.user, 'service_case', item)),
       messageDrafts: messageDrafts.map((item) => presentEntity(req.user, 'message_draft', item)),
-      payments: payments.map((item) => presentEntity(req.user, 'payment', item)),
-      summary: canSeeFinancials ? {
-        invoiceTotal: Number(invoiceTotal.toFixed(2)),
+      payments: payments.sort((a, b) => String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || ''))).map((item) => presentEntity(req.user, 'payment', item)),
+      unassignedPayments: unassignedPayments.map((item) => presentEntity(req.user, 'payment', item)),
+      summary: {
+        quotedTotal: canSeeFinancials && canSeeQuotes ? Number(quoteTotal.toFixed(2)) : null,
+        invoiceTotal: canSeeFinancials && canSeeInvoices ? Number(invoiceTotal.toFixed(2)) : null,
         recordedPaidTotal: canSeePayments ? Number(paidTotal.toFixed(2)) : null,
-        recordedOutstanding: canSeePayments ? Number(Math.max(0, invoiceTotal - paidTotal).toFixed(2)) : null,
-      } : null,
+        recordedOutstanding: canSeePayments ? Number(recordedOutstanding.toFixed(2)) : null,
+        unassociatedAdvanceTotal: canSeePayments ? Number(unassignedPayments.reduce((sum, item) => sum + Number(item.amount || 0), 0).toFixed(2)) : null,
+        projectCount: projects.length,
+        quoteCount: quotes.length,
+        invoiceCount: invoices.length,
+      },
     });
   });
 
@@ -1559,6 +1773,98 @@ async function createCrmServer(options = {}) {
         backup: snapshot.backup, processedRows: parsed.rows.length,
         imported: snapshot.result.imported.reduce((counts, item) => ({ ...counts, [item.entityType]: (counts[item.entityType] || 0) + 1 }), {}),
         skipped: snapshot.result.skipped.length,
+      });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
+  const materialImportPreview = (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'File Excel .xlsx richiesto' });
+      const analysis = materialImportAnalysis(req.file, {}, db);
+      return res.json({
+        fileName: req.file.originalname,
+        fileHash: analysis.fileHash,
+        sheets: analysis.sheets.map((sheet) => ({
+          name: sheet.name,
+          headers: sheet.headers,
+          suggestedMapping: sheet.mapping,
+          sampleRows: sheet.rows.slice(0, 10),
+          totalRows: sheet.totalRows,
+          validRows: sheet.rows.length,
+          invalidRows: sheet.invalid,
+          duplicates: sheet.rows.filter((row) => row.duplicate).length,
+        })),
+        totalRows: analysis.sheets.reduce((sum, sheet) => sum + sheet.totalRows, 0),
+        validRows: analysis.valid,
+        invalidRows: analysis.invalid,
+        duplicates: analysis.duplicates,
+      });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  };
+  app.post('/api/imports/materials/preview', authenticateToken, requireRole('admin'), historyImportUpload.single('file'), materialImportPreview);
+  app.post('/api/imports/materials/commit', authenticateToken, requireRole('admin'), historyImportUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'File Excel .xlsx richiesto' });
+      const duplicateMode = String(req.body?.duplicateMode || '').trim().toLowerCase();
+      if (!['skip', 'update'].includes(duplicateMode)) {
+        return res.status(400).json({ error: 'Scegli esplicitamente cosa fare con i duplicati: skip oppure update' });
+      }
+      let mapping = {};
+      try { mapping = JSON.parse(String(req.body?.mapping || '{}')); } catch { throw Object.assign(new Error('Mappatura listino non valida'), { status: 400 }); }
+      const analysis = materialImportAnalysis(req.file, mapping, db);
+      const rows = analysis.sheets.flatMap((sheet) => sheet.rows.map((row) => ({ ...row, sheetName: sheet.name })));
+      if (!rows.length) throw Object.assign(new Error('Nessuna riga valida nel listino'), { status: 400 });
+      const result = await runMaintenance(null, async () => {
+        const backup = await db.createSnapshot('pre-import-materiali');
+        const existingByIdentity = new Map(db.list('material').map((item) => [materialIdentity(item), item]));
+        const existingByImportKey = new Map(db.list('material').filter((item) => item.importKey).map((item) => [String(item.importKey), item]));
+        const created = [];
+        const updated = [];
+        const skipped = [];
+        for (const row of rows) {
+          const importKey = String(row.importKey);
+          if (existingByImportKey.has(importKey)) {
+            skipped.push({ rowNumber: row.rowNumber, reason: 'Già importata', sheet: row.sheetName });
+            continue;
+          }
+          const identity = materialIdentity(row);
+          const current = existingByIdentity.get(identity);
+          if (current && duplicateMode === 'skip') {
+            skipped.push({ rowNumber: row.rowNumber, reason: 'Duplicato', sheet: row.sheetName });
+            continue;
+          }
+          const payload = { ...row, importKey };
+          delete payload.rowNumber; delete payload.duplicate; delete payload.sheetName;
+          if (current) {
+            const response = db.update('material', current.id, payload, current.version, req.user, operationIdFrom(req, `material-import:update:${importKey}`));
+            updated.push(response.item);
+            existingByIdentity.set(identity, response.item);
+            existingByImportKey.set(importKey, response.item);
+          } else {
+            const response = db.create('material', payload, req.user, operationIdFrom(req, `material-import:create:${importKey}`));
+            created.push(response.item);
+            existingByIdentity.set(identity, response.item);
+            existingByImportKey.set(importKey, response.item);
+          }
+        }
+        return { backup, created, updated, skipped };
+      });
+      [...result.created, ...result.updated].forEach((item) => {
+        const event = result.created.includes(item) ? 'materials.created' : 'materials.updated';
+        realtime.broadcast({ event, entityType: 'material', item, actor: publicActor(req.user) }, 'materials.view');
+      });
+      return res.status(201).json({
+        backup: result.backup,
+        processedRows: rows.length,
+        created: result.created.length,
+        updated: result.updated.length,
+        skipped: result.skipped,
+        invalid: analysis.sheets.flatMap((sheet) => sheet.invalid.map((row) => ({ ...row, sheet: sheet.name }))),
+        duplicates: analysis.duplicates,
       });
     } catch (error) {
       return respondError(res, error);
@@ -1684,6 +1990,111 @@ async function createCrmServer(options = {}) {
   app.patch('/api/orders/:id/status', authenticateToken, requirePermission('orders.edit'), updateOrderStatus);
   app.put('/api/orders/:id/status', authenticateToken, requirePermission('orders.edit'), updateOrderStatus);
 
+  const importSourceFor = (sourceType, source) => ({
+    sourceType,
+    sourceId: String(source.id),
+    sourceVersion: Number(source.version || 1),
+    importedAt: new Date().toISOString(),
+  });
+  const sourceWorkLines = (source, sourceType) => normalizeServerWorkLines(source.workLines, source.items).map((line) => ({
+    ...line,
+    id: crypto.randomUUID(),
+    importSource: importSourceFor(sourceType, source),
+    edges: line.edges ? Object.fromEntries(Object.entries(line.edges).map(([key, edge]) => [key, edge ? { ...edge } : edge])) : undefined,
+  }));
+  const createImportedEntity = ({ source, sourceType, targetType, targetRoute, targetPermission, payload, req, copyAttachments = true }) => {
+    const verifiedSource = resolveImportSource(db, req.user, targetType, payload.importSource);
+    if (!verifiedSource || verifiedSource.sourceType !== sourceType || verifiedSource.sourceId !== String(source.id)) {
+      const error = new Error('Sorgente import non coerente');
+      error.status = 400;
+      throw error;
+    }
+    validateEntity(targetType, payload);
+    const result = db.create(targetType, payload, req.user, operationIdFrom(req, `${targetType}:from:${sourceType}:${source.id}`));
+    if (!result.replayed && copyAttachments) {
+      const includePhotos = targetType !== 'invoice' || req.body?.includePhotos === true;
+      const copied = db.copyAttachments(
+        verifiedSource.sourceType,
+        verifiedSource.sourceId,
+        targetType,
+        result.item.id,
+        req.user,
+        (attachment) => includePhotos && (targetType !== 'invoice' || attachment.includeInExport),
+      );
+      if (copied.length) realtime.broadcast({ event: 'attachments.changed', entityType: targetType, id: String(result.item.id), actor: publicActor(req.user) }, `${targetPermission}.view`);
+    }
+    if (!result.replayed) realtime.broadcast({ event: `${targetRoute}.created`, entityType: targetType, item: result.item, actor: publicActor(req.user) }, `${targetPermission}.view`);
+    return result;
+  };
+
+  app.post('/api/quotes/:id/project', authenticateToken, requirePermission('quotes.view'), requirePermission('projects.create'), (req, res) => {
+    try {
+      const quote = db.get('quote', req.params.id);
+      if (!quote) return res.status(404).json({ error: 'Preventivo non trovato' });
+      const payload = normalize('project', {
+        name: req.body?.name || `Lavoro da ${quote.quoteNumber || 'preventivo'}`,
+        clientId: quote.customerId || quote.clientId || null,
+        startDate: req.body?.startDate || localToday(),
+        deadline: req.body?.deadline || null,
+        status: 'In Attesa',
+        notes: req.body?.notes || quote.notes || '',
+        workLines: sourceWorkLines(quote, 'quote'),
+        importSource: importSourceFor('quote', quote),
+      }, { defaults: true });
+      const result = createImportedEntity({ source: quote, sourceType: 'quote', targetType: 'project', targetRoute: 'projects', targetPermission: 'projects', payload, req });
+      return res.status(result.replayed ? 200 : 201).json(presentEntity(req.user, 'project', result.item));
+    } catch (error) { return respondError(res, error); }
+  });
+
+  app.post('/api/projects/:id/quote', authenticateToken, requirePermission('projects.view'), requirePermission('quotes.create'), (req, res) => {
+    try {
+      const project = db.get('project', req.params.id);
+      if (!project) return res.status(404).json({ error: 'Progetto non trovato' });
+      const payload = normalize('quote', {
+        date: req.body?.date || localToday(),
+        customerId: project.clientId || project.customerId || null,
+        projectId: project.id,
+        status: 'Bozza',
+        notes: req.body?.notes || project.productionNotes || project.notes || '',
+        workLines: sourceWorkLines(project, 'project'),
+        importSource: importSourceFor('project', project),
+      }, { defaults: true });
+      const result = createImportedEntity({ source: project, sourceType: 'project', targetType: 'quote', targetRoute: 'quotes', targetPermission: 'quotes', payload, req });
+      return res.status(result.replayed ? 200 : 201).json(presentEntity(req.user, 'quote', result.item));
+    } catch (error) { return respondError(res, error); }
+  });
+
+  const createInvoiceFrom = (sourceType, source, req) => {
+    const payload = normalize('invoice', {
+      date: req.body?.date || localToday(),
+      dueDate: req.body?.dueDate || req.body?.date || localToday(),
+      customerId: source.customerId || source.clientId || null,
+      projectId: source.projectId || (sourceType === 'project' ? source.id : null),
+      quoteId: sourceType === 'quote' ? source.id : (source.quoteId || null),
+      status: 'Non Pagata',
+      paymentMethod: req.body?.paymentMethod || 'MP05',
+      workLines: sourceWorkLines(source, sourceType),
+      importSource: importSourceFor(sourceType, source),
+    }, { defaults: true });
+    return createImportedEntity({ source, sourceType, targetType: 'invoice', targetRoute: 'invoices', targetPermission: 'invoices', payload, req });
+  };
+  app.post('/api/quotes/:id/invoice', authenticateToken, requirePermission('quotes.view'), requirePermission('invoices.create'), (req, res) => {
+    try {
+      const quote = db.get('quote', req.params.id);
+      if (!quote) return res.status(404).json({ error: 'Preventivo non trovato' });
+      const result = createInvoiceFrom('quote', quote, req);
+      return res.status(result.replayed ? 200 : 201).json(presentEntity(req.user, 'invoice', result.item));
+    } catch (error) { return respondError(res, error); }
+  });
+  app.post('/api/projects/:id/invoice', authenticateToken, requirePermission('projects.view'), requirePermission('invoices.create'), (req, res) => {
+    try {
+      const project = db.get('project', req.params.id);
+      if (!project) return res.status(404).json({ error: 'Progetto non trovato' });
+      const result = createInvoiceFrom('project', project, req);
+      return res.status(result.replayed ? 200 : 201).json(presentEntity(req.user, 'invoice', result.item));
+    } catch (error) { return respondError(res, error); }
+  });
+
   for (const [route, config] of Object.entries(ROUTES)) {
     const base = `/api/${route}`;
     app.get(base, authenticateToken, requirePermission(`${config.permission}.view`), (req, res) => {
@@ -1696,16 +2107,33 @@ async function createCrmServer(options = {}) {
     });
     app.post(base, authenticateToken, requirePermission(`${config.permission}.create`), (req, res) => {
       try {
+        const requestPayload = { ...(req.body || {}) };
+        const includePhotos = requestPayload.includePhotos === true;
+        delete requestPayload.includePhotos;
         const payload = req.user.role === 'worker'
-          ? sanitizePatch(req.user, config.type, req.body)
-          : normalize(config.type, req.body, { defaults: true });
+          ? sanitizePatch(req.user, config.type, requestPayload)
+          : normalize(config.type, requestPayload, { defaults: true });
         if (!payload) return res.status(403).json({ error: 'Nessun campo modificabile per questo ruolo' });
+        const importedSource = resolveImportSource(db, req.user, config.type, payload.importSource);
         validateEntity(config.type, payload);
         if (config.type === 'payment') validatePaymentLinks(db, payload);
         const result = db.create(
           config.type, payload, req.user, operationIdFrom(req, `${config.type}:create`),
         );
         if (!result.replayed) {
+          if (importedSource) {
+            const sourceType = importedSource.sourceType;
+            const shouldCopyPhotos = config.type !== 'invoice' || includePhotos;
+            const copied = db.copyAttachments(
+              sourceType,
+              importedSource.sourceId,
+              config.type,
+              result.item.id,
+              req.user,
+              (attachment) => shouldCopyPhotos && (config.type !== 'invoice' || attachment.includeInExport),
+            );
+            if (copied.length) realtime.broadcast({ event: 'attachments.changed', entityType: config.type, id: String(result.item.id), actor: publicActor(req.user) }, `${config.permission}.view`);
+          }
           realtime.broadcast({
             event: `${route}.created`, entityType: config.type, item: result.item, actor: publicActor(req.user),
           }, `${config.permission}.view`);
@@ -1788,7 +2216,11 @@ async function createCrmServer(options = {}) {
     const customer = quote.customerId ? db.get('client', quote.customerId) : null;
     if (requireCustomerEmail && !customer?.email) throw Object.assign(new Error('Il cliente non ha un indirizzo email valido'), { status: 400 });
     const project = quote.projectId ? db.get('project', quote.projectId) : null;
-    const document = renderQuoteDocument({ templatePath: attachment.absolutePath, quote, customer, project });
+      const exportAttachments = db.listAttachments('quote', quoteId)
+        .filter((item) => item.includeInExport)
+        .map((item) => db.getAttachment(item.id))
+        .filter(Boolean);
+    const document = renderQuoteDocument({ templatePath: attachment.absolutePath, quote, customer, project, attachments: exportAttachments });
     const number = String(quote.quoteNumber || quote.id).replace(/[^a-zA-Z0-9_-]+/g, '-');
     return { quote, customer, document, fileName: `preventivo-${number}.docx` };
   };
@@ -1848,7 +2280,7 @@ async function createCrmServer(options = {}) {
       totalRevenue: canViewFinancials(req.user) ? invoiceRevenue(req.user, monthStart, current) : null,
       financialsVisible: canViewFinancials(req.user),
       pendingOrders: projects.filter((item) => item.status === 'In Attesa').length,
-      inProgressOrders: projects.filter((item) => ['In Corso', 'In Lavorazione'].includes(item.status)).length,
+      inProgressOrders: projects.filter((item) => item.status === 'In Lavorazione').length,
       completedOrders: projects.filter((item) => item.status === 'Completato').length,
       lowStockMaterials: materials.filter(
         (item) => Number(item.stockQuantity || 0) < Number(item.minStockLevel || 0),
@@ -1881,7 +2313,7 @@ async function createCrmServer(options = {}) {
       }).length,
       newOrders: work.filter((item) => betweenDates(item.createdAt, dayStart, dayEnd)).length,
       revenue: canViewFinancials(req.user) ? invoiceRevenue(req.user, dayStart, dayEnd) : 0,
-      activeProjects: work.filter((item) => ['In Corso', 'In Lavorazione'].includes(item.status)).length,
+      activeProjects: work.filter((item) => item.status === 'In Lavorazione').length,
       urgentTasks: work.filter((item) => item.priority === 'Urgente').length,
       clientsContacted: 0,
       materials: {
@@ -2168,6 +2600,22 @@ async function createCrmServer(options = {}) {
       removeUploadedFiles(req.files);
       return respondError(res, error);
     }
+  });
+  app.patch('/api/attachments/file/:id', authenticateToken, (req, res) => {
+    try {
+      const attachment = db.getAttachment(req.params.id);
+      if (!attachment) return res.status(404).json({ error: 'Allegato non trovato' });
+      if (!hasEntityPermission(req.user, attachment.entityType, 'edit')) {
+        return res.status(403).json({ error: 'Permessi insufficienti' });
+      }
+      const next = db.updateAttachment(req.params.id, {
+        caption: req.body?.caption,
+        includeInExport: req.body?.includeInExport,
+        sortOrder: req.body?.sortOrder,
+      }, req.user);
+      realtime.broadcast({ event: 'attachments.changed', entityType: attachment.entityType, id: attachment.entityId, actor: publicActor(req.user) }, permissionForType(attachment.entityType, 'view'));
+      return res.json(next);
+    } catch (error) { return respondError(res, error); }
   });
   app.get('/api/attachments/file/:id', authenticateToken, (req, res) => {
     const attachment = db.getAttachment(req.params.id);

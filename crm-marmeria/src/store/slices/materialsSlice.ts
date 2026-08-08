@@ -20,6 +20,9 @@ export interface Material {
   minStockLevel: number;
   stock?: number; // Campo legacy per compatibilità
   description?: string;
+  thickness?: number | string;
+  variant?: string;
+  active?: boolean;
   specifications?: Record<string, any>;
   version?: number;
   _queued?: boolean;
@@ -36,6 +39,9 @@ export interface CreateMaterialRequest {
   stockQuantity: number;
   minStockLevel: number;
   description?: string;
+  thickness?: number | string;
+  variant?: string;
+  active?: boolean;
   specifications?: Record<string, any>;
 }
 

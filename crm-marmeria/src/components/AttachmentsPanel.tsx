@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { Download, File, Paperclip, Trash2, Upload } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, Download, File, Maximize2, Paperclip, Trash2, Upload, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { attachmentsService } from '../services/attachments';
 import type { AttachmentRecord } from '../services/attachments';
+import { apiClient } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AuditHistory from './AuditHistory';
 
@@ -26,7 +27,9 @@ const AttachmentsPanel: React.FC<{
   entityId: string;
 }> = ({ entityType, entityId }) => {
   const { hasPermission } = useAuth();
-  const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
+  const [attachments, setAttachments] = useState<Array<AttachmentRecord & { caption?: string; includeInExport?: boolean; sortOrder?: number }>>([]);
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const [lightbox, setLightbox] = useState<(AttachmentRecord & { caption?: string }) | null>(null);
   const [busy, setBusy] = useState(false);
   const prefix = permissionPrefixes[entityType];
   const canEdit = Boolean(prefix && hasPermission(`${prefix}.edit`));
@@ -50,6 +53,32 @@ const AttachmentsPanel: React.FC<{
       active = false;
     };
   }, [entityType, entityId]);
+
+  useEffect(() => {
+    let active = true;
+    const created: string[] = [];
+    setPreviewUrls({});
+    const loadPreviews = async () => {
+      const entries = await Promise.all(attachments.map(async (attachment) => {
+        if (!String(attachment.mimeType || '').toLowerCase().startsWith('image/')) return null;
+        try {
+          const response = await apiClient.get(`/attachments/file/${encodeURIComponent(attachment.id)}`, { responseType: 'blob' });
+          const url = URL.createObjectURL(response.data);
+          created.push(url);
+          return [String(attachment.id), url] as const;
+        } catch {
+          return null;
+        }
+      }));
+      if (!active) return;
+      setPreviewUrls(Object.fromEntries(entries.filter(Boolean) as Array<readonly [string, string]>));
+    };
+    void loadPreviews();
+    return () => {
+      active = false;
+      created.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [attachments]);
 
   useEffect(() => {
     const listener = (event: Event) => {
@@ -108,6 +137,41 @@ const AttachmentsPanel: React.FC<{
     }
   };
 
+  const updateMetadata = async (attachment: AttachmentRecord & { caption?: string; includeInExport?: boolean; sortOrder?: number }, patch: Record<string, unknown>) => {
+    if (!canEdit) return;
+    try {
+      await apiClient.patch(`/attachments/file/${encodeURIComponent(attachment.id)}`, patch);
+      await load();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || 'Metadati allegato non aggiornati');
+    }
+  };
+
+  const orderedAttachments = useMemo(() => [...attachments].sort((left, right) => (
+    Number(left.sortOrder || 0) - Number(right.sortOrder || 0)
+      || new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
+  )), [attachments]);
+
+  const move = async (index: number, direction: -1 | 1) => {
+    if (!canEdit) return;
+    const target = index + direction;
+    if (target < 0 || target >= orderedAttachments.length) return;
+    const current = orderedAttachments[index];
+    const swapped = orderedAttachments[target];
+    setBusy(true);
+    try {
+      await Promise.all([
+        apiClient.patch(`/attachments/file/${encodeURIComponent(current.id)}`, { sortOrder: target }),
+        apiClient.patch(`/attachments/file/${encodeURIComponent(swapped.id)}`, { sortOrder: index }),
+      ]);
+      await load();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || 'Riordinamento non riuscito');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="mt-6 border-t pt-5 border-light-border dark:border-dark-border">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
@@ -120,7 +184,7 @@ const AttachmentsPanel: React.FC<{
             <input
               type="file"
               multiple
-              accept={entityType === 'project' ? 'image/*,.pdf' : undefined}
+              accept={['project', 'quote'].includes(entityType) ? 'image/*,.pdf' : undefined}
               onChange={upload}
               disabled={busy}
               className="hidden"
@@ -133,21 +197,34 @@ const AttachmentsPanel: React.FC<{
         <p className="text-sm text-gray-500">{entityType === 'project' ? 'Nessuna immagine o allegato. Quantità illimitata.' : 'Nessun allegato.'}</p>
       ) : (
         <div className="space-y-2 max-h-52 overflow-y-auto">
-          {attachments.map((attachment) => (
+          {orderedAttachments.map((attachment, index) => (
             <div
               key={attachment.id}
               className="p-3 border rounded-md flex items-center justify-between gap-3"
             >
               <div className="min-w-0 flex items-center gap-2">
-                <File size={18} className="shrink-0" />
+                {previewUrls[String(attachment.id)] ? (
+                  <button type="button" onClick={() => setLightbox(attachment)} className="relative shrink-0 overflow-hidden rounded border" title="Apri anteprima ingrandita">
+                    <img src={previewUrls[String(attachment.id)]} alt={attachment.caption || attachment.originalName} className="h-14 w-14 object-cover" />
+                    <Maximize2 size={13} className="absolute bottom-0 right-0 bg-black/60 p-0.5 text-white" />
+                  </button>
+                ) : <File size={18} className="shrink-0" />}
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{attachment.originalName}</p>
                   <p className="text-xs text-gray-500">
                     {formatBytes(attachment.sizeBytes)} · {new Date(attachment.createdAt).toLocaleString('it-IT')}
                   </p>
+                  {canEdit && <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <input aria-label={`Didascalia ${attachment.originalName}`} value={attachment.caption || ''} onChange={(event) => setAttachments((current) => current.map((item) => item.id === attachment.id ? { ...item, caption: event.target.value } : item))} onBlur={(event) => void updateMetadata(attachment, { caption: event.target.value })} placeholder="Didascalia" className="rounded border px-2 py-1 text-xs dark:bg-dark-input" />
+                    {entityType === 'quote' && <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={Boolean(attachment.includeInExport)} onChange={(event) => void updateMetadata(attachment, { includeInExport: event.target.checked })} /> In Word</label>}
+                  </div>}
                 </div>
               </div>
               <div className="flex gap-2 shrink-0">
+                {canEdit && <>
+                  <button type="button" disabled={busy || index === 0} onClick={() => void move(index, -1)} className="p-2 text-gray-600 disabled:opacity-30" title="Sposta su"><ChevronUp size={17} /></button>
+                  <button type="button" disabled={busy || index === orderedAttachments.length - 1} onClick={() => void move(index, 1)} className="p-2 text-gray-600 disabled:opacity-30" title="Sposta giù"><ChevronDown size={17} /></button>
+                </>}
                 <button
                   type="button"
                   onClick={() => void download(attachment)}
@@ -170,6 +247,16 @@ const AttachmentsPanel: React.FC<{
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {lightbox && previewUrls[String(lightbox.id)] && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6" role="dialog" aria-modal="true" onClick={() => setLightbox(null)}>
+          <button type="button" className="absolute right-5 top-5 rounded-full bg-white/10 p-2 text-white" onClick={() => setLightbox(null)} title="Chiudi anteprima"><X size={24} /></button>
+          <figure className="max-h-full max-w-full" onClick={(event) => event.stopPropagation()}>
+            <img src={previewUrls[String(lightbox.id)]} alt={lightbox.caption || lightbox.originalName} className="max-h-[78vh] max-w-[90vw] object-contain" />
+            <figcaption className="mt-3 text-center text-sm text-white">{lightbox.caption || lightbox.originalName}</figcaption>
+          </figure>
         </div>
       )}
 

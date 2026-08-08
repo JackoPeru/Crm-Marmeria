@@ -5,6 +5,10 @@ import { apiClient } from '../services/api';
 import useUI from '../hooks/useUI';
 import { useAuth } from '../contexts/AuthContext';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
+import AttachmentsPanel from './AttachmentsPanel';
+import WorkLinesEditor from './work-lines/WorkLinesEditor';
+import { copyWorkLines, mergeImportedWorkLines } from '../domain/work-lines/import';
+import { createWorkLine, normalizeWorkLines, workLinesToDocumentItems } from '../domain/work-lines/normalize';
 
 const emptyItem = (invoice) => ({
   description: '',
@@ -29,6 +33,7 @@ const emptyDocument = (kind) => ({
   paymentDetails: '',
   paymentMethod: 'MP05',
   templateId: '',
+  workLines: [createWorkLine('manual')],
 });
 
 const normalizeDocument = (document, kind) => ({
@@ -54,6 +59,7 @@ const normalizeDocument = (document, kind) => ({
       taxNature: String(item.taxNature || '').toUpperCase(),
     }))
     : [emptyItem(kind === 'invoice')],
+  workLines: normalizeWorkLines(document.workLines, document.items),
 });
 
 const totals = (items, invoice) => {
@@ -90,9 +96,40 @@ const Modal = ({ title, onClose, children, wide = false }) => (
   </div>
 );
 
-const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, materials, quoteTemplates = [] }) => {
+const askImportMode = (sourceLabel) => {
+  const answer = window.prompt(
+    `Il documento contiene già righe. Importazione da ${sourceLabel}: scrivi "sostituisci", "aggiungi" o "annulla".`,
+    'sostituisci',
+  );
+  const normalized = String(answer || '').trim().toLowerCase();
+  if (normalized === 'sostituisci' || normalized === 'replace') return 'replace';
+  if (normalized === 'aggiungi' || normalized === 'add') return 'add';
+  return 'cancel';
+};
+
+const importSourceIntoDocument = (previous, source, sourceType, invoice) => {
+  const existing = normalizeWorkLines(previous.workLines, previous.items);
+  const mode = existing.length ? askImportMode(sourceType === 'project' ? 'progetto' : 'preventivo') : 'replace';
+  if (mode === 'cancel') return previous;
+  const imported = copyWorkLines(source.workLines?.length ? source.workLines : source.items, sourceType, source.id, source.version);
+  const workLines = mergeImportedWorkLines(existing, imported, mode);
+  return {
+    ...previous,
+    workLines,
+    items: workLinesToDocumentItems(workLines, invoice, previous.items),
+    importSource: {
+      sourceType,
+      sourceId: String(source.id),
+      sourceVersion: source.version,
+      importedAt: new Date().toISOString(),
+    },
+  };
+};
+
+const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, materials, quoteTemplates = [], edgeCatalog = [], linearCatalog = [], showPrices = true }) => {
   const invoice = kind === 'invoice';
-  const currentTotals = totals(value.items, invoice);
+  const lines = normalizeWorkLines(value.workLines, value.items);
+  const currentTotals = totals(workLinesToDocumentItems(lines, invoice, value.items), invoice);
 
   const selectQuote = (quoteId) => {
     const quote = quotes.find((item) => String(item.id) === String(quoteId));
@@ -100,60 +137,36 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
       setValue((previous) => ({ ...previous, quoteId: '' }));
       return;
     }
-    setValue((previous) => ({
-      ...previous,
-      quoteId: String(quote.id),
-      customerId: quote.customerId == null ? previous.customerId : String(quote.customerId),
-      projectId: quote.projectId == null ? previous.projectId : String(quote.projectId),
-      notes: previous.notes || quote.notes || '',
-      items: Array.isArray(quote.items) && quote.items.length
-        ? quote.items.map((item) => ({
-          ...emptyItem(true),
-          ...item,
-          materialId: item.materialId == null ? '' : String(item.materialId),
-          quantity: parseLocaleNumber(item.quantity),
-          unitPrice: parseLocaleNumber(item.unitPrice),
-          taxRate: 22,
-        }))
-        : previous.items,
-    }));
-  };
-
-  const updateItem = (index, field, rawValue) => {
     setValue((previous) => {
-      const items = previous.items.map((item, itemIndex) => (
-        itemIndex === index
-          ? {
-            ...item,
-            [field]: ['quantity', 'unitPrice', 'taxRate'].includes(field)
-              ? parseLocaleNumber(rawValue)
-              : rawValue,
-          }
-          : item
-      ));
-
-      if (field === 'materialId') {
-        const material = materials.find((item) => String(item.id) === String(rawValue));
-        if (material) {
-          items[index] = {
-            ...items[index],
-            materialId: String(material.id),
-            description: material.name || '',
-            unitPrice: parseLocaleNumber(material.unitPrice ?? material.price),
-          };
-        } else if (!rawValue) {
-          items[index] = {
-            ...items[index],
-            materialId: '',
-            description: '',
-            unitPrice: 0,
-          };
-        }
-      }
-      return { ...previous, items };
+      const imported = importSourceIntoDocument(previous, quote, 'quote', invoice);
+      return {
+        ...imported,
+        quoteId: String(quote.id),
+        customerId: quote.customerId == null ? imported.customerId : String(quote.customerId),
+        projectId: quote.projectId == null ? imported.projectId : String(quote.projectId),
+        notes: imported.notes || quote.notes || '',
+      };
     });
   };
 
+  const selectProject = (projectId) => {
+    const project = projects.find((item) => String(item.id) === String(projectId));
+    if (!project) {
+      setValue((previous) => ({ ...previous, projectId: '' }));
+      return;
+    }
+    setValue((previous) => {
+      const imported = importSourceIntoDocument(previous, project, 'project', invoice);
+      return {
+        ...imported,
+        projectId: String(project.id),
+        customerId: project.clientId == null ? imported.customerId : String(project.clientId),
+        notes: imported.notes || project.productionNotes || project.notes || '',
+      };
+    });
+  };
+
+  // CompatibilitÃ  per dati/markup legacy: l'editor visibile usa WorkLinesEditor.
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -190,15 +203,15 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
           <span className="mb-1 block text-sm font-medium">Cliente *</span>
           <select required value={value.customerId || ''} onChange={(event) => setValue((previous) => ({ ...previous, customerId: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">
             <option value="">Seleziona cliente</option>
-            {customers.map((customer) => <option key={customer.id} value={String(customer.id)}>{customer.name}</option>)}
+            {[...customers].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' })).map((customer) => <option key={customer.id} value={String(customer.id)}>{customer.name}</option>)}
           </select>
         </label>
 
         <label className="block">
           <span className="mb-1 block text-sm font-medium">Progetto</span>
-          <select value={value.projectId || ''} onChange={(event) => setValue((previous) => ({ ...previous, projectId: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">
+          <select value={value.projectId || ''} onChange={(event) => selectProject(event.target.value)} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">
             <option value="">Nessun progetto</option>
-            {projects.map((project) => <option key={project.id} value={String(project.id)}>{project.name}</option>)}
+            {projects.filter((project) => !value.customerId || String(project.clientId) === String(value.customerId)).map((project) => <option key={project.id} value={String(project.id)}>{project.name}</option>)}
           </select>
         </label>
 
@@ -223,37 +236,21 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
         </label>
       </div>
 
-      <div>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="font-semibold">Voci</h3>
-          <button type="button" onClick={() => setValue((previous) => ({ ...previous, items: [...previous.items, emptyItem(invoice)] }))} className="rounded-md border px-3 py-1.5 text-sm">Aggiungi voce</button>
-        </div>
+      <WorkLinesEditor
+        value={lines}
+        onChange={(nextLines) => setValue((previous) => ({
+          ...previous,
+          workLines: nextLines,
+          items: workLinesToDocumentItems(nextLines, invoice, previous.items),
+        }))}
+        materials={materials}
+        edgeCatalog={edgeCatalog}
+        linearCatalog={linearCatalog}
+        invoiceMode={invoice}
+        showPrices={showPrices}
+      />
 
-        <div className="space-y-3">
-          {value.items.map((item, index) => {
-            const line = totals([item], invoice).total;
-            return (
-              <div key={index} className="rounded-md border p-3">
-                <div className={`grid grid-cols-1 gap-3 ${invoice ? 'md:grid-cols-8' : 'md:grid-cols-6'}`}>
-                  <select value={item.materialId || ''} onChange={(event) => updateItem(index, 'materialId', event.target.value)} className="rounded-md border p-2 md:col-span-2 bg-light-bg dark:bg-dark-input">
-                    <option value="">Voce manuale</option>
-                    {materials.map((material) => <option key={material.id} value={String(material.id)}>{material.name}</option>)}
-                  </select>
-                  <input required value={item.description || ''} onChange={(event) => updateItem(index, 'description', event.target.value)} placeholder="Descrizione" className="rounded-md border p-2 md:col-span-2 bg-light-bg dark:bg-dark-input" />
-                  <input type="number" min="0.01" step="0.01" required value={item.quantity} onChange={(event) => updateItem(index, 'quantity', event.target.value)} placeholder="Quantità" className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
-                  <input type="number" min="0" step="0.01" required value={item.unitPrice} onChange={(event) => updateItem(index, 'unitPrice', event.target.value)} placeholder="Prezzo" className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />
-                  {invoice && <input type="number" min="0" max="100" step="0.01" value={item.taxRate} onChange={(event) => updateItem(index, 'taxRate', event.target.value)} placeholder="IVA %" className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />}
-                  {invoice && <input value={item.taxNature || ''} onChange={(event) => updateItem(index, 'taxNature', event.target.value.toUpperCase())} placeholder={parseLocaleNumber(item.taxRate) === 0 ? 'Natura IVA * (es. N2.2)' : 'Natura IVA'} required={parseLocaleNumber(item.taxRate) === 0} className="rounded-md border p-2 bg-light-bg dark:bg-dark-input" />}
-                </div>
-                <div className="mt-2 flex items-center justify-between text-sm">
-                  <span>Totale voce: {formatEuro(line)}</span>
-                  {value.items.length > 1 && <button type="button" onClick={() => setValue((previous) => ({ ...previous, items: previous.items.filter((_, itemIndex) => itemIndex !== index) }))} className="text-red-600">Rimuovi</button>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+
 
       <label className="block">
         <span className="mb-1 block text-sm font-medium">Note</span>
@@ -289,7 +286,7 @@ const BusinessDocumentPage = ({
   updateDocument,
   deleteDocument,
 }) => {
-  const { isModalOpen, showModal, hideModal, setBreadcrumbs } = useUI();
+  const { isModalOpen, showModal, hideModal, setBreadcrumbs, userPreferences, updatePreferences } = useUI();
   const { hasPermission, user } = useAuth();
   const invoice = kind === 'invoice';
   const plural = invoice ? 'Fatture' : 'Preventivi';
@@ -308,15 +305,60 @@ const BusinessDocumentPage = ({
   const [sdiPreflight, setSdiPreflight] = useState(null);
   const [sdiError, setSdiError] = useState('');
   const [sdiBusy, setSdiBusy] = useState(false);
+  const [edgeCatalog, setEdgeCatalog] = useState([]);
+  const [linearCatalog, setLinearCatalog] = useState([]);
 
   const viewing = documents.find((document) => String(document.id) === String(viewingId));
   const canUseSdi = invoice && user?.role === 'admin';
+  const canViewFinancials = ['admin', 'manager'].includes(user?.role || '') && hasPermission('invoices.view');
   const electronicStatus = (document) => String(document?.electronicInvoice?.status || 'bozza');
   const transmitted = (document) => ['inviata_pec', 'consegnata', 'mancata_consegna'].includes(electronicStatus(document));
 
   useEffect(() => {
     setBreadcrumbs([{ label: plural }]);
   }, [plural, setBreadcrumbs]);
+
+  useEffect(() => {
+    if (!hasPermission('materials.view')) return undefined;
+    let active = true;
+    Promise.all([
+      apiClient.get('/edge-types').catch(() => ({ data: [] })),
+      apiClient.get('/linear-items').catch(() => ({ data: [] })),
+    ]).then(([edges, linear]) => {
+      if (!active) return;
+      setEdgeCatalog(edges.data || []);
+      setLinearCatalog(linear.data || []);
+    });
+    return () => { active = false; };
+  }, [hasPermission]);
+
+  useEffect(() => {
+    const intent = userPreferences.pendingDocumentIntent;
+    if (!intent || intent.targetType !== kind || !intent.sourceId) return;
+    const sources = intent.sourceType === 'quote' ? quotes : projects;
+    const source = sources.find((item) => String(item.id) === String(intent.sourceId));
+    if (!source) return;
+    const draft = { ...emptyDocument(kind), workLines: [], items: [] };
+    const imported = importSourceIntoDocument(draft, source, intent.sourceType, invoice);
+    setForm({
+      ...imported,
+      customerId: String(source.customerId || source.clientId || imported.customerId || ''),
+      projectId: String(source.projectId || (intent.sourceType === 'project' ? source.id : imported.projectId) || ''),
+      quoteId: intent.sourceType === 'quote' ? String(source.id) : String(source.quoteId || imported.quoteId || ''),
+      includePhotos: invoice && intent.includePhotos === true,
+    });
+    showModal({ id: `${kind}-add`, type: 'add' });
+    updatePreferences({ pendingDocumentIntent: null });
+  }, [invoice, kind, projects, quotes, showModal, updatePreferences, userPreferences.pendingDocumentIntent]);
+
+  useEffect(() => {
+    if (userPreferences.openType !== kind || !userPreferences.openId) return;
+    const found = documents.find((document) => String(document.id) === String(userPreferences.openId));
+    if (!found) return;
+    setViewingId(String(found.id));
+    showModal({ id: `${kind}-view`, type: 'view' });
+    updatePreferences({ openId: null, openType: null });
+  }, [documents, kind, showModal, updatePreferences, userPreferences.openId, userPreferences.openType]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -331,20 +373,19 @@ const BusinessDocumentPage = ({
       .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
   }, [customers, documents, numberField, projects, search]);
 
-  const payload = () => ({
-    ...form,
-    customerId: String(form.customerId),
-    projectId: form.projectId ? String(form.projectId) : null,
-    quoteId: invoice && form.quoteId ? String(form.quoteId) : null,
-    items: form.items.map((item) => ({
-      description: String(item.description || '').trim(),
-      materialId: item.materialId ? String(item.materialId) : null,
-      quantity: parseLocaleNumber(item.quantity),
-      unitPrice: parseLocaleNumber(item.unitPrice),
-      taxRate: invoice ? parseLocaleNumber(item.taxRate) : 0,
-      taxNature: invoice ? String(item.taxNature || '').toUpperCase() : '',
-    })),
-  });
+  const payload = () => {
+    const workLines = normalizeWorkLines(form.workLines, form.items);
+    const items = workLinesToDocumentItems(workLines, invoice, form.items)
+      .map(({ workLine, ...item }) => item);
+    return {
+      ...form,
+      customerId: String(form.customerId),
+      projectId: form.projectId ? String(form.projectId) : null,
+      quoteId: invoice && form.quoteId ? String(form.quoteId) : null,
+      workLines,
+      items,
+    };
+  };
 
   const submitAdd = async (event) => {
     event.preventDefault();
@@ -443,6 +484,27 @@ const BusinessDocumentPage = ({
       window.document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
     } catch (error) { toast.error(error.response?.data?.error || 'Creazione Word non riuscita'); }
   };
+  const queueDocumentIntent = (source, target, includePhotos) => {
+    const permissionName = target === 'project' ? 'projects.create' : 'invoices.create';
+    if (!source || !hasPermission(permissionName)) return;
+    const confirmedPhotos = target === 'invoice'
+      ? window.confirm('Copiare nella fattura le foto del preventivo marcate "In Word"?')
+      : includePhotos;
+    updatePreferences({
+      currentPage: target === 'project' ? 'projects' : 'invoices',
+      pendingDocumentIntent: {
+        intentId: `${kind}-${source.id}-${Date.now()}`,
+        targetType: target,
+        sourceType: kind,
+        sourceId: String(source.id),
+        sourceVersion: source.version,
+        includePhotos: confirmedPhotos === true,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    hideModal(`${kind}-view`);
+    toast.success('Modulo di creazione aperto: controlla e modifica prima di salvare');
+  };
   const openSdi = async (document) => {
     setSdiInvoice(document); setSdiPreflight(null); setSdiError(''); showModal({ id: 'invoice-sdi-confirm', type: 'confirm' });
     setSdiBusy(true);
@@ -532,7 +594,7 @@ const BusinessDocumentPage = ({
       {isModalOpen(`${kind}-add`) && (
         <Modal title={`Nuovo ${singular}`} onClose={() => hideModal(`${kind}-add`)} wide>
           <form onSubmit={submitAdd}>
-            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} />
+            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-add`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Crea'}</button></div>
           </form>
         </Modal>
@@ -541,7 +603,7 @@ const BusinessDocumentPage = ({
       {isModalOpen(`${kind}-edit`) && editing && (
         <Modal title={`Modifica ${singular}`} onClose={() => hideModal(`${kind}-edit`)} wide>
           <form onSubmit={submitEdit}>
-            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} />
+            <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-edit`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button></div>
           </form>
         </Modal>
@@ -561,6 +623,11 @@ const BusinessDocumentPage = ({
           <div className="mt-5 space-y-2">
             {(viewing.items || []).map((item, index) => <div key={index} className="flex justify-between gap-3 border-b py-2 text-sm dark:border-dark-border"><span>{item.description} · {item.quantity} × {formatEuro(item.unitPrice)}</span><strong>{formatEuro(totals([item], invoice).total)}</strong></div>)}
           </div>
+          <AttachmentsPanel entityType={kind} entityId={String(viewing.id)} />
+          {!invoice && <div className="mt-3 flex flex-wrap gap-2">{hasPermission('projects.create') && <button type="button" onClick={() => queueDocumentIntent(viewing, 'project')} className="rounded-md border px-3 py-2 text-sm">Crea progetto</button>}{hasPermission('invoices.create') && <button type="button" onClick={() => queueDocumentIntent(viewing, 'invoice')} className="rounded-md bg-light-primary px-3 py-2 text-sm text-white">Crea fattura</button>}</div>}
+          {invoice && viewing.projectId && <button type="button" onClick={() => { updatePreferences({ currentPage: 'projects', openId: String(viewing.projectId), openType: 'project' }); hideModal('invoice-view'); }} className="mt-3 rounded border px-3 py-2 text-sm">Apri progetto collegato</button>}
+          {invoice && viewing.quoteId && <button type="button" onClick={() => { updatePreferences({ currentPage: 'quotes', openId: String(viewing.quoteId), openType: 'quote' }); hideModal('invoice-view'); }} className="ml-2 mt-3 rounded border px-3 py-2 text-sm">Apri preventivo collegato</button>}
+          {!invoice && viewing.projectId && <button type="button" onClick={() => { updatePreferences({ currentPage: 'projects', openId: String(viewing.projectId), openType: 'project' }); hideModal('quote-view'); }} className="mt-3 rounded border px-3 py-2 text-sm">Apri progetto collegato</button>}
           {!invoice && <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => sendQuote(viewing)} className="flex items-center gap-2 rounded-md bg-green-600 px-3 py-2 text-sm text-white"><MessageCircle size={16} /> WhatsApp</button><button type="button" onClick={() => openGmailDraft(viewing)} className="flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white"><Mail size={16} /> Crea bozza Gmail</button><button type="button" onClick={() => void downloadQuoteWord(viewing)} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><Download size={16} /> Word compilato</button></div>}
           {invoice && canUseSdi && <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => void downloadSdiXml(viewing)} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><FileCheck2 size={16} /> Scarica XML FatturaPA</button>{!transmitted(viewing) && electronicStatus(viewing) !== 'invio_in_corso' && <button type="button" onClick={() => void openSdi(viewing)} className="flex items-center gap-2 rounded-md bg-orange-600 px-3 py-2 text-sm text-white"><Send size={16} /> Invia a SdI via PEC</button>}</div>}
         </Modal>

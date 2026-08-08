@@ -4,6 +4,7 @@ import { Pie } from 'react-chartjs-2';
 import { ArcElement, Chart as ChartJS, Legend, Tooltip } from 'chart.js';
 import WelcomeHeader from '../components/dashboard/WelcomeHeader';
 import DashboardStats from '../components/DashboardStats';
+import AppointmentsWidget from '../components/dashboard/AppointmentsWidget';
 import AttachmentsPanel from '../components/AttachmentsPanel';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
@@ -103,7 +104,7 @@ const DashboardPage = () => {
     customers: customers.length,
     projects: projects.length,
     projectsInProgress: projects.filter(
-      (project) => ['In Corso', 'In Lavorazione'].includes(project.status),
+      (project) => project.status === 'In Lavorazione',
     ).length,
     materials: materials.length,
     revenue: formatEuro(monthRevenue),
@@ -205,6 +206,7 @@ const DashboardPage = () => {
     <div className="p-4 md:p-6 lg:p-8 space-y-6 bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text">
       <WelcomeHeader userName={user?.firstName || user?.username || 'Utente'} />
       <DashboardStats stats={stats} />
+      <AppointmentsWidget customers={customers} projects={projects} />
 
       {canViewFinancials && <section className="bg-white dark:bg-dark-card p-6 rounded-lg shadow-sm">
         <h2 className="text-xl font-semibold mb-1">Scadenziario incassi</h2>

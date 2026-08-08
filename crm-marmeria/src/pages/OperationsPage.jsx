@@ -110,14 +110,14 @@ const OperationsPage = () => {
     <label className="text-sm">Cliente
       <select required value={value.clientId} onChange={(event) => setValue({ ...value, clientId: event.target.value })} className="mt-1 w-full rounded border p-2 dark:bg-dark-input">
         <option value="">Seleziona</option>
-        {customers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+        {[...customers].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' })).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select>
     </label>
   );
   const supplierField = (value, setValue, required = false) => canViewSuppliers ? (
     <select required={required} value={value.supplierId} onChange={(event) => setValue(event.target.value)} className="rounded border p-2 dark:bg-dark-input">
       <option value="">{required ? 'Fornitore' : 'Fornitore opzionale'}</option>
-      {suppliers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+      {[...suppliers].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' })).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
     </select>
   ) : (
     <input required={required} placeholder={required ? 'Fornitore' : 'Fornitore opzionale'} value={value.supplier} onChange={(event) => setValue(event.target.value)} className="rounded border p-2 dark:bg-dark-input" />
@@ -171,7 +171,7 @@ const OperationsPage = () => {
       {canViewClients && canCreateMessages && <section className="rounded-lg bg-white p-5 shadow-sm dark:bg-dark-card">
         <h2 className="mb-4 flex gap-2 font-semibold"><MessageCircle /> Bozza WhatsApp</h2>
         <p className="mb-3 text-sm text-gray-500">Crea bozza, poi apri WhatsApp e invia tu. Nessun invio automatico.</p>
-        <form onSubmit={createWhatsapp} className="space-y-3"><select required value={whatsapp.clientId} onChange={(event) => setWhatsapp({ ...whatsapp, clientId: event.target.value })} className="w-full rounded border p-2 dark:bg-dark-input"><option value="">Cliente</option>{customers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input value={whatsapp.title} onChange={(event) => setWhatsapp({ ...whatsapp, title: event.target.value })} className="w-full rounded border p-2 dark:bg-dark-input" /><textarea required rows="5" placeholder="Messaggio" value={whatsapp.message} onChange={(event) => setWhatsapp({ ...whatsapp, message: event.target.value })} className="w-full rounded border p-2 dark:bg-dark-input" /><button disabled={busy} className="rounded bg-green-600 px-3 py-2 text-white">Crea bozza</button></form>
+        <form onSubmit={createWhatsapp} className="space-y-3"><select required value={whatsapp.clientId} onChange={(event) => setWhatsapp({ ...whatsapp, clientId: event.target.value })} className="w-full rounded border p-2 dark:bg-dark-input"><option value="">Cliente</option>{[...customers].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' })).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input value={whatsapp.title} onChange={(event) => setWhatsapp({ ...whatsapp, title: event.target.value })} className="w-full rounded border p-2 dark:bg-dark-input" /><textarea required rows="5" placeholder="Messaggio" value={whatsapp.message} onChange={(event) => setWhatsapp({ ...whatsapp, message: event.target.value })} className="w-full rounded border p-2 dark:bg-dark-input" /><button disabled={busy} className="rounded bg-green-600 px-3 py-2 text-white">Crea bozza</button></form>
         {whatsappUrl && <a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-4 inline-block rounded border border-green-700 px-3 py-2 text-green-700">Apri WhatsApp per confermare invio</a>}
       </section>}
     </div>

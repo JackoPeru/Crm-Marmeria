@@ -4,6 +4,8 @@ const TYPE_PERMISSIONS = {
   order: 'orders',
   project: 'projects',
   material: 'materials',
+  edge_type: 'materials',
+  linear_item: 'materials',
   quote: 'quotes',
   quote_template: 'quotes',
   invoice: 'invoices',

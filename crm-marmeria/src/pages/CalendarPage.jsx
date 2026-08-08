@@ -5,9 +5,8 @@ import { apiClient } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useData } from '../hooks/useData';
 import useUI from '../hooks/useUI';
+import { localDateKey as localDate, pad } from '../components/dashboard/appointmentUtils';
 
-const pad = (value) => String(value).padStart(2, '0');
-const localDate = (value) => `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
 const localInput = (value) => {
   const date = value ? new Date(value) : new Date();
   return `${localDate(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -39,7 +38,7 @@ const AppointmentForm = ({ value, setValue, customers, projects }) => (
     <label className="md:col-span-2"><span className="mb-1 block text-sm font-medium">Titolo *</span><input required value={value.title} onChange={(event) => setValue({ ...value, title: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input" placeholder="Sopralluogo, appuntamento cliente..." /></label>
     <label><span className="mb-1 block text-sm font-medium">Inizio *</span><input type="datetime-local" required value={value.startAt} onChange={(event) => setValue({ ...value, startAt: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
     <label><span className="mb-1 block text-sm font-medium">Fine *</span><input type="datetime-local" required value={value.endAt} onChange={(event) => setValue({ ...value, endAt: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
-    <label><span className="mb-1 block text-sm font-medium">Cliente</span><select value={value.customerId} onChange={(event) => setValue({ ...value, customerId: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input"><option value="">Nessun cliente</option>{customers.map((customer) => <option key={customer.id} value={String(customer.id)}>{customer.name}</option>)}</select></label>
+    <label><span className="mb-1 block text-sm font-medium">Cliente</span><select value={value.customerId} onChange={(event) => setValue({ ...value, customerId: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input"><option value="">Nessun cliente</option>{[...customers].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' })).map((customer) => <option key={customer.id} value={String(customer.id)}>{customer.name}</option>)}</select></label>
     <label><span className="mb-1 block text-sm font-medium">Progetto</span><select value={value.projectId} onChange={(event) => setValue({ ...value, projectId: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input"><option value="">Nessun progetto</option>{projects.map((project) => <option key={project.id} value={String(project.id)}>{project.name}</option>)}</select></label>
     <label><span className="mb-1 block text-sm font-medium">Stato</span><select value={value.status} onChange={(event) => setValue({ ...value, status: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input"><option>Confermato</option><option>Da confermare</option><option>Annullato</option></select></label>
     <label className="md:col-span-2"><span className="mb-1 block text-sm font-medium">Note</span><textarea rows="4" value={value.notes} onChange={(event) => setValue({ ...value, notes: event.target.value })} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>

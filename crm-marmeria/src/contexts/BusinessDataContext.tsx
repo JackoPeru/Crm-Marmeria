@@ -12,6 +12,8 @@ import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
 import { observeServerScope, stableServerKey } from '../utils/serverScope';
 import { useAuth } from './AuthContext';
+import { parseLocaleNumber } from '../utils/numbers';
+import { normalizeWorkLines } from '../domain/work-lines/normalize';
 
 type CollectionName = 'projects' | 'quotes' | 'invoices';
 type Entity = Record<string, any> & { id: string; version?: number; _queued?: boolean };
@@ -46,10 +48,17 @@ const normalizeEntity = (entity: Record<string, any>): Entity => {
       materialId: item.materialId == null || item.materialId === ''
         ? item.materialId
         : String(item.materialId),
-      quantity: Number(item.quantity || 0),
-      unitPrice: Number(item.unitPrice || 0),
-      taxRate: Number(item.taxRate || 0),
+      quantity: parseLocaleNumber(item.quantity),
+      unitPrice: parseLocaleNumber(item.unitPrice),
+      taxRate: parseLocaleNumber(item.taxRate),
     }));
+  }
+  if (['project', 'quote', 'invoice'].includes(String(normalized.type || '')) || Array.isArray(normalized.workLines)) {
+    normalized.workLines = normalizeWorkLines(normalized.workLines, normalized.items);
+  }
+  if (normalized.type === 'project' || normalized.entityType === 'project') {
+    normalized.status = normalized.status === 'In Corso' ? 'In Lavorazione' : normalized.status;
+    normalized.deadline = normalized.deadline || normalized.endDate || null;
   }
   return normalized;
 };
