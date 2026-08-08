@@ -194,6 +194,12 @@ export const formatAuditValue = (value: unknown, key = ''): string => {
   return String(value);
 };
 
+const referenceChange = (label: string, before: unknown, after: unknown): AuditChange => ({
+  label: label + ' collegato modificato',
+  before: present(before) ? 'collegamento precedente' : 'vuoto',
+  after: present(after) ? 'nuovo collegamento' : 'vuoto',
+});
+
 const lineTypeValue = (value: unknown): string => ({
   surface: 'Superficie (m²)',
   linear: 'Lavorazione lineare',
@@ -320,16 +326,26 @@ const workLineChanges = (
         const detailKeys = ['description', 'type', 'quantity', 'materialNameSnapshot', 'thickness', 'variant', 'unit', 'unitPrice', 'extraCost', 'notes'];
         detailKeys.forEach((field) => {
           if (field === 'materialNameSnapshot' && present(line.materialNameSnapshot) === false && !present(line.materialId)) return;
-          changes.push({ label: 'Riga ' + lineNumber + ' · ' + lineFieldLabels[field], after: lineFieldValue(line, field) });
+          const label = 'Riga ' + lineNumber + ' · ' + lineFieldLabels[field];
+          changes.push(after
+            ? { label, after: lineFieldValue(line, field) }
+            : { label, before: lineFieldValue(line, field) });
         });
         if (line.type === 'surface' || 'lengthCm' in line || 'widthCm' in line) {
-          changes.push({ label: 'Riga ' + lineNumber + ' · Dimensioni', after: lineDimensions(line) });
+          changes.push(after
+            ? { label: 'Riga ' + lineNumber + ' · Dimensioni', after: lineDimensions(line) }
+            : { label: 'Riga ' + lineNumber + ' · Dimensioni', before: lineDimensions(line) });
         }
         if (line.type === 'linear' || 'linearMeters' in line) {
-          changes.push({ label: 'Riga ' + lineNumber + ' · Metri lineari', after: formatAuditValue(line.linearMeters) });
+          changes.push(after
+            ? { label: 'Riga ' + lineNumber + ' · Metri lineari', after: formatAuditValue(line.linearMeters) }
+            : { label: 'Riga ' + lineNumber + ' · Metri lineari', before: formatAuditValue(line.linearMeters) });
         }
         Object.entries(line.edges || {}).forEach(([edgeKey, edge]) => {
-          if (edge) changes.push({ label: 'Riga ' + lineNumber + ' · ' + (edgeLabels[edgeKey] || 'Bordo') + ' · dettaglio', after: edgeSummary(edge) });
+          if (edge) {
+            const label = 'Riga ' + lineNumber + ' · ' + (edgeLabels[edgeKey] || 'Bordo') + ' · dettaglio';
+            changes.push(after ? { label, after: edgeSummary(edge) } : { label, before: edgeSummary(edge) });
+          }
         });
       }
       return;
@@ -337,12 +353,17 @@ const workLineChanges = (
     const dimensionChanged = !sameValue(before.line.lengthCm, after.line.lengthCm)
       || !sameValue(before.line.widthCm, after.line.widthCm);
     if (dimensionChanged) changes.push({ label: 'Riga ' + lineNumber + ' · Dimensioni', before: lineDimensions(before.line), after: lineDimensions(after.line) });
-    const fields = ['description', 'type', 'quantity', 'linearMeters', 'materialNameSnapshot', 'materialId', 'thickness', 'variant', 'unit', 'unitPrice', 'extraCost', 'notes', 'taxRate', 'taxNature'];
+    const fields = ['description', 'type', 'quantity', 'linearMeters', 'linearItemId', 'materialNameSnapshot', 'materialId', 'thickness', 'variant', 'unit', 'unitPrice', 'extraCost', 'notes', 'taxRate', 'taxNature'];
     fields.forEach((field) => {
       if (field === 'materialId' && (present(before.line.materialNameSnapshot) || present(after.line.materialNameSnapshot))) return;
       if (field === 'materialNameSnapshot' && !present(lineMaterial(before.line)) && !present(lineMaterial(after.line))) return;
-      if (!sameValue(field === 'materialNameSnapshot' ? lineMaterial(before.line) : before.line[field], field === 'materialNameSnapshot' ? lineMaterial(after.line) : after.line[field])) {
-        changes.push({ label: 'Riga ' + lineNumber + ' · ' + (field === 'linearMeters' ? 'Metri lineari' : lineFieldLabels[field]), before: lineFieldValue(before.line, field), after: lineFieldValue(after.line, field) });
+      const beforeValue = field === 'materialNameSnapshot' ? lineMaterial(before.line) : before.line[field];
+      const afterValue = field === 'materialNameSnapshot' ? lineMaterial(after.line) : after.line[field];
+      if (!sameValue(beforeValue, afterValue)) {
+        const label = 'Riga ' + lineNumber + ' · ' + (field === 'linearMeters' ? 'Metri lineari' : field === 'linearItemId' ? 'Voce lavorazione' : lineFieldLabels[field]);
+        changes.push(referenceKeys.has(field)
+          ? referenceChange(label, beforeValue, afterValue)
+          : { label, before: lineFieldValue(before.line, field), after: lineFieldValue(after.line, field) });
       }
     });
     const edgeKeys = [...new Set([...Object.keys(before.line.edges || {}), ...Object.keys(after.line.edges || {})])];
@@ -356,8 +377,19 @@ const itemChanges = (changes: AuditChange[], previousItems: Record<string, any>[
     const before = previousItems[index];
     const after = nextItems[index];
     const prefix = 'Voce ' + (index + 1);
-    if (!before && after) changes.push({ label: prefix + ' aggiunta', after: String(after.description || 'Senza descrizione') });
-    if (before && !after) changes.push({ label: prefix + ' rimossa', before: String(before.description || 'Senza descrizione') });
+    const detailFields = ['description', 'quantity', 'unitPrice', 'taxRate'];
+    if (!before && after) {
+      changes.push({ label: prefix + ' aggiunta', after: String(after.description || 'Senza descrizione') });
+      detailFields.forEach((key) => {
+        if (present(after[key])) changes.push({ label: prefix + ' · ' + labelForAuditField(key), after: formatAuditValue(after[key], key) });
+      });
+    }
+    if (before && !after) {
+      changes.push({ label: prefix + ' rimossa', before: String(before.description || 'Senza descrizione') });
+      detailFields.forEach((key) => {
+        if (present(before[key])) changes.push({ label: prefix + ' · ' + labelForAuditField(key), before: formatAuditValue(before[key], key) });
+      });
+    }
     if (!before || !after) continue;
     [['description', 'Descrizione'], ['quantity', 'Quantità'], ['unitPrice', 'Prezzo unitario'], ['taxRate', 'IVA']].forEach(([key, label]) => {
       if (!sameValue(before[key], after[key])) changes.push({ label: prefix + ' · ' + label, before: formatAuditValue(before[key], key), after: formatAuditValue(after[key], key) });
@@ -367,14 +399,21 @@ const itemChanges = (changes: AuditChange[], previousItems: Record<string, any>[
 
 const ordinaryChanges = (previous: Record<string, any>, next: Record<string, any>, includeAll = false): AuditChange[] => {
   const changes: AuditChange[] = [];
-  const keys = includeAll ? Object.keys(next) : [...new Set([...Object.keys(previous), ...Object.keys(next)])];
+  const direction = includeAll && Object.keys(next).length === 0 ? 'before' : 'after';
+  const source = direction === 'before' ? previous : next;
+  const keys = includeAll ? Object.keys(source) : [...new Set([...Object.keys(previous), ...Object.keys(next)])];
   const hasWorkLines = Array.isArray(previous.workLines) || Array.isArray(next.workLines);
   keys.forEach((key) => {
     if (ignoredKeys.has(key) || (key === 'total' && hasWorkLines)) return;
     if (!includeAll && !sameValue(previous[key], next[key])) {
-      changes.push({ label: labelForAuditField(key), before: formatAuditValue(previous[key], key), after: formatAuditValue(next[key], key) });
-    } else if (includeAll && present(next[key]) && !Array.isArray(next[key]) && typeof next[key] !== 'object') {
-      changes.push({ label: labelForAuditField(key), after: formatAuditValue(next[key], key) });
+      changes.push(referenceKeys.has(key)
+        ? referenceChange(labelForAuditField(key), previous[key], next[key])
+        : { label: labelForAuditField(key), before: formatAuditValue(previous[key], key), after: formatAuditValue(next[key], key) });
+    } else if (includeAll && present(source[key]) && !Array.isArray(source[key]) && typeof source[key] !== 'object') {
+      const formatted = formatAuditValue(source[key], key);
+      changes.push(direction === 'before'
+        ? { label: labelForAuditField(key), before: formatted }
+        : { label: labelForAuditField(key), after: formatted });
     }
   });
   if (!hasWorkLines && (Array.isArray(previous.items) || Array.isArray(next.items))) {

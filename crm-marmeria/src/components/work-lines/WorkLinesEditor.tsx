@@ -120,9 +120,16 @@ const EdgeConfigurator = ({
           materialId: line.materialId,
           thickness: line.thickness,
         }) : undefined;
-        const displayPrice = edge?.unitPrice ?? matchedCatalog?.unitPrice ?? matchedCatalog?.price ?? 0;
-        const edgeTypes = uniqueEdgeCatalogItems(edgeCatalog);
-        const selectedType = edge?.catalogId || (edge?.type ? matchedCatalog?.id || edge.type : '');
+        const catalogById = edge?.catalogId
+          ? edgeCatalog.find((item) => String(item.id) === String(edge.catalogId))
+          : undefined;
+        const selectedCatalog = catalogById || matchedCatalog;
+        const availableEdgeTypes = uniqueEdgeCatalogItems(edgeCatalog);
+        const edgeTypes = selectedCatalog && !availableEdgeTypes.some((item) => String(item.name) === String(selectedCatalog.name))
+          ? [selectedCatalog, ...availableEdgeTypes]
+          : availableEdgeTypes;
+        const displayPrice = edge?.unitPrice ?? selectedCatalog?.unitPrice ?? selectedCatalog?.price ?? 0;
+        const selectedType = selectedCatalog?.name || (edge?.catalogId ? '' : edge?.type || '');
         const catalogSelected = Boolean(edge?.catalogId);
         return (
           <div key={key} className="rounded border bg-white p-3 dark:bg-dark-card">
@@ -161,7 +168,7 @@ const EdgeConfigurator = ({
                   className={`${inputClass} text-xs`}
                 >
                   <option value="">Tipo generico</option>
-                  {edgeTypes.map((item) => <option key={item.id} value={String(item.id)}>{item.name || String(item.id)}</option>)}
+                  {edgeTypes.map((item) => <option key={item.id} value={item.name || String(item.id)}>{item.name || String(item.id)}</option>)}
                 </select>
               </label>
               <NumericInput label="Lunghezza cm" value={edge?.lengthCm || ''} onChange={(value) => onEdgeChange(key, { lengthCm: value, lengthMeters: undefined })} disabled={disabled} />

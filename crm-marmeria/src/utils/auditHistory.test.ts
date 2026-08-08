@@ -21,6 +21,23 @@ describe('formatAuditItem', () => {
     expect(text).toContain('30 giorni');
   });
 
+  it('rende esplicito il cambio di collegamento senza esporre UUID', () => {
+    const result = formatAuditItem({
+      id: 'audit-reference',
+      entityType: 'quote',
+      action: 'update',
+      createdAt: '2026-08-08T10:00:00.000Z',
+      previous: { customerId: 'customer-old' },
+      next: { customerId: 'customer-new' },
+    });
+    const text = result.changes.map((change) => [change.label, change.before, change.after].join(' ')).join(' ');
+    expect(text).toContain('Cliente collegato modificato');
+    expect(text).toContain('collegamento precedente');
+    expect(text).toContain('nuovo collegamento');
+    expect(text).not.toContain('customer-old');
+    expect(text).not.toContain('customer-new');
+  });
+
   it('descrive righe, dimensioni, extra e bordi senza chiavi tecniche', () => {
     const result = formatAuditItem({
       id: 'audit-2',
@@ -98,5 +115,26 @@ describe('formatAuditItem', () => {
     });
     expect(result.summary).toContain('ha importato materiale');
     expect(result.summary).not.toContain('import.excel');
+  });
+
+  it('descrive i dati eliminati usando i valori precedenti', () => {
+    const result = formatAuditItem({
+      id: 'audit-delete',
+      entityType: 'quote',
+      action: 'delete',
+      createdAt: '2026-08-08T10:00:00.000Z',
+      previous: {
+        quoteNumber: 'PRE-42',
+        status: 'Bozza',
+        customerId: 'customer-old',
+        workLines: [{ id: 'line-1', type: 'manual', description: 'Trasporto', quantity: 1, unitPrice: 80 }],
+      },
+    });
+    const text = result.changes.map((change) => [change.label, change.before, change.after].join(' ')).join(' ');
+    expect(result.changes.length).toBeGreaterThan(0);
+    expect(text).toContain('PRE-42');
+    expect(text).toContain('Bozza');
+    expect(text).toContain('Riga 1 rimossa');
+    expect(text).not.toContain('customer-old');
   });
 });
