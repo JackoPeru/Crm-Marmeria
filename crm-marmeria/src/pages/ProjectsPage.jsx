@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Edit, Eye, Filter, Plus, Search, Trash, X } from 'lucide-react';
+import { Edit, Eye, Filter, Plus, Search, Trash } from 'lucide-react';
 import toast from 'react-hot-toast';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
@@ -12,6 +12,7 @@ import WorkLinesEditor from '../components/work-lines/WorkLinesEditor';
 import WorkLinesReadOnly from '../components/work-lines/WorkLinesReadOnly';
 import { copyWorkLines, mergeImportedWorkLines } from '../domain/work-lines/import';
 import { normalizeWorkLines } from '../domain/work-lines/normalize';
+import Modal from '../components/common/Modal';
 
 const emptyProject = {
   name: '',
@@ -59,20 +60,6 @@ const ProjectForm = ({ value, setValue, customers, materials = [], quotes = [], 
     {!operationalOnly && <WorkLinesEditor value={lines} onChange={(workLines) => setValue({ ...value, workLines })} materials={materials} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} />}
   </div>;
 };
-
-const Modal = ({ title, onClose, children, wide = false }) => (
-  <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50">
-    <div className={`bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-h-[92vh] overflow-y-auto ${wide ? 'max-w-3xl' : 'max-w-lg'}`}>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        <button type="button" onClick={onClose} className="p-1 text-gray-500">
-          <X className="w-6 h-6" />
-        </button>
-      </div>
-      {children}
-    </div>
-  </div>
-);
 
 const ProjectsPage = () => {
   const { isModalOpen, showModal, hideModal, setBreadcrumbs, userPreferences, updatePreferences } = useUI();
@@ -340,7 +327,7 @@ const ProjectsPage = () => {
       </div>
 
       {isModalOpen('addProject') && (
-        <Modal title="Nuovo progetto" onClose={() => hideModal('addProject')}>
+        <Modal title="Nuovo progetto" onClose={() => hideModal('addProject')} size="lg">
           <form onSubmit={submitAdd}>
             <ProjectForm value={form} setValue={setForm} customers={customers} materials={materials} quotes={quotes} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} canViewFinancials={canViewFinancials} />
             <div className="flex justify-end gap-3">
@@ -352,7 +339,7 @@ const ProjectsPage = () => {
       )}
 
       {isModalOpen('editProject') && selected && (
-        <Modal title={operationalOnly ? 'Aggiorna lavorazione' : 'Modifica progetto'} onClose={() => hideModal('editProject')}>
+        <Modal title={operationalOnly ? 'Aggiorna lavorazione' : 'Modifica progetto'} onClose={() => hideModal('editProject')} size="lg">
           <form onSubmit={submitEdit}>
             <ProjectForm value={form} setValue={setForm} customers={customers} materials={materials} quotes={quotes} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} canViewFinancials={canViewFinancials} operationalOnly={operationalOnly} />
             <div className="flex justify-end gap-3">
@@ -364,7 +351,7 @@ const ProjectsPage = () => {
       )}
 
       {isModalOpen('viewProject') && selected && (
-        <Modal title="Dettagli progetto" onClose={() => hideModal('viewProject')} wide>
+        <Modal title="Dettagli progetto" onClose={() => hideModal('viewProject')} size="3xl">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
             <div><span className="text-gray-500">Nome</span><p className="font-medium text-base">{selected.name}</p></div>
             <div><span className="text-gray-500">Cliente</span><p className="font-medium text-base">{selected.client || selected.clientName || '-'}</p></div>
@@ -385,7 +372,7 @@ const ProjectsPage = () => {
       )}
 
       {isModalOpen('confirmDelete') && (
-        <Modal title="Conferma eliminazione" onClose={() => hideModal('confirmDelete')}>
+        <Modal title="Conferma eliminazione" onClose={() => hideModal('confirmDelete')} size="lg">
           <p className="mb-6">Eliminare definitivamente questo progetto?</p>
           <div className="flex justify-end gap-3">
             <button onClick={() => hideModal('confirmDelete')} className="px-4 py-2 border rounded-md">Annulla</button>

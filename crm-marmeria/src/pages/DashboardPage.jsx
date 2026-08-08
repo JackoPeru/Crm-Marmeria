@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckSquare, Edit2, Eye, Trash2, X } from 'lucide-react';
+import { CheckSquare, Edit2, Eye, Trash2 } from 'lucide-react';
 import { Pie } from 'react-chartjs-2';
 import { ArcElement, Chart as ChartJS, Legend, Tooltip } from 'chart.js';
 import WelcomeHeader from '../components/dashboard/WelcomeHeader';
@@ -13,6 +13,7 @@ import { formatEuro, parseLocaleNumber } from '../utils/numbers';
 import { createId } from '../utils/ids';
 import { observeServerScope, stableServerKey } from '../utils/serverScope';
 import { apiClient } from '../services/api';
+import Modal from '../components/common/Modal';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -296,28 +297,22 @@ const DashboardPage = () => {
         </section>
       </div>
 
-      {selectedProject && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-semibold">Dettagli progetto</h3>
-              <button onClick={() => setViewProjectId(null)} className="p-1 text-gray-500"><X size={22} /></button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-              <div><span className="text-gray-500">Nome</span><p className="font-medium">{selectedProject.name || '-'}</p></div>
-              <div><span className="text-gray-500">Cliente</span><p>{customerName(selectedProject)}</p></div>
-              <div><span className="text-gray-500">Scadenza</span><p>{formatDate(selectedProject.deadline || selectedProject.endDate)}</p></div>
-              <div><span className="text-gray-500">Stato / fase</span><p>{selectedProject.status || '-'} {selectedProject.phase ? `· ${selectedProject.phase}` : ''}</p></div>
-              {canViewFinancials && selectedProject.budget != null && (
-                <div><span className="text-gray-500">Budget</span><p>{formatEuro(selectedProject.budget)}</p></div>
-              )}
-              <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selectedProject.productionNotes || '-'}</p></div>
-            </div>
-            <AttachmentsPanel entityType="project" entityId={String(selectedProject.id)} />
-            <div className="mt-6 flex justify-end"><button onClick={() => setViewProjectId(null)} className="px-4 py-2 border rounded-md">Chiudi</button></div>
+      <Modal isOpen={Boolean(selectedProject)} onClose={() => setViewProjectId(null)} title="Dettagli progetto" size="2xl">
+        {selectedProject && <>
+          <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
+            <div><span className="text-gray-500">Nome</span><p className="font-medium">{selectedProject.name || '-'}</p></div>
+            <div><span className="text-gray-500">Cliente</span><p>{customerName(selectedProject)}</p></div>
+            <div><span className="text-gray-500">Scadenza</span><p>{formatDate(selectedProject.deadline || selectedProject.endDate)}</p></div>
+            <div><span className="text-gray-500">Stato / fase</span><p>{selectedProject.status || '-'} {selectedProject.phase ? `· ${selectedProject.phase}` : ''}</p></div>
+            {canViewFinancials && selectedProject.budget != null && (
+              <div><span className="text-gray-500">Budget</span><p>{formatEuro(selectedProject.budget)}</p></div>
+            )}
+            <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selectedProject.productionNotes || '-'}</p></div>
           </div>
-        </div>
-      )}
+          <AttachmentsPanel entityType="project" entityId={String(selectedProject.id)} />
+          <div className="mt-6 flex justify-end"><button type="button" onClick={() => setViewProjectId(null)} className="rounded-md border px-4 py-2">Chiudi</button></div>
+        </>}
+      </Modal>
     </div>
   );
 };

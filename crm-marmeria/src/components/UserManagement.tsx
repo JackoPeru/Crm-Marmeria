@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Plus, RefreshCw, Save, Shield, UserCog, X } from 'lucide-react';
+import { Plus, RefreshCw, Save, Shield, UserCog } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
+import Modal from './common/Modal';
 
 interface ManagedUser {
   id: string;
@@ -259,14 +260,12 @@ const UserManagement: React.FC = () => {
       </div>
 
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-lg bg-white dark:bg-dark-card p-6 shadow-xl">
-            <div className="flex justify-between items-center mb-5">
-              <h3 className="text-xl font-semibold flex items-center gap-2">
-                <Shield size={20} /> {editingId ? 'Modifica account' : 'Nuovo account'}
-              </h3>
-              <button type="button" onClick={() => setShowForm(false)} className="p-1 text-gray-500"><X size={22} /></button>
-            </div>
+        <Modal
+          isOpen={showForm}
+          onClose={() => setShowForm(false)}
+          title={<span className="flex items-center gap-2"><Shield size={20} /> {editingId ? 'Modifica account' : 'Nuovo account'}</span>}
+          size="3xl"
+        >
             <form onSubmit={save}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <label className="block">
@@ -329,8 +328,7 @@ const UserManagement: React.FC = () => {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
+        </Modal>
       )}
     </section>
   );

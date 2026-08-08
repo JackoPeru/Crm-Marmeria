@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { FileSpreadsheet, X } from 'lucide-react';
+import { FileSpreadsheet } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../../services/api';
+import Modal from '../common/Modal';
 
 interface MaterialImportModalProps {
   open: boolean;
@@ -64,9 +65,13 @@ const MaterialImportModal: React.FC<MaterialImportModalProps> = ({ open, onClose
     }
   };
 
-  return <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="material-import-title">
-    <div className="my-8 max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-lg bg-white p-6 shadow-xl dark:bg-dark-card">
-      <div className="mb-5 flex items-center justify-between gap-3"><h2 id="material-import-title" className="flex items-center gap-2 text-xl font-semibold"><FileSpreadsheet size={21} /> Importa listino materiali Excel</h2><button type="button" onClick={() => { if (!busy) onClose(); }} className="rounded p-1 text-gray-500" aria-label="Chiudi importazione"><X size={22} /></button></div>
+  return <Modal
+    isOpen={open}
+    onClose={() => { if (!busy) onClose(); }}
+    title={<span className="flex items-center gap-2"><FileSpreadsheet size={21} /> Importa listino materiali Excel</span>}
+    size="5xl"
+    closeLabel="Chiudi importazione"
+  >
       <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">Ogni foglio diventa il fornitore. Il server riconosce nome, spessore e prezzo; scegli cosa fare con i duplicati prima di confermare.</p>
       <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => void preview(event.target.files?.[0] || null)} disabled={busy} />
       {busy && <p className="mt-3 text-sm text-gray-500">Elaborazione...</p>}
@@ -75,8 +80,7 @@ const MaterialImportModal: React.FC<MaterialImportModalProps> = ({ open, onClose
         <label className="block"><span className="mb-1 block text-sm font-medium">Duplicati</span><select value={duplicateMode} onChange={(event) => setDuplicateMode(event.target.value as 'skip' | 'update')} className="rounded border p-2 dark:bg-dark-input"><option value="skip">Salta duplicati</option><option value="update">Aggiorna duplicati (conferma esplicita)</option></select></label>
         <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded border px-3 py-2">Annulla</button><button type="button" disabled={busy} onClick={() => void commit()} className="rounded bg-light-primary px-3 py-2 text-white disabled:opacity-50">Conferma importazione</button></div>
       </div>}
-    </div>
-  </div>;
+  </Modal>;
 };
 
 export default MaterialImportModal;

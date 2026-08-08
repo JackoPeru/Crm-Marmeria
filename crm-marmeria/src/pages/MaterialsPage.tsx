@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Edit, Eye, Plus, Search, Trash, X } from 'lucide-react';
+import { Edit, Eye, Plus, Search, Trash } from 'lucide-react';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
 import type { Material } from '../store/slices/materialsSlice';
 import { formatEuro, parseLocaleNumber } from '../utils/numbers';
+import Modal from '../components/common/Modal';
 
 type MaterialRecord = Material & {
   price?: number;
@@ -27,22 +28,6 @@ const emptyMaterial = {
   variant: '',
   active: true,
 };
-
-const Modal: React.FC<{
-  title: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}> = ({ title, onClose, children }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4 dark:bg-black/70" role="dialog" aria-modal="true">
-    <div className="my-8 w-full max-w-lg rounded-lg bg-white p-6 shadow-xl dark:bg-dark-card">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        <button type="button" onClick={onClose} className="rounded p-1 text-gray-500" aria-label="Chiudi"><X className="h-6 w-6" /></button>
-      </div>
-      {children}
-    </div>
-  </div>
-);
 
 const MaterialsPage: React.FC = () => {
   const { isModalOpen, showModal, hideModal, setBreadcrumbs } = useUI();
@@ -173,10 +158,10 @@ const MaterialsPage: React.FC = () => {
       <div className="overflow-x-auto"><table className="w-full"><thead className="bg-light-bg dark:bg-dark-bg"><tr><th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Nome</th><th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Categoria</th><th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Unità</th><th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Stock</th>{canViewFinancials && <th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Prezzo</th>}<th className="px-5 py-3 text-left text-xs uppercase text-gray-500">Fornitore</th><th className="px-5 py-3 text-right text-xs uppercase text-gray-500">Azioni</th></tr></thead><tbody className="divide-y divide-light-border dark:divide-dark-border">{filteredMaterials.map((material) => <tr key={material.id}><td className="px-5 py-4 font-medium">{material.name}</td><td className="px-5 py-4">{material.category || '—'}</td><td className="px-5 py-4">{material.unit || '—'}</td><td className="px-5 py-4">{parseLocaleNumber(material.stockQuantity ?? material.stock)}</td>{canViewFinancials && <td className="px-5 py-4">{formatEuro(material.unitPrice ?? material.price)}</td>}<td className="px-5 py-4">{material.supplier || '—'}</td><td className="px-5 py-4"><div className="flex justify-end gap-2"><button type="button" onClick={() => { setSelected(material); showModal({ id: 'viewMaterial', type: 'view' }); }} className="rounded p-1.5 text-blue-600" title="Visualizza" aria-label={"Visualizza " + material.name}><Eye className="h-5 w-5" /></button>{canEdit && <button type="button" onClick={() => openEdit(material)} className="rounded p-1.5 text-yellow-600" title="Modifica" aria-label={"Modifica " + material.name}><Edit className="h-5 w-5" /></button>}{canDelete && <button type="button" onClick={() => { setDeleteId(String(material.id)); showModal({ id: 'deleteMaterial', type: 'delete' }); }} className="rounded p-1.5 text-red-600" title="Elimina" aria-label={"Elimina " + material.name}><Trash className="h-5 w-5" /></button>}</div></td></tr>)}{!filteredMaterials.length && <tr><td colSpan={canViewFinancials ? 7 : 6} className="px-6 py-12 text-center text-gray-500">Nessun materiale trovato.</td></tr>}</tbody></table></div>
     </div>
 
-    {isModalOpen('addMaterial') && <Modal title="Nuovo materiale" onClose={() => hideModal('addMaterial')}><form onSubmit={submitAdd}>{fullForm}<div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('addMaterial')} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Aggiungi'}</button></div></form></Modal>}
-    {isModalOpen('editMaterial') && selected && <Modal title={operationalOnly ? 'Aggiorna stock' : 'Modifica materiale'} onClose={() => hideModal('editMaterial')}><form onSubmit={submitEdit}>{operationalOnly ? operationalForm : fullForm}<div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('editMaterial')} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button></div></form></Modal>}
-    {isModalOpen('viewMaterial') && selected && <Modal title="Dettagli materiale" onClose={() => hideModal('viewMaterial')}><div className="space-y-2"><p><strong>Nome:</strong> {selected.name}</p><p><strong>Descrizione:</strong> {selected.description || '—'}</p><p><strong>Categoria:</strong> {selected.category || '—'}</p><p><strong>Spessore:</strong> {selected.thickness || '—'}</p><p><strong>Variante:</strong> {selected.variant || '—'}</p><p><strong>Attivo:</strong> {selected.active === false ? 'No' : 'Sì'}</p><p><strong>Unità:</strong> {selected.unit || '—'}</p>{canViewFinancials && <p><strong>Prezzo unitario:</strong> {formatEuro(selected.unitPrice ?? selected.price)}</p>}<p><strong>Fornitore:</strong> {selected.supplier || '—'}</p><p><strong>Quantità in stock:</strong> {parseLocaleNumber(selected.stockQuantity ?? selected.stock)}</p><p><strong>Livello minimo:</strong> {parseLocaleNumber(selected.minStockLevel)}</p><p><strong>Note:</strong> {selected.notes || '—'}</p></div><div className="mt-6 flex justify-end"><button type="button" onClick={() => hideModal('viewMaterial')} className="rounded-md border px-4 py-2">Chiudi</button></div></Modal>}
-    {isModalOpen('deleteMaterial') && <Modal title="Conferma eliminazione" onClose={() => hideModal('deleteMaterial')}><p className="mb-6">Eliminare definitivamente questo materiale?</p><div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('deleteMaterial')} className="rounded-md border px-4 py-2">Annulla</button><button type="button" onClick={() => void confirmDelete()} disabled={saving} className="rounded-md bg-red-600 px-4 py-2 text-white disabled:bg-gray-400">Elimina</button></div></Modal>}
+    {isModalOpen('addMaterial') && <Modal title="Nuovo materiale" onClose={() => hideModal('addMaterial')} size="lg"><form onSubmit={submitAdd}>{fullForm}<div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('addMaterial')} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Aggiungi'}</button></div></form></Modal>}
+    {isModalOpen('editMaterial') && selected && <Modal title={operationalOnly ? 'Aggiorna stock' : 'Modifica materiale'} onClose={() => hideModal('editMaterial')} size="lg"><form onSubmit={submitEdit}>{operationalOnly ? operationalForm : fullForm}<div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('editMaterial')} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button></div></form></Modal>}
+    {isModalOpen('viewMaterial') && selected && <Modal title="Dettagli materiale" onClose={() => hideModal('viewMaterial')} size="lg"><div className="space-y-2"><p><strong>Nome:</strong> {selected.name}</p><p><strong>Descrizione:</strong> {selected.description || '—'}</p><p><strong>Categoria:</strong> {selected.category || '—'}</p><p><strong>Spessore:</strong> {selected.thickness || '—'}</p><p><strong>Variante:</strong> {selected.variant || '—'}</p><p><strong>Attivo:</strong> {selected.active === false ? 'No' : 'Sì'}</p><p><strong>Unità:</strong> {selected.unit || '—'}</p>{canViewFinancials && <p><strong>Prezzo unitario:</strong> {formatEuro(selected.unitPrice ?? selected.price)}</p>}<p><strong>Fornitore:</strong> {selected.supplier || '—'}</p><p><strong>Quantità in stock:</strong> {parseLocaleNumber(selected.stockQuantity ?? selected.stock)}</p><p><strong>Livello minimo:</strong> {parseLocaleNumber(selected.minStockLevel)}</p><p><strong>Note:</strong> {selected.notes || '—'}</p></div><div className="mt-6 flex justify-end"><button type="button" onClick={() => hideModal('viewMaterial')} className="rounded-md border px-4 py-2">Chiudi</button></div></Modal>}
+    {isModalOpen('deleteMaterial') && <Modal title="Conferma eliminazione" onClose={() => hideModal('deleteMaterial')} size="lg"><p className="mb-6">Eliminare definitivamente questo materiale?</p><div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('deleteMaterial')} className="rounded-md border px-4 py-2">Annulla</button><button type="button" onClick={() => void confirmDelete()} disabled={saving} className="rounded-md bg-red-600 px-4 py-2 text-white disabled:bg-gray-400">Elimina</button></div></Modal>}
   </div>;
 };
 

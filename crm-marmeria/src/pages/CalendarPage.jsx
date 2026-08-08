@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus, Trash2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useData } from '../hooks/useData';
 import useUI from '../hooks/useUI';
 import { localDateKey as localDate, pad } from '../components/dashboard/appointmentUtils';
+import Modal from '../components/common/Modal';
 
 const localInput = (value) => {
   const date = value ? new Date(value) : new Date();
@@ -25,12 +26,9 @@ const dateLabel = (value) => new Date(value).toLocaleString('it-IT', {
   weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
 });
 const modal = ({ title, onClose, children }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-    <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-6 shadow-xl dark:bg-dark-card">
-      <div className="mb-5 flex items-center justify-between gap-3"><h2 className="text-xl font-semibold">{title}</h2><button type="button" onClick={onClose} className="p-1 text-gray-500"><X size={22} /></button></div>
-      {children}
-    </div>
-  </div>
+  <Modal title={title} onClose={onClose} size="2xl">
+    {children}
+  </Modal>
 );
 
 const AppointmentForm = ({ value, setValue, customers, projects }) => (

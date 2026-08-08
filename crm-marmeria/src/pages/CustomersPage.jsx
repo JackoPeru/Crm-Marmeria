@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowDownAZ, ArrowUpAZ, Edit, Eye, FileSpreadsheet, Filter, Plus, Search, Trash, X } from 'lucide-react';
+import { ArrowDownAZ, ArrowUpAZ, Edit, Eye, FileSpreadsheet, Filter, Plus, Search, Trash } from 'lucide-react';
 import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
 import CustomerHistoryModal, { HistoryImportModal } from '../components/CustomerHistoryModal';
+import Modal from '../components/common/Modal';
 
 const emptyCustomer = {
   name: '',
@@ -24,18 +25,6 @@ const emptyCustomer = {
   country: 'IT',
   notes: '',
 };
-
-const Modal = ({ title, onClose, children }) => (
-  <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center p-4 z-50 overflow-y-auto">
-    <div className="bg-white dark:bg-dark-card rounded-lg shadow-xl p-6 w-full max-w-lg my-8">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        <button type="button" onClick={onClose} className="p-1 text-gray-500"><X className="w-6 h-6" /></button>
-      </div>
-      {children}
-    </div>
-  </div>
-);
 
 const CustomerForm = ({ value, setValue }) => (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
@@ -257,7 +246,7 @@ const CustomersPage = () => {
       </div>
 
       {isModalOpen('addCustomer') && (
-        <Modal title="Nuovo cliente" onClose={() => hideModal('addCustomer')}>
+        <Modal title="Nuovo cliente" onClose={() => hideModal('addCustomer')} size="lg">
           <form onSubmit={submitAdd}>
             <CustomerForm value={form} setValue={setForm} />
             <div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('addCustomer')} className="px-4 py-2 border rounded-md">Annulla</button><button disabled={saving} className="px-4 py-2 bg-light-primary text-white rounded-md disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Aggiungi'}</button></div>
@@ -266,7 +255,7 @@ const CustomersPage = () => {
       )}
 
       {isModalOpen('editCustomer') && selected && (
-        <Modal title="Modifica cliente" onClose={() => hideModal('editCustomer')}>
+        <Modal title="Modifica cliente" onClose={() => hideModal('editCustomer')} size="lg">
           <form onSubmit={submitEdit}>
             <CustomerForm value={form} setValue={setForm} />
             <div className="flex justify-end gap-3"><button type="button" onClick={() => hideModal('editCustomer')} className="px-4 py-2 border rounded-md">Annulla</button><button disabled={saving} className="px-4 py-2 bg-light-primary text-white rounded-md disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button></div>
@@ -278,7 +267,7 @@ const CustomersPage = () => {
       {isModalOpen('importHistory') && <HistoryImportModal onClose={() => hideModal('importHistory')} />}
 
       {isModalOpen('deleteCustomer') && (
-        <Modal title="Conferma eliminazione" onClose={() => hideModal('deleteCustomer')}>
+        <Modal title="Conferma eliminazione" onClose={() => hideModal('deleteCustomer')} size="lg">
           <p className="mb-6">Eliminare definitivamente questo cliente?</p>
           <div className="flex justify-end gap-3"><button onClick={() => hideModal('deleteCustomer')} className="px-4 py-2 border rounded-md">Annulla</button><button onClick={() => void confirmDelete()} disabled={saving} className="px-4 py-2 bg-red-600 text-white rounded-md disabled:bg-gray-400">Elimina</button></div>
         </Modal>

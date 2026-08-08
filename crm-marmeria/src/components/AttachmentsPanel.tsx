@@ -6,6 +6,7 @@ import type { AttachmentRecord } from '../services/attachments';
 import { apiClient } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AuditHistory from './AuditHistory';
+import Modal from './common/Modal';
 
 const permissionPrefixes: Record<string, string> = {
   client: 'clients',
@@ -250,15 +251,25 @@ const AttachmentsPanel: React.FC<{
         </div>
       )}
 
-      {lightbox && previewUrls[String(lightbox.id)] && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6" role="dialog" aria-modal="true" onClick={() => setLightbox(null)}>
-          <button type="button" className="absolute right-5 top-5 rounded-full bg-white/10 p-2 text-white" onClick={() => setLightbox(null)} title="Chiudi anteprima"><X size={24} /></button>
-          <figure className="max-h-full max-w-full" onClick={(event) => event.stopPropagation()}>
+      <Modal
+        isOpen={Boolean(lightbox && previewUrls[String(lightbox?.id)])}
+        onClose={() => setLightbox(null)}
+        title={`Anteprima ${lightbox?.caption || lightbox?.originalName || 'allegato'}`}
+        size="6xl"
+        showHeader={false}
+        variant="unstyled"
+        overlayClassName="z-[60] bg-black/80 sm:p-6"
+        panelClassName="relative"
+        closeLabel="Chiudi anteprima"
+      >
+        {lightbox && <>
+          <button type="button" className="absolute right-2 top-2 z-10 rounded-full bg-white/10 p-2 text-white" onClick={() => setLightbox(null)} aria-label="Chiudi anteprima" title="Chiudi anteprima"><X size={24} /></button>
+          <figure className="flex min-h-0 flex-col items-center justify-center">
             <img src={previewUrls[String(lightbox.id)]} alt={lightbox.caption || lightbox.originalName} className="max-h-[78vh] max-w-[90vw] object-contain" />
             <figcaption className="mt-3 text-center text-sm text-white">{lightbox.caption || lightbox.originalName}</figcaption>
           </figure>
-        </div>
-      )}
+        </>}
+      </Modal>
 
       <AuditHistory entityType={entityType} entityId={entityId} />
     </div>

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Download, Edit, Eye, FileCheck2, Mail, MessageCircle, Plus, Search, Send, Trash, X } from 'lucide-react';
+import { Download, Edit, Eye, FileCheck2, Mail, MessageCircle, Plus, Search, Send, Trash } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
 import useUI from '../hooks/useUI';
@@ -11,6 +11,7 @@ import EdgeCatalogOverlay from './catalog/EdgeCatalogOverlay';
 import { copyWorkLines, mergeImportedWorkLines } from '../domain/work-lines/import';
 import { createWorkLine, normalizeWorkLines, workLinesToDocumentItems } from '../domain/work-lines/normalize';
 import { refreshCatalogEdgePrices } from '../domain/work-lines/edgeSelector';
+import Modal from './common/Modal';
 
 const emptyItem = (invoice) => ({
   description: '',
@@ -91,18 +92,6 @@ const formatQuoteValidity = (document) => {
   const days = Number(document?.validityDays);
   return Number.isInteger(days) && days > 0 ? String(days) + ' giorni' : 'Senza scadenza';
 };
-
-const Modal = ({ title, onClose, children, wide = false }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-    <div className={`w-full ${wide ? 'max-w-4xl' : 'max-w-2xl'} max-h-[92vh] overflow-y-auto rounded-lg bg-white p-6 shadow-xl dark:bg-dark-card`}>
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        <button type="button" onClick={onClose} className="p-1 text-gray-500"><X size={22} /></button>
-      </div>
-      {children}
-    </div>
-  </div>
-);
 
 const askImportMode = (sourceLabel) => {
   const answer = window.prompt(
@@ -618,7 +607,7 @@ const BusinessDocumentPage = ({
       </div>
 
       {isModalOpen(`${kind}-add`) && (
-        <Modal title={`Nuovo ${singular}`} onClose={() => hideModal(`${kind}-add`)} wide>
+        <Modal title={`Nuovo ${singular}`} onClose={() => hideModal(`${kind}-add`)} size="4xl">
           <form onSubmit={submitAdd}>
             <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} onEdgeCatalogUpdated={setEdgeCatalog} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-add`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Crea'}</button></div>
@@ -627,7 +616,7 @@ const BusinessDocumentPage = ({
       )}
 
       {isModalOpen(`${kind}-edit`) && editing && (
-        <Modal title={`Modifica ${singular}`} onClose={() => hideModal(`${kind}-edit`)} wide>
+        <Modal title={`Modifica ${singular}`} onClose={() => hideModal(`${kind}-edit`)} size="4xl">
           <form onSubmit={submitEdit}>
             <DocumentForm kind={kind} value={form} setValue={setForm} customers={customers} projects={projects} quotes={quotes} materials={materials} quoteTemplates={quoteTemplates} edgeCatalog={edgeCatalog} linearCatalog={linearCatalog} showPrices={canViewFinancials} onEdgeCatalogUpdated={setEdgeCatalog} />
             <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-edit`)} className="rounded-md border px-4 py-2">Annulla</button><button disabled={saving} className="rounded-md bg-light-primary px-4 py-2 text-white disabled:bg-gray-400">{saving ? 'Salvataggio...' : 'Salva'}</button></div>
@@ -636,7 +625,7 @@ const BusinessDocumentPage = ({
       )}
 
       {isModalOpen(`${kind}-view`) && viewing && (
-        <Modal title={viewing[numberField] || singular} onClose={() => hideModal(`${kind}-view`)}>
+        <Modal title={viewing[numberField] || singular} onClose={() => hideModal(`${kind}-view`)} size="2xl">
           <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
             <div><span className="text-gray-500">Data</span><p>{formatDate(viewing.date)}</p></div>
             {invoice && <div><span className="text-gray-500">Scadenza</span><p>{formatDate(viewing.dueDate)}</p></div>}
@@ -661,7 +650,7 @@ const BusinessDocumentPage = ({
       )}
 
       {isModalOpen('invoice-sdi-confirm') && sdiInvoice && (
-        <Modal title="Invio fiscale a SdI" onClose={() => { if (!sdiBusy) { hideModal('invoice-sdi-confirm'); setSdiInvoice(null); } }}>
+        <Modal title="Invio fiscale a SdI" onClose={() => { if (!sdiBusy) { hideModal('invoice-sdi-confirm'); setSdiInvoice(null); } }} size="2xl">
           <p className="mb-4 text-sm text-gray-700 dark:text-gray-300">Questa azione invia la fattura elettronica <strong>{sdiInvoice.invoiceNumber}</strong> a SdI tramite PEC Aruba. Dopo accettazione PEC, fattura non è più modificabile dal CRM.</p>
           {sdiBusy && !sdiPreflight ? <p className="mb-4 text-sm text-gray-500">Controllo dati FatturaPA…</p> : sdiPreflight ? <div className="mb-4 rounded border border-green-300 bg-green-50 p-3 text-sm text-green-900 dark:bg-green-950/30 dark:text-green-100"><p>Controllo superato.</p><p>File: <strong>{sdiPreflight.fileName}</strong></p><p>Destinatario: {sdiPreflight.recipientCode}</p></div> : <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{sdiError || 'Correggi campi fiscali indicati dal controllo prima di inviare.'}</div>}
           <div className="flex justify-end gap-3"><button type="button" disabled={sdiBusy} onClick={() => { hideModal('invoice-sdi-confirm'); setSdiInvoice(null); }} className="rounded-md border px-4 py-2">Annulla</button><button type="button" disabled={sdiBusy || !sdiPreflight?.valid} onClick={() => void sendSdi()} className="rounded-md bg-orange-600 px-4 py-2 text-white disabled:opacity-50">{sdiBusy ? 'Invio...' : 'Conferma invio SdI'}</button></div>
@@ -669,7 +658,7 @@ const BusinessDocumentPage = ({
       )}
 
       {isModalOpen('quote-gmail-draft') && emailDraft && (
-        <Modal title="Bozza Gmail preventivo" onClose={() => { hideModal('quote-gmail-draft'); setEmailDraft(null); }}>
+        <Modal title="Bozza Gmail preventivo" onClose={() => { hideModal('quote-gmail-draft'); setEmailDraft(null); }} size="2xl">
           <form onSubmit={createGmailDraft}>
             <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">Gmail creerà una bozza con Word allegato. Controlla testo, poi invia da Gmail.</p>
             <label className="block"><span className="mb-1 block text-sm font-medium">Oggetto *</span><input required value={emailDraft.subject} onChange={(event) => setEmailDraft((previous) => ({ ...previous, subject: event.target.value }))} className="w-full rounded-md border p-2 dark:bg-dark-input" /></label>
@@ -680,7 +669,7 @@ const BusinessDocumentPage = ({
       )}
 
       {isModalOpen(`${kind}-delete`) && deleting && (
-        <Modal title="Conferma eliminazione" onClose={() => hideModal(`${kind}-delete`)}>
+        <Modal title="Conferma eliminazione" onClose={() => hideModal(`${kind}-delete`)} size="2xl">
           <p>Eliminare definitivamente {deleting[numberField] || `questo ${singular}`}?</p>
           <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => hideModal(`${kind}-delete`)} className="rounded-md border px-4 py-2">Annulla</button><button type="button" onClick={() => void confirmDelete()} disabled={saving} className="rounded-md bg-red-600 px-4 py-2 text-white disabled:bg-gray-400">Elimina</button></div>
         </Modal>

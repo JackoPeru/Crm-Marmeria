@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { Plus, RefreshCw, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import useUI from '../hooks/useUI';
 import { apiClient } from '../services/api';
+import Modal from './common/Modal';
 
 const euro = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' });
 const fieldLabels = {
@@ -13,15 +14,9 @@ const fieldLabels = {
 };
 
 const Dialog = ({ title, onClose, children, wide = false }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4">
-    <div className={`my-8 w-full ${wide ? 'max-w-6xl' : 'max-w-3xl'} rounded-lg bg-white p-6 shadow-xl dark:bg-dark-card`}>
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        <button type="button" onClick={onClose} className="p-1 text-gray-500" aria-label="Chiudi"><X /></button>
-      </div>
-      {children}
-    </div>
-  </div>
+  <Modal title={title} onClose={onClose} size={wide ? '6xl' : '3xl'}>
+    {children}
+  </Modal>
 );
 
 export const HistoryImportModal = ({ onClose }) => {
