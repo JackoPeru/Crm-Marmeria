@@ -304,9 +304,6 @@ const DashboardPage = () => {
             <div><span className="text-gray-500">Cliente</span><p>{customerName(selectedProject)}</p></div>
             <div><span className="text-gray-500">Scadenza</span><p>{formatDate(selectedProject.deadline || selectedProject.endDate)}</p></div>
             <div><span className="text-gray-500">Stato / fase</span><p>{selectedProject.status || '-'} {selectedProject.phase ? `· ${selectedProject.phase}` : ''}</p></div>
-            {canViewFinancials && selectedProject.budget != null && (
-              <div><span className="text-gray-500">Budget</span><p>{formatEuro(selectedProject.budget)}</p></div>
-            )}
             <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selectedProject.productionNotes || '-'}</p></div>
           </div>
           <AttachmentsPanel entityType="project" entityId={String(selectedProject.id)} />

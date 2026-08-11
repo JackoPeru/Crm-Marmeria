@@ -1,5 +1,6 @@
 import { createId } from '../../utils/ids';
 import { calculateWorkLine, numberValue, withCalculatedWorkLine } from './calculations';
+import { customerMaterialUnitPrice } from './pricing';
 import type {
   EdgeKey,
   EdgeSelection,
@@ -148,7 +149,9 @@ export const createWorkLine = (
     thickness: material?.thickness,
     variant: asText(material?.variant),
     unit: type === 'surface' ? 'm²' : type === 'linear' ? asText(linearItem?.unit || 'ml') : 'pz',
-    unitPrice: numberValue(type === 'linear' ? linearItem?.unitPrice ?? linearItem?.price : material?.unitPrice ?? material?.price),
+    unitPrice: type === 'linear'
+      ? numberValue(linearItem?.unitPrice ?? linearItem?.price)
+      : customerMaterialUnitPrice(material),
     extraCost: 0,
     total: 0,
     edges: type === 'surface' ? edgeDefaults() : undefined,

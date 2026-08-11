@@ -73,7 +73,7 @@ describe('formatAuditItem', () => {
     });
     const text = result.changes.map((change) => [change.label, change.before, change.after].join(' ')).join(' ');
     expect(text).toContain('Dimensioni');
-    expect(text).toContain('Extra riga');
+    expect(text).toContain('Extra prodotti esterni / posa / manodopera');
     expect(text).toContain('Fronte');
     expect(text).toContain('Attivo');
     expect(text).toContain('Tipo');

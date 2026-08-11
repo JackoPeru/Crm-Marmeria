@@ -5,7 +5,8 @@ import useUI from '../hooks/useUI';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../contexts/AuthContext';
 import AttachmentsPanel from '../components/AttachmentsPanel';
-import { formatEuro, parseLocaleNumber } from '../utils/numbers';
+import { formatEuro } from '../utils/numbers';
+import { localDateKey } from '../utils/dates';
 import { apiClient } from '../services/api';
 import { PROJECT_STATUS_OPTIONS } from '../utils/constants';
 import WorkLinesEditor from '../components/work-lines/WorkLinesEditor';
@@ -14,17 +15,16 @@ import { copyWorkLines, mergeImportedWorkLines } from '../domain/work-lines/impo
 import { normalizeWorkLines } from '../domain/work-lines/normalize';
 import Modal from '../components/common/Modal';
 
-const emptyProject = {
+const emptyProject = () => ({
   name: '',
   clientId: '',
-  startDate: '',
+  startDate: localDateKey(),
   deadline: '',
-  budget: '',
   status: 'In Attesa',
   phase: '',
   productionNotes: '',
   workLines: [],
-};
+});
 
 const ProjectForm = ({ value, setValue, customers, materials = [], quotes = [], edgeCatalog = [], linearCatalog = [], canViewFinancials = true, operationalOnly = false }) => {
   const lines = normalizeWorkLines(value.workLines, value.items);
@@ -49,7 +49,6 @@ const ProjectForm = ({ value, setValue, customers, materials = [], quotes = [], 
       <label className="block"><span className="mb-1 block text-sm font-medium">Cliente *</span><select required value={String(value.clientId || '')} onChange={(event) => { const clientId = event.target.value; const client = customers.find((item) => String(item.id) === clientId); setValue({ ...value, clientId, client: client?.name || 'Cliente non specificato' }); }} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input"><option value="">Seleziona cliente</option>{[...customers].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'it', { sensitivity: 'base' })).map((customer) => <option key={customer.id} value={String(customer.id)}>{customer.name}</option>)}</select></label>
       <label className="block"><span className="mb-1 block text-sm font-medium">Data inizio *</span><input required type="date" value={value.startDate || ''} onChange={(event) => setValue({ ...value, startDate: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>
       <label className="block"><span className="mb-1 block text-sm font-medium">Scadenza (opzionale)</span><input type="date" value={value.deadline || ''} onChange={(event) => setValue({ ...value, deadline: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>
-      {canViewFinancials && <label className="block"><span className="mb-1 block text-sm font-medium">Budget (€)</span><input type="number" min="0" step="0.01" value={value.budget ?? ''} onChange={(event) => setValue({ ...value, budget: event.target.value })} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input" /></label>}
       <label className="block"><span className="mb-1 block text-sm font-medium">Importa da preventivo</span><select value="" onChange={(event) => importQuote(event.target.value)} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input"><option value="">Seleziona preventivo</option>{quotes.map((quote) => <option key={quote.id} value={String(quote.id)}>{quote.quoteNumber || quote.id}</option>)}</select></label>
     </div>}
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -104,10 +103,10 @@ const ProjectsPage = () => {
     const quote = quotes.find((item) => String(item.id) === String(intent.sourceId));
     if (!quote) return;
     setForm({
-      ...emptyProject,
+      ...emptyProject(),
       name: `Progetto ${quote.quoteNumber || quote.id}`,
       clientId: String(quote.customerId || ''),
-      startDate: new Date().toISOString().slice(0, 10),
+      startDate: localDateKey(),
       workLines: copyWorkLines(quote.workLines?.length ? quote.workLines : quote.items, 'quote', quote.id, quote.version),
       quoteId: String(quote.id),
       importSource: { sourceType: 'quote', sourceId: String(quote.id), sourceVersion: quote.version, importedAt: new Date().toISOString() },
@@ -133,7 +132,7 @@ const ProjectsPage = () => {
   }), [projects, searchTerm, statusFilter]);
 
   const openAdd = () => {
-    setForm(emptyProject);
+    setForm(emptyProject());
     showModal({ id: 'addProject', type: 'add' });
   };
 
@@ -142,7 +141,6 @@ const ProjectsPage = () => {
     setForm({
       ...project,
       clientId: String(project.clientId || ''),
-      budget: parseLocaleNumber(project.budget),
     });
     showModal({ id: 'editProject', type: 'edit' });
   };
@@ -161,11 +159,11 @@ const ProjectsPage = () => {
     setSaving(true);
     try {
       const customer = customers.find((item) => String(item.id) === String(form.clientId));
+      const { budget: _legacyBudget, ...projectForm } = form;
       const success = await addProject({
-        ...form,
+        ...projectForm,
         clientId: String(form.clientId),
         client: customer?.name || 'Cliente non specificato',
-        budget: parseLocaleNumber(form.budget),
       });
       if (success) hideModal('addProject');
     } finally {
@@ -178,6 +176,7 @@ const ProjectsPage = () => {
     if (!selected) return;
     setSaving(true);
     try {
+      const { budget: _legacyBudget, ...projectForm } = form;
       const payload = operationalOnly
         ? {
           status: form.status,
@@ -186,9 +185,8 @@ const ProjectsPage = () => {
           version: selected.version,
         }
         : {
-          ...form,
+          ...projectForm,
           clientId: String(form.clientId),
-          budget: parseLocaleNumber(form.budget),
           version: selected.version,
         };
       const success = await updateProject(String(selected.id), payload);
@@ -357,13 +355,10 @@ const ProjectsPage = () => {
             <div><span className="text-gray-500">Cliente</span><p className="font-medium text-base">{selected.client || selected.clientName || '-'}</p></div>
             <div><span className="text-gray-500">Inizio</span><p>{selected.startDate || '-'}</p></div>
             <div><span className="text-gray-500">Scadenza</span><p>{selected.deadline || '-'}</p></div>
-            {canViewFinancials && selected.budget != null && (
-              <div><span className="text-gray-500">Budget</span><p>{formatEuro(selected.budget)}</p></div>
-            )}
             <div><span className="text-gray-500">Stato / fase</span><p>{selected.status} {selected.phase ? `· ${selected.phase}` : ''}</p></div>
             <div className="md:col-span-2"><span className="text-gray-500">Note di produzione</span><p className="whitespace-pre-wrap">{selected.productionNotes || '-'}</p></div>
             <div className="md:col-span-2"><span className="text-gray-500">Lavorazioni</span><WorkLinesReadOnly value={normalizeWorkLines(selected.workLines, selected.items)} showPrices={canViewFinancials} /></div>
-            {canViewFinancials && financials && <div className="md:col-span-2 rounded-md bg-gray-50 p-4 dark:bg-gray-800"><p className="font-semibold">Margine reale</p><div className="mt-2 grid grid-cols-2 gap-2 text-sm md:grid-cols-4"><p>Ricavi: {formatEuro(financials.revenue || financials.expectedRevenue)}</p><p>Costi: {formatEuro(financials.totalCost)}</p><p>Margine: {formatEuro(financials.margin)}</p><p>Margine %: {financials.marginPercent == null ? '-' : `${financials.marginPercent}%`}</p></div></div>}
+            {canViewFinancials && financials && <div className="md:col-span-2 rounded-md bg-gray-50 p-4 dark:bg-gray-800"><p className="font-semibold">Margine reale</p><div className="mt-2 grid grid-cols-2 gap-2 text-sm md:grid-cols-4"><p>Ricavi fatturati: {formatEuro(financials.revenue)}</p><p>Costi: {formatEuro(financials.totalCost)}</p><p>Margine: {formatEuro(financials.margin)}</p><p>Margine %: {financials.marginPercent == null ? '-' : `${financials.marginPercent}%`}</p></div></div>}
           </div>
           <AttachmentsPanel entityType="project" entityId={String(selected.id)} />
           <div className="mt-4 flex flex-wrap gap-2">{hasPermission('quotes.create') && <button type="button" onClick={() => queueProjectIntent(selected, 'quote')} className="rounded border px-3 py-2 text-sm">Crea preventivo</button>}{hasPermission('invoices.create') && <button type="button" onClick={() => queueProjectIntent(selected, 'invoice')} className="rounded bg-light-primary px-3 py-2 text-sm text-white">Crea fattura</button>}{selected.quoteId && <button type="button" onClick={() => { updatePreferences({ currentPage: 'quotes', openId: String(selected.quoteId), openType: 'quote' }); hideModal('viewProject'); }} className="rounded border px-3 py-2 text-sm">Apri preventivo collegato</button>}</div>

@@ -13,7 +13,8 @@ import {
   normalizeWorkLine,
   workLinesToDocumentItems,
 } from '../../domain/work-lines/normalize';
-import { edgeSelectionFromCatalog, selectEdgeCatalogItem, uniqueEdgeCatalogItems } from '../../domain/work-lines/edgeSelector';
+import { edgeSelectionFromCatalog, uniqueEdgeCatalogItems } from '../../domain/work-lines/edgeSelector';
+import { customerMaterialUnitPrice } from '../../domain/work-lines/pricing';
 import { EDGE_KEYS, EDGE_LABELS } from '../../domain/work-lines/types';
 import type {
   EdgeCatalogItem,
@@ -114,23 +115,19 @@ const EdgeConfigurator = ({
     <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
       {EDGE_KEYS.map((key) => {
         const edge = line.edges?.[key] || edgeDefaults(line.lengthCm, line.widthCm)[key];
-        const catalogMatch = edge?.catalogId || edge?.type;
-        const matchedCatalog = catalogMatch ? selectEdgeCatalogItem(edgeCatalog, {
-          type: catalogMatch,
-          materialId: line.materialId,
-          thickness: line.thickness,
-        }) : undefined;
         const catalogById = edge?.catalogId
           ? edgeCatalog.find((item) => String(item.id) === String(edge.catalogId))
           : undefined;
-        const selectedCatalog = catalogById || matchedCatalog;
+        const selectedCatalog = catalogById;
         const availableEdgeTypes = uniqueEdgeCatalogItems(edgeCatalog);
         const edgeTypes = selectedCatalog && !availableEdgeTypes.some((item) => String(item.name) === String(selectedCatalog.name))
           ? [selectedCatalog, ...availableEdgeTypes]
-          : availableEdgeTypes;
-        const displayPrice = edge?.unitPrice ?? selectedCatalog?.unitPrice ?? selectedCatalog?.price ?? 0;
-        const selectedType = selectedCatalog?.name || (edge?.catalogId ? '' : edge?.type || '');
-        const catalogSelected = Boolean(edge?.catalogId);
+          : edge?.type && !availableEdgeTypes.some((item) => String(item.name) === String(edge.type))
+            ? [{ id: `legacy-${key}`, name: edge.type }, ...availableEdgeTypes]
+            : availableEdgeTypes;
+        const displayPrice = selectedCatalog?.unitPrice ?? selectedCatalog?.price ?? edge?.unitPrice ?? edge?.priceSnapshot ?? 0;
+        const selectedType = selectedCatalog?.name || edge?.type || '';
+        const catalogSelected = Boolean(edge?.catalogId && selectedCatalog);
         return (
           <div key={key} className="rounded border bg-white p-3 dark:bg-dark-card">
             <label className="flex items-center gap-2 text-sm font-medium">
@@ -154,6 +151,9 @@ const EdgeConfigurator = ({
                         catalogId: undefined,
                         type: '',
                         nameSnapshot: '',
+                        unitPrice: undefined,
+                        priceSnapshot: undefined,
+                        materialId: undefined,
                       });
                       return;
                     }
@@ -172,11 +172,16 @@ const EdgeConfigurator = ({
                 </select>
               </label>
               <NumericInput label="Lunghezza cm" value={edge?.lengthCm || ''} onChange={(value) => onEdgeChange(key, { lengthCm: value, lengthMeters: undefined })} disabled={disabled} />
-              {catalogSelected
-                ? <div className="text-sm sm:pt-0"><span className="mb-1 block font-medium">{showPrices ? 'Prezzo automatico €/ml' : 'Prezzo catalogo'}</span>{showPrices && <output className="block rounded border bg-gray-100 p-2 dark:bg-gray-800" aria-label="Prezzo automatico dal catalogo">{formatEuro(displayPrice)}</output>}<span className="mt-1 block text-xs text-gray-500">Fonte: catalogo bordi{!showPrices && ' (prezzo protetto)'}</span></div>
-                : showPrices
-                  ? <NumericInput label="Prezzo manuale €/ml" value={displayPrice || ''} onChange={(value) => onEdgeChange(key, { unitPrice: value, priceSnapshot: value, catalogId: undefined })} disabled={disabled} />
-                  : <div className="text-sm text-gray-500 sm:pt-0"><span className="mb-1 block font-medium">Prezzo manuale</span><span>Prezzo protetto</span></div>}
+              <div className="text-sm sm:pt-0">
+                <span className="mb-1 block font-medium">{showPrices ? 'Prezzo bordo da catalogo' : 'Prezzo bordo'}</span>
+                {catalogSelected ? <>
+                  {showPrices && <output className="block rounded border bg-gray-100 p-2 dark:bg-gray-800" aria-label="Prezzo bordo dal catalogo">{formatEuro(displayPrice)} / ml</output>}
+                  <span className="mt-1 block text-xs text-gray-500">Fonte: catalogo bordi. Valore non modificabile.</span>
+                </> : edge?.active && (edge?.unitPrice != null || edge?.priceSnapshot != null) ? <>
+                  {showPrices && <output className="block rounded border bg-gray-100 p-2 dark:bg-gray-800" aria-label="Prezzo storico del bordo">{formatEuro(displayPrice)} / ml</output>}
+                  <span className="mt-1 block text-xs text-gray-500">Snapshot storico senza collegamento catalogo. Valore non modificabile.</span>
+                </> : <span className="block rounded border bg-gray-100 p-2 text-gray-500 dark:bg-gray-800">Seleziona un bordo dal catalogo</span>}
+              </div>
               {showPrices && <div className="text-xs text-gray-500 sm:pt-6">Costo: <strong>{formatEuro(calculateEdge(edge, line.quantity))}</strong></div>}
             </div>
           </div>
@@ -239,7 +244,7 @@ const LineCard = ({
     onChange({
       materialId: selected?.id == null ? undefined : String(selected.id),
       materialNameSnapshot: selected?.name || '',
-      unitPrice: line.type === 'linear' ? line.unitPrice : parseLocaleNumber(selected?.unitPrice ?? selected?.price),
+      unitPrice: line.type === 'linear' ? line.unitPrice : customerMaterialUnitPrice(selected),
       unit: line.type === 'linear' ? line.unit : selected?.unit || line.unit,
       thickness: selected?.thickness,
       variant: selected?.variant || line.variant,
@@ -286,7 +291,7 @@ const LineCard = ({
           <Field label="Variante / finitura" value={line.variant} onChange={(value) => onChange({ variant: value })} disabled={readOnly} placeholder="es. lucido" />
         </>}
         <NumericInput label={showPrices ? 'Prezzo unitario' : 'Prezzo (protetto)'} value={line.unitPrice} onChange={(value) => onChange({ unitPrice: value })} disabled={readOnly || !showPrices} />
-        {showPrices && <label className="block text-sm"><span className="mb-1 flex items-center gap-1 font-medium">Extra riga <span className="group relative inline-flex cursor-help" tabIndex={0} aria-describedby={'extra-help-' + line.id}><Info size={15} className="text-blue-600" /><span id={'extra-help-' + line.id} role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-64 rounded bg-gray-900 p-2 text-xs font-normal text-white shadow-lg group-hover:block group-focus:block">Extra fisso su questa riga: per esempio foro, sagoma o trasporto. Viene aggiunto una sola volta al totale della riga.</span></span></span><input type="text" inputMode="decimal" value={numberText(line.extraCost || 0)} onChange={(event) => onChange({ extraCost: parseLocaleNumber(event.target.value) })} disabled={readOnly} className={inputClass + ' disabled:opacity-60'} /></label>}
+        {showPrices && <label className="block text-sm"><span className="mb-1 flex items-center gap-1 font-medium">Extra prodotti esterni / posa / manodopera <span className="group relative inline-flex cursor-help" tabIndex={0} aria-describedby={'extra-help-' + line.id}><Info size={15} className="text-blue-600" /><span id={'extra-help-' + line.id} role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-64 rounded bg-gray-900 p-2 text-xs font-normal text-white shadow-lg group-hover:block group-focus:block">Campo compatibile con lo storico: extra aggiuntivo per prodotti esterni, posa o manodopera. Viene aggiunto una sola volta al totale della riga.</span></span></span><input type="text" inputMode="decimal" value={numberText(line.extraCost || 0)} onChange={(event) => onChange({ extraCost: parseLocaleNumber(event.target.value) })} disabled={readOnly} className={inputClass + ' disabled:opacity-60'} /></label>}
         {invoiceMode && <NumericInput label="IVA %" value={line.taxRate ?? 22} onChange={(value) => onChange({ taxRate: value })} disabled={readOnly} />}
         {invoiceMode && <Field label="Natura IVA" value={line.taxNature} onChange={(value) => onChange({ taxNature: value.toUpperCase() })} disabled={readOnly} placeholder="Solo se IVA 0%" />}
       </div>
@@ -349,7 +354,7 @@ export const WorkLinesEditor: React.FC<WorkLinesEditorProps> = ({
       <p>Totale ml<br /><strong>{summary.linearMeters.toFixed(2)}</strong></p>
       <p>Costo materiale<br /><strong>{formatEuro(summary.materialCost)}</strong></p>
       <p>Costo bordi<br /><strong>{formatEuro(summary.edgeCost)}</strong></p>
-      <p>Manuali/extra<br /><strong>{formatEuro(summary.manualOther)}</strong></p>
+      <p>Prodotti esterni/posa/manodopera<br /><strong>{formatEuro(summary.manualOther)}</strong></p>
       <p className="font-semibold">Subtotale<br /><strong>{formatEuro(summary.total)}</strong></p>
     </div>}
   </section>;

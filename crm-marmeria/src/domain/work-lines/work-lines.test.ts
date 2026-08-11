@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { calculateWorkLine, roundMoney, summarizeWorkLines } from './calculations';
 import { copyWorkLines, mergeImportedWorkLines } from './import';
-import { legacyItemToWorkLine, normalizeWorkLines } from './normalize';
+import { createWorkLine, legacyItemToWorkLine, normalizeWorkLines } from './normalize';
 import { validateWorkLines } from './validation';
 
 describe('WorkLine calculations', () => {
@@ -49,6 +49,18 @@ describe('WorkLine calculations', () => {
     expect(calculateWorkLine(line).edgeCost).toBeCloseTo(0.1, 8);
     expect(line.total).toBe(5.1);
     expect(roundMoney(0.1 + 0.2)).toBe(0.3);
+  });
+
+  it('applica markup materiale solo alla nuova WorkLine', () => {
+    const created = createWorkLine('surface', { id: 'm-1', name: 'Marmo', unitPrice: 50 });
+    const saved = normalizeWorkLines([{
+      id: 'saved', type: 'surface', materialId: 'm-1', quantity: 1,
+      lengthCm: 100, widthCm: 50, unitPrice: 50,
+    }])[0];
+    const copied = copyWorkLines([saved], 'quote', 'q-1')[0];
+    expect(created.unitPrice).toBe(100);
+    expect(saved.unitPrice).toBe(50);
+    expect(copied.unitPrice).toBe(50);
   });
 });
 

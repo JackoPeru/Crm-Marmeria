@@ -58,15 +58,26 @@ export const edgeSelectionFromCatalog = (
   fallback: Partial<EdgeSelection> = {},
 ): Partial<EdgeSelection> => {
   const selected = selectEdgeCatalogItem(catalog, match);
-  const price = selected?.unitPrice ?? selected?.price ?? fallback.unitPrice ?? fallback.priceSnapshot ?? 0;
+  if (!selected) {
+    return {
+      ...fallback,
+      catalogId: undefined,
+      type: match.type || fallback.type,
+      nameSnapshot: match.type || fallback.nameSnapshot,
+      unitPrice: fallback.unitPrice,
+      priceSnapshot: fallback.priceSnapshot,
+      materialId: fallback.materialId,
+    };
+  }
+  const price = selected.unitPrice ?? selected.price ?? 0;
   return {
     ...fallback,
-    catalogId: selected?.id == null ? undefined : String(selected.id),
-    type: selected?.name || match.type || fallback.type,
-    nameSnapshot: selected?.name || match.type || fallback.nameSnapshot,
+    catalogId: selected.id == null ? undefined : String(selected.id),
+    type: selected.name || match.type || fallback.type,
+    nameSnapshot: selected.name || match.type || fallback.nameSnapshot,
     unitPrice: price,
     priceSnapshot: price,
-    materialId: selected?.materialId,
+    materialId: selected.materialId,
   };
 };
 

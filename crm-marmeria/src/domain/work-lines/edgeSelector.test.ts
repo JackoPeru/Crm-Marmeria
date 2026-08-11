@@ -29,6 +29,21 @@ describe('edge catalog specificity', () => {
     expect(edgeSelectionFromCatalog(catalog, { type: 'Lucido', materialId: 'marmo-1', thickness: '3' })).toMatchObject({ catalogId: 'exact', type: 'Lucido', nameSnapshot: 'Lucido', unitPrice: 18, priceSnapshot: 18 });
   });
 
+  it('non crea un prezzo manuale per un bordo senza catalogo, ma conserva snapshot storico', () => {
+    expect(edgeSelectionFromCatalog([], { type: 'Lucido' })).toMatchObject({
+      type: 'Lucido',
+      nameSnapshot: 'Lucido',
+      catalogId: undefined,
+      unitPrice: undefined,
+    });
+    expect(edgeSelectionFromCatalog([], { type: 'Lucido' }, { unitPrice: 12, priceSnapshot: 12 })).toMatchObject({
+      type: 'Lucido',
+      unitPrice: 12,
+      priceSnapshot: 12,
+      catalogId: undefined,
+    });
+  });
+
   it('simula la scelta del nome e ignora il primo record incompatibile', () => {
     const selectedName = uniqueEdgeCatalogItems(catalog)[0].name;
     expect(edgeSelectionFromCatalog(catalog, { type: selectedName, materialId: 'marmo-1', thickness: '3' })).toMatchObject({

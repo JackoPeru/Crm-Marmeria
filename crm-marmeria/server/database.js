@@ -56,6 +56,7 @@ const normalizeServerEdge = (raw, fallbackLength) => {
   const price = numeric(edge.unitPrice ?? edge.priceSnapshot);
   return {
     active: Boolean(edge.active),
+    catalogId: edge.catalogId == null || edge.catalogId === '' ? undefined : String(edge.catalogId),
     type: text(edge.type),
     nameSnapshot: text(edge.nameSnapshot || edge.name),
     lengthCm,

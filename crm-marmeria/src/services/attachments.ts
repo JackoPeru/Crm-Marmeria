@@ -9,6 +9,9 @@ export interface AttachmentRecord {
   sizeBytes: number;
   createdBy?: string;
   createdAt: string;
+  caption?: string;
+  includeInExport?: boolean;
+  sortOrder?: number;
 }
 
 export const attachmentsService = {
@@ -34,19 +37,28 @@ export const attachmentsService = {
     return response.data || [];
   },
 
-  async download(attachment: AttachmentRecord): Promise<void> {
+  async fetchBlob(attachment: AttachmentRecord): Promise<Blob> {
     const response = await apiClient.get(
       `/attachments/file/${encodeURIComponent(attachment.id)}`,
       { responseType: 'blob' },
     );
-    const url = URL.createObjectURL(response.data);
+    return response.data;
+  },
+
+  downloadBlob(blob: Blob, originalName: string): void {
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = attachment.originalName;
+    link.download = originalName;
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+  },
+
+  async download(attachment: AttachmentRecord): Promise<void> {
+    const blob = await this.fetchBlob(attachment);
+    this.downloadBlob(blob, attachment.originalName);
   },
 
   async remove(id: string): Promise<void> {

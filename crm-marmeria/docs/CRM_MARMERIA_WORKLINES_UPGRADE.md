@@ -4,9 +4,9 @@
 
 Le formule e la separazione degli elementi lineari seguono il comportamento osservato nel checkout read-only `JackoPeru/Misure-mq` (HEAD `e2d7ce26d7f4a22ac0d130903c32295fc739686`); il CRM non incorpora quel sorgente e tratta l'eventuale prefisso legacy `LINEAR_` solo come compatibilità.
 
-`WorkLine` supporta `surface`, `linear` e `manual`. Le righe superficie conservano dimensioni, materiale, spessore/variante, sei bordi/angoli (`front`, `back`, `left`, `right`, `cornerRight`, `cornerLeft`) e snapshot di prezzo. Le righe lineari conservano metri, catalogo e snapshot; le righe legacy diventano manuali.
+`WorkLine` supporta `surface`, `linear` e `manual`. Le righe superficie conservano dimensioni, materiale, spessore/variante, sei bordi/angoli (`front`, `back`, `left`, `right`, `cornerRight`, `cornerLeft`) e snapshot di prezzo. Nuove righe cliente leggono il costo acquisto del materiale dal Listino e applicano una sola volta markup 2x; righe salvate, importate o duplicate conservano il proprio snapshot. Il prezzo dei bordi attivi arriva dal catalogo; uno snapshot storico senza `catalogId` resta leggibile ma non modificabile. Le righe lineari conservano metri, catalogo e snapshot; le righe legacy diventano manuali.
 
-I calcoli sono centralizzati in `src/domain/work-lines/calculations.ts`: m² = quantità × lunghezza × larghezza, ml = quantità × metri lineari, bordi = quantità × lunghezza bordo × prezzo/ml, più extra riga. Il server ricomputa righe, voci fiscali, imponibile, IVA e totale.
+I calcoli sono centralizzati in `src/domain/work-lines/calculations.ts`: m² = quantità × lunghezza × larghezza, ml = quantità × metri lineari, bordi = quantità × lunghezza bordo × prezzo/ml, più extra per prodotti esterni, posa o manodopera. Il campo tecnico storico resta `extraCost`; il server ricomputa righe, voci fiscali, imponibile, IVA e totale.
 
 ## Architettura
 
@@ -49,4 +49,4 @@ Preventivi e fatture usano l'editor strutturato riapribile. I progetti mostrano 
 
 Test focalizzati: calcoli WorkLine, parsing decimali italiani, bordi, normalizzazione legacy, copia indipendente/importSource, modalità import, selector catalogo, listini multi-foglio/idempotenti, conversioni protette, allegati e ZIP OOXML. Eseguire `npm run typecheck`, `npm test -- --run`, `npm run server:test` e `npm run build` nella cartella `crm-marmeria`.
 
-La selezione foto è persistita. L'export Word aggiunge in coda al body le sole immagini PNG/JPEG selezionate, con didascalia, media OOXML, relationship e content type; allegati non immagine sono mantenuti come allegati ma ignorati nell'inserimento grafico.
+La selezione foto è persistita. I progetti accettano immagini, video e PDF: immagini e PDF si possono visualizzare/stampare, i video vengono caricati solo su richiesta. Con Web Share API e supporto File il CRM condivide il file direttamente; altrimenti scarica il file e apre una bozza Mail/WhatsApp chiedendo di allegarlo manualmente. L'export Word aggiunge in coda al body le sole immagini PNG/JPEG selezionate, con didascalia, media OOXML, relationship e content type; allegati non immagine sono mantenuti come allegati ma ignorati nell'inserimento grafico.

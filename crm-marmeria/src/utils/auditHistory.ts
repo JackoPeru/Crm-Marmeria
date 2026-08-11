@@ -93,7 +93,7 @@ const fieldLabels: Record<string, string> = {
   taxRate: 'IVA',
   taxNature: 'Natura IVA',
   active: 'Attivo',
-  extraCost: 'Extra riga',
+  extraCost: 'Extra prodotti esterni / posa / manodopera',
 };
 
 const edgeLabels: Record<string, string> = {
@@ -115,7 +115,7 @@ const lineFieldLabels: Record<string, string> = {
   variant: 'Variante / finitura',
   unit: 'Unità',
   unitPrice: 'Prezzo unitario',
-  extraCost: 'Extra riga',
+  extraCost: 'Extra prodotti esterni / posa / manodopera',
   notes: 'Note',
   taxRate: 'IVA',
   taxNature: 'Natura IVA',
