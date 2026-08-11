@@ -10,25 +10,11 @@ Richiede Windows 10 1809 o successivo, connessione Internet e autorizzazione amm
 
 Apri uno degli indirizzi mostrati, per esempio `https://192.168.1.20:3001`. Al primo collegamento ogni browser deve confermare il certificato locale del server; confronta l'impronta mostrata nella console del PC server prima di accettarlo. Le altre postazioni usano lo stesso indirizzo nel browser. Completa quindi la configurazione iniziale dell'amministratore dal PC server.
 
-## HTTPS attendibile opzionale con Tailscale
+## HTTPS attendibile in produzione
 
-All'avvio il launcher non modifica mai Tailscale. Per una diagnostica sola lettura esegui dal PC server:
+Il launcher usa un certificato self-signed locale per il server LAN. Al primo collegamento ogni browser deve confermare il certificato dopo aver verificato l'impronta mostrata nella console del PC server.
 
-```bat
-avvia-server-lan.cmd --tailscale-check
-```
-
-La diagnostica legge `tailscale status --json`, usa `Self.DNSName` senza inserirlo nel repository e mostra l'eventuale stato Serve. Se MagicDNS non è pronto, non viene eseguita alcuna modifica.
-
-Quando il server CRM è già attivo sulla porta `3001`, l'attivazione resta esplicita e opt-in:
-
-```bat
-avvia-server-lan.cmd --tailscale-serve
-```
-
-Prima attiva una sola volta **HTTPS Certificates** in `https://login.tailscale.com/admin/dns`; Tailscale richiede questa conferma perché il nome macchina viene registrato nel registro pubblico dei certificati. Su Windows esegui poi il comando da un terminale amministratore.
-
-Il comando configura in modo non interattivo `tailscale serve --bg --yes https+insecure://127.0.0.1:3001`: Tailscale pubblica l'URL HTTPS MagicDNS con certificato attendibile, mentre il collegamento locale al CRM resta il suo HTTPS self-signed. Il browser deve usare l'URL MagicDNS mostrato dalla diagnostica; un IP `100.x` non è una promessa valida per il certificato pubblico. Se Tailscale, MagicDNS o Serve non sono disponibili, continua a usare l'URL LAN e verifica manualmente l'impronta del certificato locale.
+La configurazione di un certificato attendibile è intenzionalmente rimandata finché non sono noti host e dominio dell'ambiente di deployment. Fino ad allora usa l'indirizzo LAN mostrato dal launcher.
 
 ## Backup automatici Google Drive
 

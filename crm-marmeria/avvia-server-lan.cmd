@@ -6,8 +6,6 @@ set "PORT=3001"
 if /i "%~1"=="--serve" goto serve
 if /i "%~1"=="--check" goto check
 if /i "%~1"=="--addresses-check" goto addresses_check
-if /i "%~1"=="--tailscale-check" goto tailscale_check
-if /i "%~1"=="--tailscale-serve" goto tailscale_serve
 if /i "%~1"=="--elevated" goto bootstrap
 
 rem L'installazione di programmi e la regola firewall richiedono privilegi elevati.
@@ -177,7 +175,7 @@ exit /b %ERRORLEVEL%
 echo.
 echo CRM pronto. Apri da telefono o browser:
 for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do echo   https://%%I:%PORT%
-echo Accesso HTTPS attendibile opzionale: --tailscale-check, poi --tailscale-serve solo se richiesto.
+echo HTTPS locale: certificato self-signed; verifica l'impronta al primo accesso.
 echo Login iniziale: admin / marmo2026!
 echo Puoi chiudere questa finestra: server resta attivo.
 pause
@@ -186,32 +184,6 @@ exit /b 0
 :addresses_check
 for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do echo [OK] LAN IPv4: %%I
 exit /b 0
-
-:tailscale_check
-cd /d "%ROOT%"
-call :find_node
-if not defined NODE_EXE (
-  echo [ERRORE] Node.js necessario per la diagnostica Tailscale.
-  exit /b 1
-)
-"%NODE_EXE%" server\tailscale-serve.js --check
-exit /b %ERRORLEVEL%
-
-:tailscale_serve
-cd /d "%ROOT%"
-call :find_node
-if not defined NODE_EXE (
-  echo [ERRORE] Node.js necessario per Tailscale Serve.
-  exit /b 1
-)
-call :port_status
-if errorlevel 1 (
-  echo [ERRORE] Server CRM non attivo su porta %PORT%. Nessuna modifica Tailscale eseguita.
-  exit /b 1
-)
-echo Configurazione Tailscale Serve richiesta esplicitamente. Proxy: https+insecure://127.0.0.1:%PORT%
-"%NODE_EXE%" server\tailscale-serve.js --enable
-exit /b %ERRORLEVEL%
 
 :already_running
 echo CRM gia attivo sulla porta %PORT%.
