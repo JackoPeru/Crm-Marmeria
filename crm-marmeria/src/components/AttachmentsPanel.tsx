@@ -9,6 +9,7 @@ import {
   Image as ImageIcon,
   Maximize2,
   Paperclip,
+  Pencil,
   Printer,
   Share2,
   Trash2,
@@ -23,6 +24,7 @@ import { apiClient } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import AuditHistory from './AuditHistory';
 import Modal from './common/Modal';
+import ProjectImageEditor from './image-editor/ProjectImageEditor';
 
 const permissionPrefixes: Record<string, string> = {
   client: 'clients',
@@ -39,7 +41,8 @@ type AttachmentView = AttachmentRecord & {
   sortOrder?: number;
 };
 
-type ViewerState = { attachment: AttachmentView; url: string };
+type ViewerState = { attachment: AttachmentView; url: string; blob: Blob };
+type EditorState = { attachment: AttachmentView; source: Blob };
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -81,6 +84,7 @@ const AttachmentsPanel: React.FC<{
   const [attachments, setAttachments] = useState<AttachmentView[]>([]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const [viewer, setViewer] = useState<ViewerState | null>(null);
+  const [editor, setEditor] = useState<EditorState | null>(null);
   const [fallbackShare, setFallbackShare] = useState<AttachmentView | null>(null);
   const [busy, setBusy] = useState(false);
   const [sharingId, setSharingId] = useState<string | null>(null);
@@ -193,10 +197,44 @@ const AttachmentsPanel: React.FC<{
         URL.revokeObjectURL(url);
         return;
       }
-      setViewer({ attachment, url });
+      setViewer({ attachment, url, blob });
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Apertura allegato non riuscita');
     }
+  };
+
+  const openEditor = async (attachment: AttachmentView, sourceBlob?: Blob) => {
+    if (entityType !== 'project' || !canEdit || !isImage(attachment)) return;
+    try {
+      const blob = sourceBlob || await attachmentsService.fetchBlob(attachment);
+      if (!mountedRef.current) return;
+      setEditor({ attachment, source: blob });
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || 'Apertura editor immagine non riuscita');
+    }
+  };
+
+  const saveEditedImage = async (file: File) => {
+    if (entityType !== 'project' || !canEdit) return;
+    setBusy(true);
+    try {
+      await attachmentsService.upload('project', entityId, [file]);
+      await load();
+      setEditor(null);
+      toast.success('Copia modificata allegata al progetto');
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || 'Salvataggio copia modificata non riuscito');
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editViewerImage = () => {
+    if (!viewer) return;
+    const { attachment, blob } = viewer;
+    setViewer(null);
+    void openEditor(attachment, blob);
   };
 
   const download = async (attachment: AttachmentView) => {
@@ -375,6 +413,7 @@ const AttachmentsPanel: React.FC<{
                   <button type="button" disabled={busy || index === orderedAttachments.length - 1} onClick={() => void move(index, 1)} className="p-2 text-gray-600 disabled:opacity-30" title="Sposta giù" aria-label="Sposta giù"><ChevronDown size={17} /></button>
                 </>}
                 {canPreview(attachment) && <button type="button" onClick={() => void openViewer(attachment)} className="p-2 text-blue-600" title="Visualizza" aria-label={`Visualizza ${attachment.originalName}`}><Eye size={17} /></button>}
+                {entityType === 'project' && canEdit && isImage(attachment) && <button type="button" onClick={() => void openEditor(attachment)} disabled={busy} className="p-2 text-violet-600 disabled:opacity-50" title="Modifica immagine" aria-label={`Modifica immagine ${attachment.originalName}`}><Pencil size={17} /></button>}
                 <button type="button" onClick={() => void download(attachment)} className="p-2 text-blue-600" title="Scarica" aria-label={`Scarica ${attachment.originalName}`}><Download size={17} /></button>
                 {canPrint(attachment) && <button type="button" onClick={() => void print(attachment)} className="p-2 text-gray-700" title="Stampa" aria-label={`Stampa ${attachment.originalName}`}><Printer size={17} /></button>}
                 <button type="button" onClick={() => void share(attachment)} disabled={sharingId === String(attachment.id)} className="p-2 text-indigo-600 disabled:opacity-50" title="Condividi file" aria-label={`Condividi ${attachment.originalName}`}><Share2 size={17} /></button>
@@ -396,12 +435,22 @@ const AttachmentsPanel: React.FC<{
           {isVideo(viewer.attachment) && <video src={viewer.url} controls preload="metadata" className="mx-auto max-h-[70vh] max-w-full" />}
           {isPdf(viewer.attachment) && <iframe src={viewer.url} title={viewer.attachment.originalName} className="h-[70vh] w-full rounded border" />}
           <div className="flex flex-wrap justify-end gap-2">
+            {entityType === 'project' && canEdit && isImage(viewer.attachment) && <button type="button" onClick={editViewerImage} className="flex items-center gap-2 rounded bg-light-primary px-3 py-2 text-sm text-white"><Pencil size={16} /> Modifica immagine</button>}
             <button type="button" onClick={() => void download(viewer.attachment)} className="flex items-center gap-2 rounded border px-3 py-2 text-sm"><Download size={16} /> Scarica</button>
             {canPrint(viewer.attachment) && <button type="button" onClick={() => void print(viewer.attachment)} className="flex items-center gap-2 rounded border px-3 py-2 text-sm"><Printer size={16} /> Stampa</button>}
             <button type="button" onClick={() => setViewer(null)} className="flex items-center gap-2 rounded border px-3 py-2 text-sm"><X size={16} /> Chiudi</button>
           </div>
         </div>}
       </Modal>
+
+      <ProjectImageEditor
+        key={editor?.attachment.id || 'project-image-editor-closed'}
+        isOpen={Boolean(editor)}
+        source={editor?.source || null}
+        originalName={editor?.attachment.originalName || 'immagine'}
+        onClose={() => setEditor(null)}
+        onSave={saveEditedImage}
+      />
 
       <Modal
         isOpen={Boolean(fallbackShare)}
