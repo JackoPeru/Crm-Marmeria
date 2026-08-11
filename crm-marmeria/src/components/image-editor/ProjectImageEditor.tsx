@@ -13,18 +13,16 @@ import {
 } from 'lucide-react';
 import Modal from '../common/Modal';
 import {
-  brushPreviewSpec,
   clamp,
   clampImagePoint,
   distanceBetween,
-  exportLineWidth,
   fitScale,
   ImageRect,
   ImageSize,
   imageToScreen as imagePointToScreen,
+  nativeBrushSpecAtViewportZoom,
   normalizeCropRect,
   Point,
-  previewLineWidth,
   scaleForZoomPercent,
   screenToImage,
   ViewportSize,
@@ -43,7 +41,8 @@ type EditorTool = 'draw' | 'crop' | 'pan';
 type Stroke = {
   points: Point[];
   color: string;
-  width: number;
+  nativeWidth: number;
+  nativeEpsilon: number;
 };
 
 type EditorSnapshot = {
@@ -74,13 +73,10 @@ const safeImageSize = (image: ImageSize): ImageSize => ({
 const drawStroke = (
   context: CanvasRenderingContext2D,
   stroke: Stroke,
-  viewportZoom: number | null,
   offset: Point = { x: 0, y: 0 },
 ) => {
   if (!stroke.points.length) return;
-  const lineWidth = viewportZoom === null
-    ? exportLineWidth(stroke.width)
-    : previewLineWidth(stroke.width, viewportZoom);
+  const lineWidth = stroke.nativeWidth;
   const points = stroke.points.map((point) => ({
     x: point.x + offset.x,
     y: point.y + offset.y,
@@ -235,9 +231,9 @@ const ProjectImageEditor: React.FC<ProjectImageEditorProps> = ({
     context.translate(-imageCenter.x, -imageCenter.y);
     context.imageSmoothingEnabled = true;
     context.drawImage(currentImage, 0, 0, currentSize.width, currentSize.height);
-    currentSnapshot.strokes.forEach((stroke) => drawStroke(context, stroke, currentCamera.scale));
+    currentSnapshot.strokes.forEach((stroke) => drawStroke(context, stroke));
     const interaction = interactionRef.current;
-    if (interaction?.type === 'draw') drawStroke(context, interaction.stroke, currentCamera.scale);
+    if (interaction?.type === 'draw') drawStroke(context, interaction.stroke);
     context.restore();
 
     const effectiveCrop = interaction?.type === 'crop'
@@ -410,10 +406,16 @@ const ProjectImageEditor: React.FC<ProjectImageEditorProps> = ({
     }
 
     if (toolRef.current === 'draw') {
+      const brushSpec = nativeBrushSpecAtViewportZoom(
+        clamp(brushSizeRef.current, MIN_BRUSH_SIZE, MAX_BRUSH_SIZE),
+        cameraRef.current.scale,
+        DEFAULT_STABILIZATION,
+      );
       const stroke: Stroke = {
         points: [point],
         color: colorRef.current,
-        width: clamp(brushSizeRef.current, MIN_BRUSH_SIZE, MAX_BRUSH_SIZE),
+        nativeWidth: brushSpec.nativeWidth,
+        nativeEpsilon: brushSpec.nativeEpsilon,
       };
       interactionRef.current = { type: 'draw', pointerId: event.pointerId, stroke };
     } else if (toolRef.current === 'crop') {
@@ -437,8 +439,7 @@ const ProjectImageEditor: React.FC<ProjectImageEditorProps> = ({
     if (interaction.type === 'draw') {
       const point = imagePoint(screen);
       const lastPoint = interaction.stroke.points[interaction.stroke.points.length - 1];
-      const previewSpec = brushPreviewSpec(interaction.stroke.width, cameraRef.current.scale, DEFAULT_STABILIZATION);
-      if (distanceBetween(lastPoint, point) >= previewSpec.epsilon) interaction.stroke.points.push(point);
+      if (distanceBetween(lastPoint, point) >= interaction.stroke.nativeEpsilon) interaction.stroke.points.push(point);
     } else if (interaction.type === 'crop') {
       interaction.current = imagePoint(screen);
     } else {
@@ -563,7 +564,7 @@ const ProjectImageEditor: React.FC<ProjectImageEditorProps> = ({
     context.beginPath();
     context.rect(0, 0, width, height);
     context.clip();
-    currentSnapshot.strokes.forEach((stroke) => drawStroke(context, stroke, null, { x: -crop.x, y: -crop.y }));
+    currentSnapshot.strokes.forEach((stroke) => drawStroke(context, stroke, { x: -crop.x, y: -crop.y }));
     context.restore();
     return new Promise<Blob>((resolve, reject) => {
       exportCanvas.toBlob((blob) => {

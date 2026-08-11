@@ -25,14 +25,19 @@ export type ImageRect = Readonly<{
   height: number;
 }>;
 
-export type BrushPreviewSpec = Readonly<{
-  size: number;
-  epsilon: number;
+export type NativeBrushSpec = Readonly<{
+  nativeWidth: number;
+  nativeEpsilon: number;
 }>;
 
 export const MIN_VIEWPORT_ZOOM = 0.02;
 
 const finite = (value: number, fallback: number) => Number.isFinite(value) ? value : fallback;
+
+export const normalizeViewportZoom = (viewportZoom: number): number => Math.max(
+  MIN_VIEWPORT_ZOOM,
+  finite(viewportZoom, 1),
+);
 
 export const clamp = (value: number, min: number, max: number): number => {
   const safeValue = finite(value, min);
@@ -138,20 +143,18 @@ export const stabilizationEpsilon = (stabilization: number): number => {
   return min + ((1 - clamp(stabilization, 0, 1)) * (max - min));
 };
 
-export const previewLineWidth = (baseWidth: number, viewportZoom: number): number => (
-  Math.max(0.1, finite(baseWidth, 0.1)) / Math.max(MIN_VIEWPORT_ZOOM, finite(viewportZoom, 1))
-);
-
-export const exportLineWidth = (baseWidth: number): number => Math.max(0.1, finite(baseWidth, 0.1));
-
-export const brushPreviewSpec = (
+export const nativeBrushSpecAtViewportZoom = (
   baseWidth: number,
   viewportZoom: number,
   stabilization = 0.4,
-): BrushPreviewSpec => {
-  const zoom = Math.max(MIN_VIEWPORT_ZOOM, finite(viewportZoom, 1));
+): NativeBrushSpec => {
+  const zoom = normalizeViewportZoom(viewportZoom);
   return {
-    size: Math.max(0.1, finite(baseWidth, 0.1)) / zoom,
-    epsilon: stabilizationEpsilon(stabilization) / zoom,
+    nativeWidth: Math.max(0.1, finite(baseWidth, 0.1)) / zoom,
+    nativeEpsilon: stabilizationEpsilon(stabilization) / zoom,
   };
 };
+
+export const renderedStrokeWidthAtViewportZoom = (nativeWidth: number, viewportZoom: number): number => (
+  Math.max(0.1, finite(nativeWidth, 0.1)) * normalizeViewportZoom(viewportZoom)
+);

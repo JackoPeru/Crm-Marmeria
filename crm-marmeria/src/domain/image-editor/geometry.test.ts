@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  brushPreviewSpec,
-  exportLineWidth,
   imageToScreen,
+  nativeBrushSpecAtViewportZoom,
+  normalizeViewportZoom,
+  renderedStrokeWidthAtViewportZoom,
   normalizeCropRect,
-  previewLineWidth,
   screenToImage,
   zoomAtScreenPoint,
 } from './geometry';
@@ -45,11 +45,21 @@ describe('image editor geometry', () => {
     });
   });
 
-  it('uses preview width divided by viewport zoom but exports native width', () => {
-    expect(previewLineWidth(8, 0.25)).toBeCloseTo(32);
-    expect(previewLineWidth(8, 2)).toBeCloseTo(4);
-    expect(exportLineWidth(8)).toBe(8);
-    expect(brushPreviewSpec(8, 0.5)).toMatchObject({ size: 16, epsilon: expect.any(Number) });
-    expect(brushPreviewSpec(8, 0.5).epsilon).toBeCloseTo(brushPreviewSpec(8, 1).epsilon * 2);
+  it('salva width ed epsilon nativi secondo zoom di creazione', () => {
+    const specs = [0.5, 1, 2].map((zoom) => nativeBrushSpecAtViewportZoom(8, zoom));
+    expect(specs.map((spec) => spec.nativeWidth)).toEqual([16, 8, 4]);
+    expect(specs[0].nativeEpsilon).toBeCloseTo(specs[1].nativeEpsilon * 2);
+    expect(specs[2].nativeEpsilon).toBeCloseTo(specs[1].nativeEpsilon / 2);
+    expect(normalizeViewportZoom(0)).toBe(0.02);
+  });
+
+  it('renderizza stroke nativo sotto trasformazione e mantiene export uguale al modello', () => {
+    [[0.5, 16], [1, 8], [2, 4]].forEach(([zoom, expectedNativeWidth]) => {
+      const spec = nativeBrushSpecAtViewportZoom(8, zoom);
+      expect(spec.nativeWidth).toBeCloseTo(expectedNativeWidth);
+      expect(renderedStrokeWidthAtViewportZoom(spec.nativeWidth, zoom)).toBeCloseTo(8);
+    });
+    expect(nativeBrushSpecAtViewportZoom(8, 2).nativeWidth).toBe(4);
+    expect(nativeBrushSpecAtViewportZoom(8, 0.5).nativeWidth).toBe(16);
   });
 });
