@@ -48,3 +48,5 @@ npm run dev
 ```
 
 Per provare API server locale: `npm run server`. Per distribuzione LAN usa sempre `avvia-server-lan.cmd`.
+
+Assistente AI locale e configurazione Qwen: [docs/AI_ASSISTANT.md](docs/AI_ASSISTANT.md).

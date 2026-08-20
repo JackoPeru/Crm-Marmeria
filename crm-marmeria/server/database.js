@@ -47,6 +47,27 @@ const roundMoney = (value) => Math.round((Number(value || 0) + Number.EPSILON) *
 const EDGE_KEYS = ['front', 'back', 'left', 'right', 'cornerRight', 'cornerLeft'];
 const EDGE_DEFAULT_LENGTHS = { front: 0, back: 0, left: 0, right: 0, cornerRight: 4, cornerLeft: 4 };
 const text = (value) => String(value ?? '').trim();
+const AUDIT_SENSITIVE_KEY = /(?:password|token|api[_-]?key|secret|authorization|cookie)/i;
+const AUDIT_MAX_STRING_CHARS = 4000;
+const AUDIT_MAX_DEPTH = 8;
+const AUDIT_MAX_ENTRIES = 100;
+
+const sanitizeAuditText = (value) => String(value ?? '')
+  .replace(/((?:"?(?:password|token|api[_-]?key|secret|authorization|cookie)"?)\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, '$1[redacted]')
+  .replace(/((?:authorization|cookie)\s+)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, '$1[redacted]')
+  .slice(0, AUDIT_MAX_STRING_CHARS);
+
+const sanitizeAuditValue = (value, depth = 0) => {
+  if (depth > AUDIT_MAX_DEPTH) return '[truncated]';
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return sanitizeAuditText(value);
+  if (typeof value !== 'object') return sanitizeAuditText(value);
+  if (Array.isArray(value)) return value.slice(0, AUDIT_MAX_ENTRIES).map((entry) => sanitizeAuditValue(entry, depth + 1));
+  return Object.fromEntries(Object.entries(value).slice(0, AUDIT_MAX_ENTRIES).map(([key, nested]) => [
+    String(key).slice(0, 160),
+    AUDIT_SENSITIVE_KEY.test(key) ? '[redacted]' : sanitizeAuditValue(nested, depth + 1),
+  ]));
+};
 
 const normalizeServerEdge = (raw, fallbackLength) => {
   const edge = raw && typeof raw === 'object' ? raw : {};
@@ -237,6 +258,25 @@ class CrmDatabase {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS ai_audit_log (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        operation_id TEXT,
+        user_id TEXT,
+        username TEXT,
+        original_input TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        result_json TEXT,
+        confirmation TEXT NOT NULL,
+        mutation_json TEXT NOT NULL,
+        success INTEGER NOT NULL,
+        error_code TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ai_audit_session
+        ON ai_audit_log(session_id, created_at DESC);
     `);
     for (const statement of [
       'ALTER TABLE attachments ADD COLUMN caption TEXT NOT NULL DEFAULT \'\'',
@@ -270,6 +310,11 @@ class CrmDatabase {
 
   close() {
     if (this.db?.open) this.db.close();
+  }
+
+  withTransaction(callback) {
+    if (typeof callback !== 'function') throw new TypeError('La transazione richiede una funzione');
+    return this.db.transaction(callback)();
   }
 
   assertType(type) {
@@ -604,6 +649,8 @@ class CrmDatabase {
     if (replay) return { ...replay, replayed: true };
 
     return this.db.transaction(() => {
+      const transactionReplay = this.getOperation(operationId);
+      if (transactionReplay) return { ...transactionReplay, replayed: true };
       const timestamp = now();
       const id = String(input.id || crypto.randomUUID());
       if (this.get(type, id)) {
@@ -858,6 +905,129 @@ class CrmDatabase {
       next: row.next_json ? JSON.parse(row.next_json) : null,
       createdAt: row.created_at,
     }));
+  }
+
+  writeAiAudit({ sessionId, operationId, user, originalInput, tool, args, result, confirmation, mutation, success, errorCode }) {
+    const record = {
+      id: crypto.randomUUID(),
+      sessionId: String(sessionId || ''),
+      operationId: operationId == null ? null : String(operationId),
+      userId: user?.id ? String(user.id) : null,
+      username: user?.username ? String(user.username) : null,
+      originalInput: sanitizeAuditText(originalInput),
+      tool: String(tool || '').slice(0, 120),
+      args: sanitizeAuditValue(args || {}),
+      result: result == null ? null : sanitizeAuditValue(result),
+      confirmation: String(confirmation || 'none').slice(0, 40),
+      mutation: sanitizeAuditValue(mutation || {}),
+      success: Boolean(success),
+      errorCode: errorCode ? sanitizeAuditText(errorCode).slice(0, 120) : null,
+      createdAt: now(),
+    };
+    const limitJson = (value, max) => {
+      const json = JSON.stringify(value) || 'null';
+      return json.length > max
+        ? JSON.stringify({ truncated: true, preview: json.slice(0, Math.max(0, max - 64)) })
+        : json;
+    };
+    this.db.prepare(`
+      INSERT INTO ai_audit_log(
+        id, session_id, operation_id, user_id, username, original_input, tool,
+        args_json, result_json, confirmation, mutation_json, success, error_code, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id, record.sessionId, record.operationId, record.userId, record.username,
+      record.originalInput, record.tool, limitJson(record.args, 16000),
+      record.result == null ? null : limitJson(record.result, 24000),
+      record.confirmation, limitJson(record.mutation, 8000), record.success ? 1 : 0,
+      record.errorCode, record.createdAt,
+    );
+    return record;
+  }
+
+  listAiAudit({ sessionId, limit = 100 } = {}) {
+    const values = [];
+    const conditions = [];
+    if (sessionId) {
+      conditions.push('session_id = ?');
+      values.push(String(sessionId));
+    }
+    values.push(Math.min(Math.max(Number(limit) || 100, 1), 500));
+    return this.db.prepare(`
+      SELECT * FROM ai_audit_log
+      ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
+      ORDER BY created_at DESC LIMIT ?
+    `).all(...values).map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      operationId: row.operation_id,
+      userId: row.user_id,
+      username: row.username,
+      originalInput: row.original_input,
+      tool: row.tool,
+      args: JSON.parse(row.args_json),
+      result: row.result_json ? JSON.parse(row.result_json) : null,
+      confirmation: row.confirmation,
+      mutation: JSON.parse(row.mutation_json),
+      success: Boolean(row.success),
+      errorCode: row.error_code,
+      createdAt: row.created_at,
+    }));
+  }
+
+  markInvoicePaid(invoiceId, payment, user, operationId) {
+    this.assertType('invoice');
+    const replay = this.getOperation(operationId);
+    if (replay) return { ...replay, replayed: true };
+    return this.db.transaction(() => {
+      const transactionReplay = this.getOperation(operationId);
+      if (transactionReplay) return { ...transactionReplay, replayed: true };
+      const invoice = this.get('invoice', invoiceId);
+      if (!invoice) {
+        const error = new Error('Fattura non trovata');
+        error.status = 404;
+        error.code = 'invoice_not_found';
+        throw error;
+      }
+      const total = numeric(invoice.total ?? invoice.amount);
+      const paid = this.list('payment')
+        .filter((item) => String(item.invoiceId || '') === String(invoice.id))
+        .reduce((sum, item) => sum + numeric(item.amount), 0);
+      const historicalPaid = String(invoice.status || '').toLocaleLowerCase('it-IT') === 'pagata' && paid === 0;
+      const remaining = Math.max(0, Number((historicalPaid ? 0 : total - paid).toFixed(2)));
+      if (remaining <= 0) {
+        const error = new Error('La fattura risulta già saldata');
+        error.status = 409;
+        error.code = 'invoice_already_paid';
+        throw error;
+      }
+      const timestamp = now();
+      const paymentId = crypto.randomUUID();
+      const paymentData = this.normalizeData('payment', {
+        id: paymentId, clientId: invoice.customerId || invoice.clientId, invoiceId: String(invoice.id),
+        projectId: invoice.projectId || null, date: String(payment.date || timestamp).slice(0, 10),
+        amount: remaining, method: payment.method || 'Non specificato', reference: payment.reference || '',
+      });
+      const paymentRecord = { ...paymentData, id: paymentId, version: 1, createdAt: timestamp, updatedAt: timestamp };
+      this.db.prepare(`
+        INSERT INTO entities(entity_type, id, data_json, version, created_at, updated_at)
+        VALUES (?, ?, ?, 1, ?, ?)
+      `).run('payment', paymentId, JSON.stringify(paymentRecord), timestamp, timestamp);
+      this.writeAudit({ user, type: 'payment', id: paymentId, action: 'create', previous: null, next: paymentRecord });
+
+      const invoiceVersion = Number(invoice.version || 1) + 1;
+      const invoiceRecord = this.normalizeData('invoice', {
+        ...invoice, status: 'Pagata', version: invoiceVersion, updatedAt: timestamp,
+      });
+      this.db.prepare(`
+        UPDATE entities SET data_json = ?, version = ?, updated_at = ?
+        WHERE entity_type = 'invoice' AND id = ?
+      `).run(JSON.stringify(invoiceRecord), invoiceVersion, timestamp, String(invoice.id));
+      this.writeAudit({ user, type: 'invoice', id: invoice.id, action: 'update', previous: invoice, next: invoiceRecord });
+      const response = { payment: paymentRecord, invoice: invoiceRecord };
+      this.storeOperation(operationId, response);
+      return response;
+    })();
   }
 
   attachmentDirectory(entityType, entityId) {

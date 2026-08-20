@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
-import { Menu, User, Settings, LogOut, Wifi, WifiOff, RefreshCw, UserCircle, ChevronDown } from 'lucide-react';
+import { Menu, User, Settings, LogOut, Wifi, WifiOff, RefreshCw, UserCircle, ChevronDown, Sparkles } from 'lucide-react';
 import Icon from '../common/Icon';
 import useUI from '../../hooks/useUI';
 import { useAuth } from '../../contexts/AuthContext';
+import AIAssistantPanel from '../ai/AIAssistantPanel';
 
 const Header = () => {
   const { theme, toggleTheme, toggleSidebar, userPreferences } = useUI();
   const { user, logout } = useAuth();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
   const darkMode = theme === 'dark';
   
   // Trova l'etichetta della pagina corrente con gestione fallback
@@ -46,6 +48,16 @@ const Header = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAssistant((current) => !current)}
+            type="button"
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-2 text-indigo-700 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-indigo-300 dark:hover:bg-indigo-900/30"
+            aria-label="Apri assistente CRM"
+            aria-expanded={showAssistant}
+          >
+            <Sparkles className="h-5 w-5" />
+            <span className="hidden lg:inline text-sm font-medium">Assistente</span>
+          </button>
           
           <button
             onClick={toggleTheme}
@@ -113,6 +125,7 @@ const Header = () => {
           </div>
         </div>
       </div>
+      <AIAssistantPanel open={showAssistant} onClose={() => setShowAssistant(false)} />
     </header>
   );
 };

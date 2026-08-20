@@ -13,6 +13,7 @@ const { createGmailDraftService } = require('./gmail-drafts');
 const { createGoogleDriveBackupService } = require('./google-drive-backups');
 const { createSdiPecService } = require('./sdi-pec');
 const { CrmDatabase, ENTITY_TYPES, normalizeServerWorkLines, workLinesToItems } = require('./database');
+const { createAiRouter } = require('./ai');
 const {
   authenticateToken,
   requirePermission,
@@ -32,6 +33,7 @@ const {
 const { MutationBarrier } = require('./mutation-barrier');
 const { checkForServerUpdate, applyServerUpdate } = require('./self-update');
 const { gracefulShutdown } = require('./shutdown-runtime');
+const SERVER_VERSION = require('./package.json').version;
 const {
   canViewFinancials,
   ensureRolePermissions,
@@ -1165,9 +1167,19 @@ async function createCrmServer(options = {}) {
     return task;
   };
 
+  app.use('/api/ai', createAiRouter({
+    db,
+    authenticateToken,
+    provider: options.aiProvider,
+    providerMode: options.aiProviderMode,
+    qwen: options.aiQwen,
+    realtime,
+    domain: { normalize, validateEntity, validatePaymentLinks },
+  }));
+
   app.get('/api/health', (req, res) => res.json({
     status: mutationBarrier.isMaintenance ? 'maintenance' : 'ok',
-    version: '2.4.1',
+    version: SERVER_VERSION,
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,

@@ -106,6 +106,7 @@ async function runServerTest() {
     const health = await requestJson(baseUrl, '/health');
     assert.equal(health.response.ok, true, 'L’endpoint health deve rispondere');
     assert.equal(health.body.mode, 'central-server');
+    assert.equal(health.body.version, require('./package.json').version, 'La versione health deve seguire package.json');
 
 
     const hostileOrigin = await requestJson(baseUrl, '/health', {
