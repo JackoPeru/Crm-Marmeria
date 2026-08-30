@@ -51,6 +51,11 @@ const assertSameClient = (record, clientId, label) => {
     conflict(`${label} appartiene a un altro cliente`);
   }
 };
+const sameOptionalId = (left, right) => {
+  const normalizedLeft = text(left);
+  const normalizedRight = text(right);
+  return !normalizedLeft || !normalizedRight || normalizedLeft === normalizedRight;
+};
 
 const prepareWorkLines = (lines) => Array.isArray(lines) ? lines.map((line) => ({
   ...line,
@@ -89,8 +94,7 @@ const prepareMutationInput = (type, input = {}) => {
   const items = Array.from({ length }, (_, index) => {
     const item = sourceItems[index] || {};
     const line = sourceLines[index] || item.workLine || {};
-    const tax = invoiceLineTax(item, line);
-    return { ...item, ...tax };
+    return { ...item, ...invoiceLineTax(item, line) };
   });
   const lines = sourceLines.length ? sourceLines.map((line, index) => ({
     ...line,
@@ -101,10 +105,57 @@ const prepareMutationInput = (type, input = {}) => {
   return prepared;
 };
 
+const validateInboundRelations = (db, type, payload) => {
+  const id = text(payload?.id);
+  if (!id) return;
+  const clientId = relationClientId(payload);
+
+  if (type === 'project') {
+    for (const [entityType, label] of [['quote', 'Un preventivo collegato'], ['invoice', 'Una fattura collegata'], ['payment', 'Un incasso collegato']]) {
+      const linked = db.list(entityType).filter((item) => String(item.projectId || '') === id);
+      if (linked.some((item) => relationClientId(item) && relationClientId(item) !== clientId)) {
+        conflict(`${label} appartiene a un cliente diverso: modifica prima i documenti collegati`);
+      }
+    }
+    return;
+  }
+
+  if (type === 'quote') {
+    const linkedInvoices = db.list('invoice').filter((item) => String(item.quoteId || '') === id);
+    for (const invoice of linkedInvoices) {
+      if (relationClientId(invoice) && relationClientId(invoice) !== clientId) {
+        conflict('Una fattura collegata appartiene a un cliente diverso');
+      }
+      if (!sameOptionalId(invoice.projectId, payload.projectId)) {
+        conflict('Una fattura collegata usa un progetto diverso');
+      }
+    }
+    return;
+  }
+
+  if (type === 'invoice') {
+    const linkedPayments = db.list('payment').filter((item) => String(item.invoiceId || '') === id);
+    for (const payment of linkedPayments) {
+      if (relationClientId(payment) && relationClientId(payment) !== clientId) {
+        conflict('Un incasso collegato appartiene a un cliente diverso');
+      }
+      if (!sameOptionalId(payment.projectId, payload.projectId)) {
+        conflict('Un incasso collegato usa un progetto diverso');
+      }
+    }
+    const paid = linkedPayments.reduce((sum, payment) => sum + numeric(payment.amount), 0);
+    const total = numeric(payload.total ?? payload.amount);
+    if (money(paid) > money(total) + 0.005) {
+      conflict(`Il totale fattura non può scendere sotto gli incassi registrati (€ ${money(paid).toFixed(2)})`);
+    }
+  }
+};
+
 const validateRelations = (db, type, payload, { paymentId = null } = {}) => {
   if (type === 'project') {
     const clientId = relationClientId(payload);
     if (clientId) getRequired(db, 'client', clientId, 'Cliente del progetto');
+    validateInboundRelations(db, type, payload);
     return;
   }
 
@@ -116,6 +167,7 @@ const validateRelations = (db, type, payload, { paymentId = null } = {}) => {
       const project = getRequired(db, 'project', payload.projectId, 'Progetto del preventivo');
       assertSameClient(project, clientId, 'Il progetto selezionato');
     }
+    validateInboundRelations(db, type, payload);
     return;
   }
 
@@ -134,6 +186,7 @@ const validateRelations = (db, type, payload, { paymentId = null } = {}) => {
     if (project && quote?.projectId && String(quote.projectId) !== String(project.id)) {
       conflict('Preventivo e progetto della fattura non sono coerenti');
     }
+    validateInboundRelations(db, type, payload);
     return;
   }
 
@@ -283,5 +336,6 @@ module.exports = {
   invoiceLineTax,
   invoicePaymentStatus,
   prepareMutationInput,
+  validateInboundRelations,
   validateRelations,
 };
