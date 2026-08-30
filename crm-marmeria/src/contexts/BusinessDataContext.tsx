@@ -14,6 +14,7 @@ import { observeServerScope, stableServerKey } from '../utils/serverScope';
 import { useAuth } from './AuthContext';
 import { parseLocaleNumber } from '../utils/numbers';
 import { normalizeWorkLines } from '../domain/work-lines/normalize';
+import { canMutateCachedEntity, mutationVersionFor } from './businessDataMutation';
 
 type CollectionName = 'projects' | 'quotes' | 'invoices';
 type Entity = Record<string, any> & { id: string; version?: number; _queued?: boolean };
@@ -243,17 +244,18 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     }
     const collections = { projects, quotes, invoices };
     const current = collections[collection].find((item) => item.id === String(id));
-    const expectedVersion = data.version ?? current?.version;
-    if (!Number.isInteger(Number(expectedVersion))) {
+    const expectedVersion = mutationVersionFor(data) ?? mutationVersionFor(current);
+    if (!current || (!current._queued && !canMutateCachedEntity(current) && expectedVersion === undefined)) {
       toast.error('Versione non disponibile. Ricarica i dati prima di modificare.');
       return false;
     }
+    const { _queued: _localQueued, ...cleanData } = data;
+    const requestData = expectedVersion === undefined
+      ? cleanData
+      : { ...cleanData, expectedVersion };
     const targetScope = scope;
     try {
-      const response = await apiClient.put(`/${collection}/${String(id)}`, {
-        ...data,
-        expectedVersion,
-      });
+      const response = await apiClient.put(`/${collection}/${String(id)}`, requestData);
       if (scopeRef.current !== targetScope) return false;
       const updated = normalizeEntity({ ...current, ...response.data, id: String(id) });
       setters[collection]((items) => {
@@ -281,15 +283,16 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     }
     const collections = { projects, quotes, invoices };
     const current = collections[collection].find((item) => item.id === String(id));
-    if (!Number.isInteger(Number(current?.version))) {
+    if (!canMutateCachedEntity(current)) {
       toast.error('Versione non disponibile. Ricarica i dati prima di eliminare.');
       return false;
     }
+    const expectedVersion = mutationVersionFor(current);
     const targetScope = scope;
     try {
-      const response = await apiClient.delete(`/${collection}/${String(id)}`, {
-        headers: { 'If-Match': String(current?.version) },
-      });
+      const response = await apiClient.delete(`/${collection}/${String(id)}`, expectedVersion === undefined
+        ? undefined
+        : { headers: { 'If-Match': String(expectedVersion) } });
       if (scopeRef.current !== targetScope) return false;
       setters[collection]((items) => {
         const next = items.filter((item) => item.id !== String(id));
