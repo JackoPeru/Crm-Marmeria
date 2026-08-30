@@ -153,28 +153,34 @@ class CrmDatabase extends core.CrmDatabase {
   }
 
   migrateLegacyPaidInvoices() {
-    const payments = super.list('payment');
-    const paidInvoiceIds = new Set(payments.map((payment) => asId(payment.invoiceId)).filter(Boolean));
+    const systemUser = { id: 'system', username: 'Migrazione CRM' };
     for (const invoice of super.list('invoice')) {
-      if (String(invoice.status || '').toLocaleLowerCase('it-IT') !== 'pagata') continue;
-      if (paidInvoiceIds.has(asId(invoice.id))) continue;
       const total = roundMoney(invoice.total ?? invoice.amount);
-      if (total <= 0 || !this.clientIdOf(invoice)) continue;
-      try {
-        this.create('payment', {
-          id: `legacy-payment-${invoice.id}`,
-          clientId: this.clientIdOf(invoice),
-          invoiceId: asId(invoice.id),
-          projectId: asId(invoice.projectId) || null,
-          date: String(invoice.date || new Date().toISOString()).slice(0, 10),
-          amount: total,
-          method: 'Storico',
-          reference: 'Migrazione stato fattura pagata',
-          source: 'legacy-status-migration',
-        }, { id: 'system', username: 'Migrazione CRM' }, `legacy-paid-invoice:${invoice.id}`);
-      } catch (error) {
-        if (error?.status !== 409) throw error;
+      const clientId = this.clientIdOf(invoice);
+      const payments = super.list('payment').filter((payment) => asId(payment.invoiceId) === asId(invoice.id));
+      const paid = roundMoney(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+      const historicallyPaid = String(invoice.status || '').toLocaleLowerCase('it-IT') === 'pagata';
+
+      if (historicallyPaid && total > paid + 0.005 && clientId && super.get('client', clientId)) {
+        const projectId = asId(invoice.projectId);
+        try {
+          this.create('payment', {
+            id: `legacy-payment-${invoice.id}`,
+            clientId,
+            invoiceId: asId(invoice.id),
+            projectId: projectId && super.get('project', projectId) ? projectId : null,
+            date: String(invoice.date || new Date().toISOString()).slice(0, 10),
+            amount: roundMoney(total - paid),
+            method: 'Storico',
+            reference: 'Migrazione stato fattura pagata',
+            source: 'legacy-status-migration',
+          }, systemUser, `legacy-paid-invoice:${invoice.id}`);
+        } catch (error) {
+          if (error?.status !== 409) throw error;
+        }
       }
+
+      this.syncInvoicePaymentStatus(invoice.id, systemUser);
     }
   }
 
@@ -281,6 +287,30 @@ class CrmDatabase extends core.CrmDatabase {
     };
 
     return type === 'payment' ? this.withTransaction(execute) : execute();
+  }
+
+  importHistory(operations, user, operationId) {
+    const replay = this.getOperation(operationId);
+    if (replay) return { ...replay, replayed: true };
+
+    return this.withTransaction(() => {
+      const result = super.importHistory(operations, user, operationId);
+      for (const item of result.imported || []) this.validateReferences(item.type, item);
+
+      const invoiceIds = new Set();
+      for (const item of result.imported || []) {
+        if (item.type === 'invoice') invoiceIds.add(asId(item.id));
+        if (item.type === 'payment' && item.invoiceId) invoiceIds.add(asId(item.invoiceId));
+      }
+      for (const invoiceId of invoiceIds) this.syncInvoicePaymentStatus(invoiceId, user);
+
+      const finalResult = {
+        ...result,
+        imported: (result.imported || []).map((item) => super.get(item.type, item.id) || item),
+      };
+      this.storeOperation(operationId, finalResult);
+      return finalResult;
+    });
   }
 
   update(type, id, patch, expectedVersion, user, operationId) {
