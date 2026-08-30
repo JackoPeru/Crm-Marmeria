@@ -142,17 +142,14 @@ class CrmDatabase extends core.CrmDatabase {
     return 'Non Pagata';
   }
 
-  syncInvoicePaymentStatus(invoiceId) {
+  syncInvoicePaymentStatus(invoiceId, user) {
     const id = asId(invoiceId);
-    if (!id) return;
-    const row = this.db.prepare("SELECT data_json FROM entities WHERE entity_type = 'invoice' AND id = ?").get(id);
-    if (!row) return;
-    const data = JSON.parse(row.data_json);
+    if (!id) return null;
+    const current = super.get('invoice', id);
+    if (!current) return null;
     const status = this.paymentStatus(id);
-    if (data.status === status) return;
-    data.status = status;
-    this.db.prepare("UPDATE entities SET data_json = ? WHERE entity_type = 'invoice' AND id = ?")
-      .run(JSON.stringify(data), id);
+    if (current.status === status) return current;
+    return super.update('invoice', id, { status }, current.version, user).item;
   }
 
   migrateLegacyPaidInvoices() {
@@ -267,59 +264,74 @@ class CrmDatabase extends core.CrmDatabase {
   create(type, input, user, operationId) {
     const replay = this.getOperation(operationId);
     if (replay) return { ...replay, replayed: true };
-    let prepared = clone(input) || {};
-    if (type === 'invoice') {
-      const imported = IMPORTED_INVOICE_SOURCES.has(String(prepared.importSource?.sourceType || ''));
-      prepared = invoiceTaxDefaults(prepared, { forceStandard: imported });
-      prepared.status = 'Non Pagata';
-    }
-    const normalized = this.normalizeData(type, prepared);
-    this.validateReferences(type, normalized);
-    if (type === 'invoice') this.validateInvoiceAgainstPayments(prepared.id, normalized);
-    const result = super.create(type, prepared, user, operationId);
-    if (type === 'payment') this.syncInvoicePaymentStatus(result.item.invoiceId);
-    return result;
+
+    const execute = () => {
+      let prepared = clone(input) || {};
+      if (type === 'invoice') {
+        const imported = IMPORTED_INVOICE_SOURCES.has(String(prepared.importSource?.sourceType || ''));
+        prepared = invoiceTaxDefaults(prepared, { forceStandard: imported });
+        prepared.status = 'Non Pagata';
+      }
+      const normalized = this.normalizeData(type, prepared);
+      this.validateReferences(type, normalized);
+      if (type === 'invoice') this.validateInvoiceAgainstPayments(prepared.id, normalized);
+      const result = super.create(type, prepared, user, operationId);
+      if (type === 'payment') this.syncInvoicePaymentStatus(result.item.invoiceId, user);
+      return result;
+    };
+
+    return type === 'payment' ? this.withTransaction(execute) : execute();
   }
 
   update(type, id, patch, expectedVersion, user, operationId) {
     const replay = this.getOperation(operationId);
     if (replay) return { ...replay, replayed: true };
-    const current = super.get(type, id);
-    if (!current) return super.update(type, id, patch, expectedVersion, user, operationId);
-    let preparedPatch = clone(patch) || {};
-    if (type === 'invoice') preparedPatch = invoiceTaxDefaults(preparedPatch);
-    const merged = this.normalizeData(type, { ...current, ...preparedPatch });
-    this.validateReferences(type, merged, { currentPaymentId: type === 'payment' ? asId(id) : '' });
-    if (type === 'invoice') {
-      this.validateInvoiceAgainstPayments(id, merged);
-      preparedPatch.status = this.paymentStatus(id);
-    }
-    const previousInvoiceId = type === 'payment' ? asId(current.invoiceId) : '';
-    const result = super.update(type, id, preparedPatch, expectedVersion, user, operationId);
-    if (type === 'payment') {
-      this.syncInvoicePaymentStatus(previousInvoiceId);
-      this.syncInvoicePaymentStatus(result.item.invoiceId);
-    }
-    return result;
+
+    const execute = () => {
+      const current = super.get(type, id);
+      if (!current) return super.update(type, id, patch, expectedVersion, user, operationId);
+      let preparedPatch = clone(patch) || {};
+      if (type === 'invoice') preparedPatch = invoiceTaxDefaults(preparedPatch);
+      const merged = this.normalizeData(type, { ...current, ...preparedPatch });
+      this.validateReferences(type, merged, { currentPaymentId: type === 'payment' ? asId(id) : '' });
+      if (type === 'invoice') {
+        this.validateInvoiceAgainstPayments(id, merged);
+        preparedPatch.status = this.paymentStatus(id);
+      }
+      const previousInvoiceId = type === 'payment' ? asId(current.invoiceId) : '';
+      const result = super.update(type, id, preparedPatch, expectedVersion, user, operationId);
+      if (type === 'payment') {
+        this.syncInvoicePaymentStatus(previousInvoiceId, user);
+        this.syncInvoicePaymentStatus(result.item.invoiceId, user);
+      }
+      return result;
+    };
+
+    return type === 'payment' ? this.withTransaction(execute) : execute();
   }
 
   delete(type, id, expectedVersion, user, operationId) {
     const replay = this.getOperation(operationId);
     if (replay) return { ...replay, replayed: true };
-    const current = super.get(type, id);
-    if (current && type !== 'payment') {
-      const blocker = this.deletionBlocker(type, id);
-      if (blocker) {
-        const detail = type === 'invoice' && blocker === 'payment'
-          ? 'La fattura ha incassi registrati'
-          : `L’elemento è utilizzato da record di tipo ${blocker}`;
-        throw conflict(`${detail}: elimina o scollega prima i record collegati`);
+
+    const execute = () => {
+      const current = super.get(type, id);
+      if (current && type !== 'payment') {
+        const blocker = this.deletionBlocker(type, id);
+        if (blocker) {
+          const detail = type === 'invoice' && blocker === 'payment'
+            ? 'La fattura ha incassi registrati'
+            : `L’elemento è utilizzato da record di tipo ${blocker}`;
+          throw conflict(`${detail}: elimina o scollega prima i record collegati`);
+        }
       }
-    }
-    const invoiceId = type === 'payment' ? asId(current?.invoiceId) : '';
-    const result = super.delete(type, id, expectedVersion, user, operationId);
-    if (type === 'payment') this.syncInvoicePaymentStatus(invoiceId);
-    return result;
+      const invoiceId = type === 'payment' ? asId(current?.invoiceId) : '';
+      const result = super.delete(type, id, expectedVersion, user, operationId);
+      if (type === 'payment') this.syncInvoicePaymentStatus(invoiceId, user);
+      return result;
+    };
+
+    return type === 'payment' ? this.withTransaction(execute) : execute();
   }
 }
 
