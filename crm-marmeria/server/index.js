@@ -1,10 +1,13 @@
 const path = require('path');
 const { createCrmServer } = require('./app');
+const { installDatabaseRules } = require('./business-rules');
 const { readUsers } = require('./middleware/auth');
 const { readOrCreateServerId, readOrCreateSetupSecret } = require('./runtime-files');
 const { upgradeLegacySnapshots } = require('./snapshot-compat');
 const { readOrCreateTlsIdentity } = require('./tls-identity');
 const { markUpdateReady } = require('./update-progress');
+
+installDatabaseRules();
 
 let instance = null;
 
