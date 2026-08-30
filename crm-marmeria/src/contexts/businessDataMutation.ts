@@ -1,6 +1,8 @@
 export interface CachedMutationEntity {
+  id?: unknown;
   version?: unknown;
   _queued?: boolean;
+  [key: string]: unknown;
 }
 
 export const mutationVersionFor = (entity?: CachedMutationEntity | null): number | undefined => {
