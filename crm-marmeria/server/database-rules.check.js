@@ -106,6 +106,52 @@ const run = () => {
       projectId: 'missing-project', workLines: [line(22)],
     }, user, 'invoice-mismatch'), 409, 'Progetto');
 
+    expectStatus(() => db.create('appointment', {
+      id: 'appointment-orphan', title: 'Sopralluogo orfano', customerId: 'missing-client',
+      startAt: '2026-08-31T09:00', endAt: '2026-08-31T10:00',
+    }, user, 'appointment-orphan'), 409, 'Cliente');
+
+    expectStatus(() => db.create('purchase_order', {
+      id: 'purchase-order-orphan', title: 'Ordine orfano', supplierId: 'missing-supplier',
+      projectId: project.id, date: '2026-08-30', amount: 100,
+    }, user, 'purchase-order-orphan'), 409, 'Fornitore');
+
+    const calendarClient = db.create('client', {
+      id: 'calendar-client', name: 'Cliente Calendario',
+    }, user, 'calendar-client').item;
+    db.create('appointment', {
+      id: 'calendar-appointment', title: 'Sopralluogo', customerId: calendarClient.id,
+      startAt: '2026-08-31T09:00', endAt: '2026-08-31T10:00',
+    }, user, 'calendar-appointment');
+    expectStatus(() => db.delete(
+      'client', calendarClient.id, calendarClient.version, user, 'delete-calendar-client',
+    ), 409, 'utilizzato');
+
+    const supplier = db.create('supplier', {
+      id: 'supplier-1', name: 'Fornitore Uno',
+    }, user, 'supplier-1').item;
+    db.create('purchase_order', {
+      id: 'purchase-order-1', title: 'Lastre', supplierId: supplier.id,
+      date: '2026-08-30', amount: 100,
+    }, user, 'purchase-order-1');
+    expectStatus(() => db.delete(
+      'supplier', supplier.id, supplier.version, user, 'delete-supplier',
+    ), 409, 'utilizzato');
+
+    const appointmentClient = db.create('client', {
+      id: 'appointment-client', name: 'Cliente Progetto Calendario',
+    }, user, 'appointment-client').item;
+    const appointmentProject = db.create('project', {
+      id: 'appointment-project', name: 'Progetto Calendario', clientId: appointmentClient.id,
+    }, user, 'appointment-project').item;
+    db.create('appointment', {
+      id: 'project-appointment', title: 'Rilievo', customerId: appointmentClient.id,
+      projectId: appointmentProject.id, startAt: '2026-09-01T09:00', endAt: '2026-09-01T10:00',
+    }, user, 'project-appointment');
+    expectStatus(() => db.delete(
+      'project', appointmentProject.id, appointmentProject.version, user, 'delete-appointment-project',
+    ), 409, 'utilizzato');
+
     const payable = db.create('invoice', {
       id: 'invoice-payable', date: '2026-08-30', dueDate: '2026-09-30', customerId: client.id,
       workLines: [line(22)],
