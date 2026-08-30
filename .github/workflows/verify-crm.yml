@@ -88,6 +88,9 @@ jobs:
       - name: Smoke integrity
         run: node server/smoke-test.js integrity
 
+      - name: Verify CRM business rules
+        run: node server/business-rules.check.js
+
       - name: Smoke snapshot
         run: node server/smoke-test.js snapshot
 

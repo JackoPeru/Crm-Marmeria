@@ -11,6 +11,9 @@ import type {
 } from './types';
 
 const asText = (value: unknown): string => String(value ?? '').trim();
+const hasOwn = (value: unknown, key: string): boolean => (
+  Boolean(value) && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, key)
+);
 
 const stableId = (raw: any, index: number): string => (
   raw?.id == null || raw.id === '' ? `work-line-${index + 1}` : String(raw.id)
@@ -38,7 +41,9 @@ const normalizeEdge = (value: any, fallbackLength: number): EdgeSelection => ({
     : value?.lengthMeters != null
       ? numberValue(value.lengthMeters) * 100
       : fallbackLength,
-  lengthMeters: value?.lengthMeters == null ? undefined : numberValue(value.lengthMeters),
+  lengthMeters: value?.lengthCm != null || value?.lengthMeters == null
+    ? undefined
+    : numberValue(value.lengthMeters),
   unitPrice: value?.unitPrice == null && value?.priceSnapshot == null
     ? undefined
     : numberValue(value?.unitPrice ?? value?.priceSnapshot),
@@ -173,18 +178,32 @@ export const workLineDescription = (line: WorkLine): string => {
   return line.description || 'Voce manuale';
 };
 
+const invoiceTax = (existingItem: any, line: WorkLine) => {
+  const existingNature = asText(existingItem?.taxNature).toUpperCase();
+  const lineNature = asText(line.taxNature).toUpperCase();
+  const existingRate = hasOwn(existingItem, 'taxRate') ? numberValue(existingItem.taxRate) : undefined;
+  const lineRate = line.taxRate == null ? undefined : numberValue(line.taxRate);
+  if (existingNature) return { taxRate: existingRate ?? 0, taxNature: existingNature };
+  if (lineNature) return { taxRate: lineRate ?? 0, taxNature: lineNature };
+  if (existingRate != null && existingRate > 0) return { taxRate: existingRate, taxNature: '' };
+  if (lineRate != null && lineRate > 0) return { taxRate: lineRate, taxNature: '' };
+  return { taxRate: 22, taxNature: '' };
+};
+
 export const workLinesToDocumentItems = (
   lines: WorkLine[],
   invoice = false,
   existingItems: any[] = [],
-) => normalizeWorkLines(lines).map((line, index) => ({
-  description: workLineDescription(line),
-  quantity: 1,
-  unitPrice: numberValue(calculateWorkLine(line).total),
-  taxRate: invoice ? numberValue(existingItems[index]?.taxRate ?? line.taxRate ?? 22) : 0,
-  taxNature: invoice ? asText(existingItems[index]?.taxNature || line.taxNature).toUpperCase() : '',
-  materialId: line.materialId || null,
-  workLineId: line.id,
-  workLineType: line.type,
-  workLine: line,
-}));
+) => normalizeWorkLines(lines).map((line, index) => {
+  const tax = invoice ? invoiceTax(existingItems[index], line) : { taxRate: 0, taxNature: '' };
+  return {
+    description: workLineDescription(line),
+    quantity: 1,
+    unitPrice: numberValue(calculateWorkLine(line).total),
+    ...tax,
+    materialId: line.materialId || null,
+    workLineId: line.id,
+    workLineType: line.type,
+    workLine: line,
+  };
+});
