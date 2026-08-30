@@ -15,12 +15,30 @@ const sourceLines = (raw, legacyItems) => Array.isArray(raw)
   ? raw
   : Array.isArray(legacyItems) ? legacyItems : [];
 
+const sanitizeWorkLineEdges = (lines) => Array.isArray(lines) ? lines.map((line) => ({
+  ...line,
+  edges: line?.edges && typeof line.edges === 'object'
+    ? Object.fromEntries(Object.entries(line.edges).map(([key, edge]) => {
+      if (!edge || typeof edge !== 'object' || edge.lengthCm == null) return [key, edge];
+      const next = { ...edge };
+      delete next.lengthMeters;
+      return [key, next];
+    }))
+    : line?.edges,
+})) : lines;
+
 const normalizeServerWorkLines = (raw, legacyItems) => {
   const source = sourceLines(raw, legacyItems);
-  const normalized = core.normalizeServerWorkLines(raw, legacyItems);
-  return normalized.map((line, index) => {
-    const original = source[index];
-    if (original && original.taxRate != null && original.taxRate !== '') return line;
+  const sanitizedRaw = Array.isArray(raw) ? sanitizeWorkLineEdges(raw) : raw;
+  const sanitizedLegacy = Array.isArray(legacyItems) ? sanitizeWorkLineEdges(legacyItems) : legacyItems;
+  const normalized = core.normalizeServerWorkLines(sanitizedRaw, sanitizedLegacy);
+  const taxById = new Map(source.map((line, index) => [
+    asId(line?.id || `work-line-${index + 1}`),
+    line?.taxRate,
+  ]));
+  return normalized.map((line) => {
+    const originalTax = taxById.get(asId(line.id));
+    if (originalTax != null && originalTax !== '') return line;
     const next = { ...line };
     delete next.taxRate;
     return next;
@@ -65,6 +83,20 @@ class CrmDatabase extends core.CrmDatabase {
   constructor(options) {
     super(options);
     this.migrateLegacyPaidInvoices();
+  }
+
+  normalizeData(type, input) {
+    const prepared = clone(input) || {};
+    if (Array.isArray(prepared.workLines)) prepared.workLines = sanitizeWorkLineEdges(prepared.workLines);
+    if (Array.isArray(prepared.items)) {
+      prepared.items = prepared.items.map((item) => ({
+        ...item,
+        workLine: item?.workLine && typeof item.workLine === 'object'
+          ? sanitizeWorkLineEdges([item.workLine])[0]
+          : item?.workLine,
+      }));
+    }
+    return super.normalizeData(type, prepared);
   }
 
   clientIdOf(entity) {
@@ -135,8 +167,9 @@ class CrmDatabase extends core.CrmDatabase {
 
   validateReferences(type, payload, { currentPaymentId = '' } = {}) {
     const clientId = this.clientIdOf(payload);
-    if (['project', 'quote', 'invoice', 'payment', 'service_case', 'message_draft'].includes(type) && clientId) {
-      if (!super.get('client', clientId)) throw conflict('Cliente collegato non trovato');
+    const strictClientId = type === 'project' ? asId(payload?.clientId) : clientId;
+    if (['project', 'quote', 'invoice', 'payment', 'service_case', 'message_draft'].includes(type) && strictClientId) {
+      if (!super.get('client', strictClientId)) throw conflict('Cliente collegato non trovato');
     }
 
     const projectId = asId(payload?.projectId);
@@ -220,6 +253,8 @@ class CrmDatabase extends core.CrmDatabase {
   }
 
   create(type, input, user, operationId) {
+    const replay = this.getOperation(operationId);
+    if (replay) return { ...replay, replayed: true };
     let prepared = clone(input) || {};
     if (type === 'invoice') {
       const imported = IMPORTED_INVOICE_SOURCES.has(String(prepared.importSource?.sourceType || ''));
@@ -235,6 +270,8 @@ class CrmDatabase extends core.CrmDatabase {
   }
 
   update(type, id, patch, expectedVersion, user, operationId) {
+    const replay = this.getOperation(operationId);
+    if (replay) return { ...replay, replayed: true };
     const current = super.get(type, id);
     if (!current) return super.update(type, id, patch, expectedVersion, user, operationId);
     let preparedPatch = clone(patch) || {};
@@ -255,6 +292,8 @@ class CrmDatabase extends core.CrmDatabase {
   }
 
   delete(type, id, expectedVersion, user, operationId) {
+    const replay = this.getOperation(operationId);
+    if (replay) return { ...replay, replayed: true };
     const current = super.get(type, id);
     if (current && type !== 'payment') {
       const blocker = this.deletionBlocker(type, id);
