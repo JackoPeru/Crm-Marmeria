@@ -6,13 +6,15 @@ const { CrmDatabase } = require('./database');
 
 const user = { id: 'test-admin', username: 'test-admin' };
 
+const dbOptions = (root) => ({
+  dataDir: path.join(root, 'data'),
+  backupDir: path.join(root, 'backups'),
+  attachmentsDir: path.join(root, 'attachments'),
+});
+
 const createDb = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-database-rules-'));
-  const db = new CrmDatabase({
-    dataDir: path.join(root, 'data'),
-    backupDir: path.join(root, 'backups'),
-    attachmentsDir: path.join(root, 'attachments'),
-  });
+  const db = new CrmDatabase(dbOptions(root));
   return { db, root };
 };
 
@@ -32,6 +34,33 @@ const line = (taxRate) => ({
   unitPrice: 100,
   ...(taxRate === undefined ? {} : { taxRate }),
 });
+
+const runLegacyPaidMigrationCheck = () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-legacy-paid-'));
+  let db = new CrmDatabase(dbOptions(root));
+  try {
+    db.importEntity('client', { id: 'legacy-client', name: 'Cliente storico' });
+    db.importEntity('invoice', {
+      id: 'legacy-paid-invoice',
+      date: '2025-01-01',
+      dueDate: '2025-01-15',
+      customerId: 'legacy-client',
+      status: 'Pagata',
+      items: [{ description: 'Fattura storica', quantity: 1, unitPrice: 100, taxRate: 22 }],
+    });
+    db.close();
+    db = new CrmDatabase(dbOptions(root));
+    const migratedInvoice = db.get('invoice', 'legacy-paid-invoice');
+    const payments = db.list('payment').filter((payment) => payment.invoiceId === migratedInvoice.id);
+    assert.strictEqual(migratedInvoice.status, 'Pagata');
+    assert.strictEqual(payments.length, 1, 'Una vecchia fattura Pagata deve ottenere un incasso storico');
+    assert.strictEqual(payments[0].amount, migratedInvoice.total);
+    assert.strictEqual(payments[0].source, 'legacy-status-migration');
+  } finally {
+    if (db?.db?.open) db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+};
 
 const run = () => {
   const { db, root } = createDb();
@@ -63,6 +92,10 @@ const run = () => {
     }, user, 'invoice-zero-vat').item;
     assert.strictEqual(zeroVatInvoice.items[0].taxRate, 0, 'IVA 0% esplicita deve essere preservata');
     assert.strictEqual(zeroVatInvoice.items[0].taxNature, 'N4');
+
+    expectStatus(() => db.create('project', {
+      id: 'project-orphan', name: 'Progetto orfano', clientId: 'missing-client', workLines: [line()],
+    }, user, 'project-orphan'), 409, 'Cliente');
 
     expectStatus(() => db.create('quote', {
       id: 'quote-orphan', date: '2026-08-30', customerId: 'missing-client', workLines: [line()],
@@ -109,6 +142,8 @@ const run = () => {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+
+  runLegacyPaidMigrationCheck();
   console.log('DATABASE_RULES_CHECK_OK');
 };
 
