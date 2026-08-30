@@ -78,6 +78,12 @@ async function run() {
       body: JSON.stringify({ name: 'Cliente regole', type: 'Azienda' }),
     });
     assert.equal(client.response.status, 201);
+    const secondClient = await requestJson(baseUrl, '/clients', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Altro cliente', type: 'Azienda' }),
+    });
+    assert.equal(secondClient.response.status, 201);
 
     const project = await requestJson(baseUrl, '/projects', {
       method: 'POST',
@@ -105,6 +111,13 @@ async function run() {
       }),
     });
     assert.equal(quote.response.status, 201);
+
+    const inconsistentProject = await requestJson(baseUrl, `/projects/${project.body.id}`, {
+      method: 'PUT',
+      headers: { ...auth, 'If-Match': String(project.body.version) },
+      body: JSON.stringify({ clientId: secondClient.body.id }),
+    });
+    assert.equal(inconsistentProject.response.status, 409, 'Un progetto già referenziato non può cambiare cliente creando incoerenze');
 
     const invoice = await requestJson(baseUrl, `/quotes/${quote.body.id}/invoice`, {
       method: 'POST',
@@ -145,17 +158,28 @@ async function run() {
     });
     assert.equal(overpayment.response.status, 409, 'Un incasso non può superare il residuo della fattura');
 
+    const finalPaymentPayload = {
+      clientId: client.body.id,
+      invoiceId: invoice.body.id,
+      date: '2030-01-11',
+      amount: 82,
+    };
     const paymentTwo = await requestJson(baseUrl, '/payments', {
       method: 'POST',
-      headers: auth,
-      body: JSON.stringify({
-        clientId: client.body.id,
-        invoiceId: invoice.body.id,
-        date: '2030-01-11',
-        amount: 82,
-      }),
+      headers: { ...auth, 'X-Operation-Id': 'payment-two-fixed' },
+      body: JSON.stringify(finalPaymentPayload),
     });
     assert.equal(paymentTwo.response.status, 201);
+
+    const replayedPayment = await requestJson(baseUrl, '/payments', {
+      method: 'POST',
+      headers: { ...auth, 'X-Operation-Id': 'payment-two-fixed' },
+      body: JSON.stringify(finalPaymentPayload),
+    });
+    assert.equal(replayedPayment.response.status, 200, 'Il retry idempotente deve restituire la mutazione originale');
+    assert.equal(replayedPayment.body.id, paymentTwo.body.id);
+    const paymentsAfterReplay = await requestJson(baseUrl, '/payments', { headers: auth });
+    assert.equal(paymentsAfterReplay.body.length, 2, 'Il retry non deve duplicare l’incasso');
 
     const paidInvoice = await requestJson(baseUrl, `/invoices/${invoice.body.id}`, { headers: auth });
     assert.equal(paidInvoice.body.status, 'Pagata');
