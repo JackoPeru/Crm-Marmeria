@@ -21,6 +21,8 @@ export const copyWorkLines = (
     ...line,
     id: createId(),
     sortOrder: index,
+    taxRate: undefined,
+    taxNature: '',
     importSource,
     edges: line.edges ? Object.fromEntries(
       Object.entries(line.edges).map(([key, edge]) => [key, edge ? { ...edge } : edge]),
