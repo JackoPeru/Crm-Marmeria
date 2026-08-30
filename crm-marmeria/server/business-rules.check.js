@@ -5,6 +5,9 @@ const os = require('os');
 const path = require('path');
 const bcrypt = require('bcrypt');
 const { createCrmServer } = require('./app');
+const { installDatabaseRules } = require('./business-rules');
+
+installDatabaseRules();
 
 const requestJson = async (baseUrl, route, options = {}) => {
   const response = await fetch(`${baseUrl}${route}`, {
