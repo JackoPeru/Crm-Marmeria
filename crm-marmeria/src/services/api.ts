@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import { getCurrentQueueScope, offlineQueue } from './offlineQueue';
 import type { QueueScope } from './offlineQueue';
 import { bindRequestToScope, queueScopesEqual } from './requestScope';
-import { buildOptimisticMutation } from './optimisticMutation';
+import { buildOptimisticMutation, stripOptimisticMetadata } from './optimisticMutation';
 import { createId } from '../utils/ids';
 
 interface ReplayConfig extends AxiosRequestConfig {
@@ -108,6 +108,9 @@ class ApiClient {
 
       const method = String(config.method || 'get').toLowerCase();
       if (MUTATING.has(method)) {
+        if (config.data && !(config.data instanceof FormData)) {
+          config.data = stripOptimisticMetadata(config.data);
+        }
         config.headers['X-Operation-Id'] = config.headers['X-Operation-Id'] || operationId();
         const version = config.data?.expectedVersion ?? config.data?.version;
         if (

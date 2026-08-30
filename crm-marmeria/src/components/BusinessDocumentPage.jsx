@@ -11,6 +11,7 @@ import EdgeCatalogOverlay from './catalog/EdgeCatalogOverlay';
 import { copyWorkLines, mergeImportedWorkLines } from '../domain/work-lines/import';
 import { createWorkLine, normalizeWorkLines, workLinesToDocumentItems } from '../domain/work-lines/normalize';
 import { refreshCatalogEdgePrices } from '../domain/work-lines/edgeSelector';
+import { documentStatusIsEditable, paymentStatusLabel } from '../domain/documents/status';
 import Modal from './common/Modal';
 
 const emptyItem = (invoice) => ({
@@ -177,7 +178,7 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
     });
   };
 
-  // CompatibilitÃ  per dati/markup legacy: l'editor visibile usa WorkLinesEditor.
+  // Compatibilità per dati/markup legacy: l'editor visibile usa WorkLinesEditor.
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -237,15 +238,20 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
           </label>
         )}
 
-        <label className="block">
-          <span className="mb-1 block text-sm font-medium">Stato</span>
-          <select value={value.status || ''} onChange={(event) => setValue((previous) => ({ ...previous, status: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">
-            {(invoice
-              ? ['Non Pagata', 'Pagata Parzialmente', 'Pagata', 'Scaduta']
-              : ['Bozza', 'Inviato', 'Accettato', 'Rifiutato', 'Scaduto']
-            ).map((status) => <option key={status}>{status}</option>)}
-          </select>
-        </label>
+        {documentStatusIsEditable(kind) ? (
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium">Stato</span>
+            <select value={value.status || ''} onChange={(event) => setValue((previous) => ({ ...previous, status: event.target.value }))} className="w-full rounded-md border p-2 bg-light-bg dark:bg-dark-input">
+              {['Bozza', 'Inviato', 'Accettato', 'Rifiutato', 'Scaduto'].map((status) => <option key={status}>{status}</option>)}
+            </select>
+          </label>
+        ) : (
+          <div className="block">
+            <span className="mb-1 block text-sm font-medium">Stato pagamento</span>
+            <div className="w-full rounded-md border bg-gray-50 p-2 font-medium dark:bg-gray-800">{paymentStatusLabel(value.status)}</div>
+            <span className="mt-1 block text-xs text-gray-500">Calcolato automaticamente dagli incassi registrati.</span>
+          </div>
+        )}
       </div>
 
       <WorkLinesEditor
@@ -263,8 +269,6 @@ const DocumentForm = ({ kind, value, setValue, customers, projects, quotes, mate
         onOpenEdgeCatalog={!invoice ? () => setEdgeSettingsOpen(true) : undefined}
       />
       {!invoice && <EdgeCatalogOverlay open={edgeSettingsOpen} items={edgeCatalog} materials={materials} canCreate={hasPermission('materials.create')} canEdit={hasPermission('materials.edit')} canDelete={hasPermission('materials.delete')} showPrices={showPrices} onItemsChange={handleEdgeCatalogChange} onClose={() => setEdgeSettingsOpen(false)} />}
-
-
 
       <label className="block">
         <span className="mb-1 block text-sm font-medium">Note</span>
@@ -587,7 +591,7 @@ const BusinessDocumentPage = ({
                   <td className="px-5 py-4">{formatDate(document.date)}</td>
                   <td className="px-5 py-4">{documentCustomer(document)}</td>
                   <td className="px-5 py-4">{formatEuro(document.total)}</td>
-                  <td className="px-5 py-4"><span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">{document.status || '-'}</span>{invoice && electronicStatus(document) !== 'bozza' && <span className="ml-2 text-xs text-orange-700 dark:text-orange-300">SdI: {electronicStatus(document).replace(/_/g, ' ')}</span>}{document._queued && <span className="ml-2 text-xs text-orange-600">in coda</span>}</td>
+                  <td className="px-5 py-4"><span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">{invoice ? paymentStatusLabel(document.status) : (document.status || '-')}</span>{invoice && electronicStatus(document) !== 'bozza' && <span className="ml-2 text-xs text-orange-700 dark:text-orange-300">SdI: {electronicStatus(document).replace(/_/g, ' ')}</span>}{document._queued && <span className="ml-2 text-xs text-orange-600">in coda</span>}</td>
                   <td className="px-5 py-4">
                     <div className="flex justify-end gap-2">
                       <button type="button" onClick={() => { setViewingId(String(document.id)); showModal({ id: `${kind}-view`, type: 'view' }); }} className="p-1.5 text-blue-600" title="Visualizza"><Eye size={18} /></button>
@@ -631,7 +635,7 @@ const BusinessDocumentPage = ({
             {invoice && <div><span className="text-gray-500">Scadenza</span><p>{formatDate(viewing.dueDate)}</p></div>}
             {!invoice && <div><span className="text-gray-500">Validità</span><p className={formatQuoteValidity(viewing) === 'Senza scadenza' ? 'text-green-700 dark:text-green-400' : ''}>{formatQuoteValidity(viewing)}</p></div>}
             <div><span className="text-gray-500">Cliente</span><p>{documentCustomer(viewing)}</p></div>
-            <div><span className="text-gray-500">Stato</span><p>{viewing.status || '-'}</p></div>
+            <div><span className="text-gray-500">Stato</span><p>{invoice ? paymentStatusLabel(viewing.status) : (viewing.status || '-')}</p></div>
             {invoice && <div><span className="text-gray-500">Esito SdI</span><p>{electronicStatus(viewing).replace(/_/g, ' ')}</p></div>}
             <div><span className="text-gray-500">Totale</span><p className="font-semibold">{formatEuro(viewing.total)}</p></div>
             <div className="md:col-span-2"><span className="text-gray-500">Note</span><p className="whitespace-pre-wrap">{viewing.notes || '-'}</p></div>

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { lazy, Suspense, useEffect } from 'react';
 import { Provider } from 'react-redux';
 import { Toaster } from 'react-hot-toast';
 import {
@@ -23,18 +23,19 @@ import Header from './components/layout/Header';
 import LoginForm from './components/auth/LoginForm.tsx';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import OfflineQueuePanel from './components/OfflineQueuePanel';
-import DashboardPage from './pages/DashboardPage';
-import CustomersPage from './pages/CustomersPage';
-import ProjectsPage from './pages/ProjectsPage';
-import MaterialsPage from './pages/MaterialsPage';
-import ListinoPage from './pages/ListinoPage';
-import QuotesPage from './pages/QuotesPage';
-import InvoicesPage from './pages/InvoicesPage';
-import SettingsPage from './pages/SettingsPage';
-import CalendarPage from './pages/CalendarPage';
-import OperationsPage from './pages/OperationsPage';
-import SuppliersPage from './pages/SuppliersPage';
 import useUI from './hooks/useUI';
+
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const CustomersPage = lazy(() => import('./pages/CustomersPage'));
+const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
+const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
+const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
+const ListinoPage = lazy(() => import('./pages/ListinoPage'));
+const QuotesPage = lazy(() => import('./pages/QuotesPage'));
+const CalendarPage = lazy(() => import('./pages/CalendarPage'));
+const InvoicesPage = lazy(() => import('./pages/InvoicesPage'));
+const OperationsPage = lazy(() => import('./pages/OperationsPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, component: DashboardPage, permission: 'dashboard.view' },
@@ -50,6 +51,15 @@ const navItems = [
   { id: 'settings', label: 'Impostazioni', icon: Cog, component: SettingsPage, permission: 'settings.view' },
 ];
 
+const PageLoading = () => (
+  <div className="flex min-h-64 items-center justify-center">
+    <div className="text-center">
+      <div className="mx-auto mb-3 h-9 w-9 animate-spin rounded-full border-b-2 border-blue-600" />
+      <p className="text-sm text-gray-500">Caricamento sezione...</p>
+    </div>
+  </div>
+);
+
 const AppContent = () => {
   const {
     theme,
@@ -59,7 +69,7 @@ const AppContent = () => {
     toggleSidebar,
     closeSidebar,
   } = useUI();
-  const { isAuthenticated, isLoading, isInitialized, user, hasPermission } = useAuth();
+  const { isAuthenticated, isInitialized, user, hasPermission } = useAuth();
 
   useEffect(() => {
     cacheService.init().catch((error) => console.error('Errore inizializzazione cache:', error));
@@ -125,7 +135,9 @@ const AppContent = () => {
               <OfflineQueuePanel />
             </div>
             <ProtectedRoute permission={currentItem?.permission}>
-              <CurrentPageComponent />
+              <Suspense fallback={<PageLoading />}>
+                <CurrentPageComponent />
+              </Suspense>
             </ProtectedRoute>
           </main>
         </div>

@@ -1,0 +1,41 @@
+name: Verify CRM integrity
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crm-marmeria
+    env:
+      TZ: Europe/Rome
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix server
+
+      - name: Check database modules
+        run: |
+          node --check server/database-core.js
+          node --check server/database.js
+          node --check server/database-rules.check.js
+
+      - name: Run database integrity regressions
+        run: node server/database-rules.check.js
+
+      - name: Run offline mutation regressions
+        run: npx vitest run src/services/optimisticMutation.test.ts

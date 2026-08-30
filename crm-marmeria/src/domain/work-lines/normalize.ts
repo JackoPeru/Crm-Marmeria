@@ -11,6 +11,9 @@ import type {
 } from './types';
 
 const asText = (value: unknown): string => String(value ?? '').trim();
+const optionalNumber = (value: unknown): number | undefined => (
+  value == null || value === '' ? undefined : numberValue(value)
+);
 
 const stableId = (raw: any, index: number): string => (
   raw?.id == null || raw.id === '' ? `work-line-${index + 1}` : String(raw.id)
@@ -57,6 +60,29 @@ const normalizeEdges = (raw: any, lengthCm: number, widthCm: number) => {
   ])) as Partial<Record<EdgeKey, EdgeSelection>>;
 };
 
+export const resizeSurfaceEdges = (
+  line: WorkLine,
+  patch: { lengthCm?: number; widthCm?: number },
+): WorkLine['edges'] => {
+  const lengthCm = patch.lengthCm ?? line.lengthCm ?? 0;
+  const widthCm = patch.widthCm ?? line.widthCm ?? 0;
+  const defaults = edgeDefaults(lengthCm, widthCm);
+  return Object.fromEntries((Object.keys(defaults) as EdgeKey[]).map((key) => {
+    const dimensionControlled = ['front', 'back', 'left', 'right'].includes(key);
+    const nextLength = ['front', 'back'].includes(key)
+      ? lengthCm
+      : ['left', 'right'].includes(key)
+        ? widthCm
+        : (line.edges?.[key]?.lengthCm ?? defaults[key]?.lengthCm);
+    return [key, {
+      ...(defaults[key] || {}),
+      ...(line.edges?.[key] || {}),
+      lengthCm: nextLength,
+      ...(dimensionControlled ? { lengthMeters: undefined } : {}),
+    }];
+  })) as WorkLine['edges'];
+};
+
 export const legacyItemToWorkLine = (item: any, index = 0): WorkLine => {
   const line: WorkLine = {
     id: stableId(item, index),
@@ -69,7 +95,7 @@ export const legacyItemToWorkLine = (item: any, index = 0): WorkLine => {
     total: 0,
     notes: asText(item?.notes),
     sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index,
-    taxRate: numberValue(item?.taxRate),
+    taxRate: optionalNumber(item?.taxRate),
     taxNature: asText(item?.taxNature).toUpperCase(),
     materialId: item?.materialId == null || item.materialId === '' ? undefined : String(item.materialId),
     materialNameSnapshot: asText(item?.materialNameSnapshot || item?.materialName),
@@ -110,7 +136,7 @@ export const normalizeWorkLine = (raw: any, index = 0): WorkLine => {
     edges: type === 'surface' ? normalizeEdges(raw?.edges, lengthCm, widthCm) : undefined,
     notes: asText(raw?.notes),
     sortOrder: Number.isFinite(Number(raw?.sortOrder)) ? Number(raw.sortOrder) : index,
-    taxRate: numberValue(raw?.taxRate),
+    taxRate: optionalNumber(raw?.taxRate),
     taxNature: asText(raw?.taxNature).toUpperCase(),
     importSource: raw?.importSource as ImportSource | undefined,
   };

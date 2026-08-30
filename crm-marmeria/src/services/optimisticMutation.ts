@@ -6,6 +6,12 @@ const spreadable = (value: unknown): Record<string, unknown> => (
     : {}
 );
 
+export const stripOptimisticMetadata = <T>(value: T): T => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const { _queued: _ignored, ...rest } = value as Record<string, unknown>;
+  return rest as T;
+};
+
 export const mutationResourceId = (url: string, data?: unknown): string => {
   if (data && typeof data === 'object' && !Array.isArray(data) && (data as any).id != null) {
     return String((data as any).id);
@@ -16,6 +22,21 @@ export const mutationResourceId = (url: string, data?: unknown): string => {
     return String(segments[lastIndex - 1]);
   }
   return String(segments[lastIndex] || '');
+};
+
+export const mutationExpectedVersion = (
+  current: unknown,
+  requested?: unknown,
+): number | undefined | null => {
+  const currentData = spreadable(current);
+  const requestedData = spreadable(requested);
+  const explicit = requestedData.expectedVersion ?? requestedData.version;
+  if (explicit != null && explicit !== '' && Number.isInteger(Number(explicit))) return Number(explicit);
+  if (currentData._queued === true) return undefined;
+  if (currentData.version != null && currentData.version !== '' && Number.isInteger(Number(currentData.version))) {
+    return Number(currentData.version);
+  }
+  return null;
 };
 
 export const buildOptimisticMutation = (url: string, data?: unknown) => ({

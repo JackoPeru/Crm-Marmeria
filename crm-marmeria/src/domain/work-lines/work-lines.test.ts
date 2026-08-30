@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { calculateWorkLine, roundMoney, summarizeWorkLines } from './calculations';
 import { copyWorkLines, mergeImportedWorkLines } from './import';
-import { createWorkLine, legacyItemToWorkLine, normalizeWorkLines } from './normalize';
+import {
+  createWorkLine,
+  legacyItemToWorkLine,
+  normalizeWorkLines,
+  resizeSurfaceEdges,
+  workLinesToDocumentItems,
+} from './normalize';
 import { validateWorkLines } from './validation';
 
 describe('WorkLine calculations', () => {
@@ -38,6 +44,7 @@ describe('WorkLine calculations', () => {
     const line = legacyItemToWorkLine({ description: 'Vecchia voce', quantity: 2, unitPrice: 12.5 });
     expect(line.type).toBe('manual');
     expect(line.lengthCm).toBeUndefined();
+    expect(line.taxRate).toBeUndefined();
     expect(line.total).toBe(25);
   });
 
@@ -62,6 +69,17 @@ describe('WorkLine calculations', () => {
     expect(saved.unitPrice).toBe(50);
     expect(copied.unitPrice).toBe(50);
   });
+
+  it('usa la nuova lunghezza in centimetri dopo un ridimensionamento', () => {
+    const line = normalizeWorkLines([{
+      type: 'surface', quantity: 1, lengthCm: 200, widthCm: 50, unitPrice: 0,
+      edges: { front: { active: true, lengthCm: 200, lengthMeters: 2, unitPrice: 10 } },
+    }])[0];
+    const edges = resizeSurfaceEdges(line, { lengthCm: 300 });
+    const resized = normalizeWorkLines([{ ...line, lengthCm: 300, edges }])[0];
+    expect(resized.edges?.front?.lengthMeters).toBeUndefined();
+    expect(calculateWorkLine(resized).edgeCost).toBe(30);
+  });
 });
 
 describe('WorkLine compatibility and import', () => {
@@ -73,6 +91,19 @@ describe('WorkLine compatibility and import', () => {
     expect(copy[0].id).not.toBe(source[0].id);
     expect(copy[0].importSource).toMatchObject({ sourceType: 'quote', sourceId: 'q-1', sourceVersion: 4 });
     expect(source[0].description).toBe('A');
+  });
+
+  it('usa IVA 22% quando una riga importata da preventivo diventa fattura', () => {
+    const source = normalizeWorkLines([{ id: 'a', type: 'manual', description: 'A', quantity: 1, unitPrice: 100, taxRate: 0 }]);
+    const imported = copyWorkLines(source, 'quote', 'q-iva', 1);
+    expect(imported[0].taxRate).toBeUndefined();
+    expect(workLinesToDocumentItems(imported, true, [])).toMatchObject([{ taxRate: 22, taxNature: '' }]);
+  });
+
+  it('preserva IVA 0% esplicita su una fattura non importata', () => {
+    const invoiceLine = normalizeWorkLines([{ id: 'zero', type: 'manual', description: 'Esente', quantity: 1, unitPrice: 100, taxRate: 0, taxNature: 'N4' }]);
+    expect(workLinesToDocumentItems(invoiceLine, true, [{ taxRate: 0, taxNature: 'N4' }]))
+      .toMatchObject([{ taxRate: 0, taxNature: 'N4' }]);
   });
 
   it('mantiene separati catalogo lineare e materiale nel round-trip', () => {
