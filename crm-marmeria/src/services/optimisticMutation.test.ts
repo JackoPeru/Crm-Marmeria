@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildOptimisticMutation,
   mergeOptimisticEntity,
+  mutationExpectedVersion,
   mutationResourceId,
 } from './optimisticMutation';
 
@@ -33,5 +34,12 @@ describe('optimistic offline mutations', () => {
       status: 'Completato',
       _queued: true,
     });
+  });
+
+  it('does not require a server version for an entity created offline', () => {
+    expect(mutationExpectedVersion({ id: 'local-1', _queued: true })).toBeUndefined();
+    expect(mutationExpectedVersion({ id: 'server-1', version: 7 })).toBe(7);
+    expect(mutationExpectedVersion({ id: 'server-1', version: 7 }, { expectedVersion: 8 })).toBe(8);
+    expect(mutationExpectedVersion({ id: 'missing' })).toBeNull();
   });
 });
