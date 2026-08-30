@@ -15,8 +15,8 @@ export const numberValue = (value: unknown): number => parseLocaleNumber(value);
 
 const edgeLengthMeters = (edge: EdgeSelection | undefined): number => {
   if (!edge) return 0;
-  if (edge.lengthMeters != null) return numberValue(edge.lengthMeters);
-  return numberValue(edge.lengthCm) / 100;
+  if (edge.lengthCm != null) return numberValue(edge.lengthCm) / 100;
+  return numberValue(edge.lengthMeters);
 };
 
 const edgeUnitPrice = (edge: EdgeSelection | undefined): number => (
