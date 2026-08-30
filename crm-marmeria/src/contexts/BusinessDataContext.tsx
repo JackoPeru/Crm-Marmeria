@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
+import { mutationExpectedVersion } from '../services/optimisticMutation';
 import { observeServerScope, stableServerKey } from '../utils/serverScope';
 import { useAuth } from './AuthContext';
 import { parseLocaleNumber } from '../utils/numbers';
@@ -172,9 +173,10 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
   useEffect(() => {
     const realtime = (event: Event) => {
       const detail = (event as CustomEvent<any>).detail;
-      const collection = String(detail?.event || '').split('.')[0] as CollectionName;
+      const eventName = String(detail?.event || '');
+      const collection = eventName.split('.')[0] as CollectionName;
       if (!['projects', 'quotes', 'invoices'].includes(collection)) {
-        if (detail?.event === 'database.restored') void refresh();
+        if (detail?.event === 'database.restored' || eventName.startsWith('payments.')) void refresh();
         return;
       }
       if (!can(collection, 'view')) return;
@@ -243,8 +245,8 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     }
     const collections = { projects, quotes, invoices };
     const current = collections[collection].find((item) => item.id === String(id));
-    const expectedVersion = data.version ?? current?.version;
-    if (!Number.isInteger(Number(expectedVersion))) {
+    const expectedVersion = mutationExpectedVersion(current, data);
+    if (expectedVersion === null) {
       toast.error('Versione non disponibile. Ricarica i dati prima di modificare.');
       return false;
     }
@@ -252,7 +254,7 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     try {
       const response = await apiClient.put(`/${collection}/${String(id)}`, {
         ...data,
-        expectedVersion,
+        ...(expectedVersion === undefined ? {} : { expectedVersion }),
       });
       if (scopeRef.current !== targetScope) return false;
       const updated = normalizeEntity({ ...current, ...response.data, id: String(id) });
@@ -281,15 +283,16 @@ export const BusinessDataProvider: React.FC<{ children: ReactNode }> = ({ childr
     }
     const collections = { projects, quotes, invoices };
     const current = collections[collection].find((item) => item.id === String(id));
-    if (!Number.isInteger(Number(current?.version))) {
+    const expectedVersion = mutationExpectedVersion(current);
+    if (expectedVersion === null) {
       toast.error('Versione non disponibile. Ricarica i dati prima di eliminare.');
       return false;
     }
     const targetScope = scope;
     try {
-      const response = await apiClient.delete(`/${collection}/${String(id)}`, {
-        headers: { 'If-Match': String(current?.version) },
-      });
+      const response = await apiClient.delete(`/${collection}/${String(id)}`, expectedVersion === undefined
+        ? undefined
+        : { headers: { 'If-Match': String(expectedVersion) } });
       if (scopeRef.current !== targetScope) return false;
       setters[collection]((items) => {
         const next = items.filter((item) => item.id !== String(id));
