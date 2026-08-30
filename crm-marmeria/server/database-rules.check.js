@@ -161,8 +161,11 @@ const run = () => {
     const firstPayment = db.create('payment', {
       id: 'payment-1', clientId: client.id, invoiceId: payable.id, date: '2026-08-30', amount: 50,
     }, user, 'payment-1').item;
+    const invoiceAfterFirstPayment = db.get('invoice', payable.id);
     assert.strictEqual(firstPayment.amount, 50);
-    assert.strictEqual(db.get('invoice', payable.id).status, 'Pagata Parzialmente');
+    assert.strictEqual(invoiceAfterFirstPayment.status, 'Pagata Parzialmente');
+    assert(invoiceAfterFirstPayment.version > payable.version, 'Lo stato pagamento deve incrementare la versione fattura');
+    assert(db.listAudit({ type: 'invoice', id: payable.id }).some((entry) => entry.action === 'update'), 'La sincronizzazione dello stato fattura deve essere auditata');
 
     expectStatus(() => db.create('payment', {
       id: 'payment-over', clientId: client.id, invoiceId: payable.id, date: '2026-08-30', amount: 80,
@@ -171,8 +174,10 @@ const run = () => {
     const finalPayment = db.create('payment', {
       id: 'payment-2', clientId: client.id, invoiceId: payable.id, date: '2026-08-30', amount: 72,
     }, user, 'payment-2').item;
+    const invoiceAfterFinalPayment = db.get('invoice', payable.id);
     assert.strictEqual(finalPayment.amount, 72);
-    assert.strictEqual(db.get('invoice', payable.id).status, 'Pagata');
+    assert.strictEqual(invoiceAfterFinalPayment.status, 'Pagata');
+    assert(invoiceAfterFinalPayment.version > invoiceAfterFirstPayment.version, 'Il saldo deve produrre una nuova versione fattura');
 
     expectStatus(() => db.update('invoice', payable.id, {
       workLines: [{ ...line(22), unitPrice: 10 }],
@@ -182,8 +187,11 @@ const run = () => {
     expectStatus(() => db.delete('client', client.id, client.version, user, 'delete-client'), 409, 'utilizzato');
     expectStatus(() => db.delete('invoice', payable.id, db.get('invoice', payable.id).version, user, 'delete-invoice'), 409, 'incass');
 
+    const invoiceVersionBeforeDeletePayment = db.get('invoice', payable.id).version;
     db.delete('payment', finalPayment.id, finalPayment.version, user, 'delete-payment-2');
-    assert.strictEqual(db.get('invoice', payable.id).status, 'Pagata Parzialmente');
+    const invoiceAfterDeletePayment = db.get('invoice', payable.id);
+    assert.strictEqual(invoiceAfterDeletePayment.status, 'Pagata Parzialmente');
+    assert(invoiceAfterDeletePayment.version > invoiceVersionBeforeDeletePayment, 'La rimozione di un incasso deve versionare la fattura');
   } finally {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
