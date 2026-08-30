@@ -121,6 +121,15 @@ const validateInboundRelations = (db, type, payload) => {
   }
 
   if (type === 'quote') {
+    const linkedProjects = db.list('project').filter((item) => String(item.quoteId || '') === id);
+    for (const project of linkedProjects) {
+      if (relationClientId(project) && relationClientId(project) !== clientId) {
+        conflict('Un progetto collegato appartiene a un cliente diverso');
+      }
+      if (!sameOptionalId(payload.projectId, project.id)) {
+        conflict('Il preventivo è collegato a un progetto diverso');
+      }
+    }
     const linkedInvoices = db.list('invoice').filter((item) => String(item.quoteId || '') === id);
     for (const invoice of linkedInvoices) {
       if (relationClientId(invoice) && relationClientId(invoice) !== clientId) {
@@ -155,6 +164,13 @@ const validateRelations = (db, type, payload, { paymentId = null } = {}) => {
   if (type === 'project') {
     const clientId = relationClientId(payload);
     if (clientId) getRequired(db, 'client', clientId, 'Cliente del progetto');
+    if (payload.quoteId) {
+      const quote = getRequired(db, 'quote', payload.quoteId, 'Preventivo del progetto');
+      assertSameClient(quote, clientId, 'Il preventivo selezionato');
+      if (quote.projectId && text(payload.id) && String(quote.projectId) !== String(payload.id)) {
+        conflict('Il preventivo è già collegato a un altro progetto');
+      }
+    }
     validateInboundRelations(db, type, payload);
     return;
   }
@@ -166,6 +182,9 @@ const validateRelations = (db, type, payload, { paymentId = null } = {}) => {
     if (payload.projectId) {
       const project = getRequired(db, 'project', payload.projectId, 'Progetto del preventivo');
       assertSameClient(project, clientId, 'Il progetto selezionato');
+      if (project.quoteId && text(payload.id) && String(project.quoteId) !== String(payload.id)) {
+        conflict('Il progetto è già collegato a un altro preventivo');
+      }
     }
     validateInboundRelations(db, type, payload);
     return;
@@ -257,6 +276,7 @@ const assertDeletable = (db, type, id) => {
     add('invoice', 'projectId', 'fatture');
     add('payment', 'projectId', 'incassi');
   } else if (type === 'quote') {
+    add('project', 'quoteId', 'progetti');
     add('invoice', 'quoteId', 'fatture');
   } else if (type === 'invoice') {
     add('payment', 'invoiceId', 'incassi');
