@@ -3,6 +3,7 @@ const core = require('./database-core');
 const roundMoney = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 const asId = (value) => value == null || value === '' ? '' : String(value);
 const clone = (value) => JSON.parse(JSON.stringify(value ?? null));
+const entityTypeOf = (item) => asId(item?.entityType || item?.type);
 const IMPORTED_INVOICE_SOURCES = new Set(['quote', 'project']);
 const STRONG_REFERENCE_FIELDS = {
   client: ['clientId', 'customerId'],
@@ -295,18 +296,22 @@ class CrmDatabase extends core.CrmDatabase {
 
     return this.withTransaction(() => {
       const result = super.importHistory(operations, user, operationId);
-      for (const item of result.imported || []) this.validateReferences(item.type, item);
+      for (const item of result.imported || []) this.validateReferences(entityTypeOf(item), item);
 
       const invoiceIds = new Set();
       for (const item of result.imported || []) {
-        if (item.type === 'invoice') invoiceIds.add(asId(item.id));
-        if (item.type === 'payment' && item.invoiceId) invoiceIds.add(asId(item.invoiceId));
+        const type = entityTypeOf(item);
+        if (type === 'invoice') invoiceIds.add(asId(item.id));
+        if (type === 'payment' && item.invoiceId) invoiceIds.add(asId(item.invoiceId));
       }
       for (const invoiceId of invoiceIds) this.syncInvoicePaymentStatus(invoiceId, user);
 
       const finalResult = {
         ...result,
-        imported: (result.imported || []).map((item) => super.get(item.type, item.id) || item),
+        imported: (result.imported || []).map((item) => {
+          const type = entityTypeOf(item);
+          return super.get(type, item.id) || item;
+        }),
       };
       this.storeOperation(operationId, finalResult);
       return finalResult;
