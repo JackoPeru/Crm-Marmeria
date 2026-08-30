@@ -4,6 +4,22 @@ const roundMoney = (value) => Math.round((Number(value || 0) + Number.EPSILON) *
 const asId = (value) => value == null || value === '' ? '' : String(value);
 const clone = (value) => JSON.parse(JSON.stringify(value ?? null));
 const IMPORTED_INVOICE_SOURCES = new Set(['quote', 'project']);
+const STRONG_REFERENCE_FIELDS = {
+  client: ['clientId', 'customerId'],
+  supplier: ['supplierId'],
+  project: ['projectId'],
+  quote: ['quoteId'],
+  invoice: ['invoiceId'],
+  material: ['materialId'],
+};
+const REFERENCE_LABELS = {
+  client: 'Cliente',
+  supplier: 'Fornitore',
+  project: 'Progetto',
+  quote: 'Preventivo',
+  invoice: 'Fattura',
+  material: 'Materiale',
+};
 
 const conflict = (message) => {
   const error = new Error(message);
@@ -166,15 +182,25 @@ class CrmDatabase extends core.CrmDatabase {
   }
 
   validateReferences(type, payload, { currentPaymentId = '' } = {}) {
-    const clientId = this.clientIdOf(payload);
-    if (['project', 'quote', 'invoice', 'payment', 'service_case', 'message_draft'].includes(type) && clientId) {
-      if (!super.get('client', clientId)) throw conflict('Cliente collegato non trovato');
+    const clientIds = [...new Set(
+      STRONG_REFERENCE_FIELDS.client.map((field) => asId(payload?.[field])).filter(Boolean),
+    )];
+    if (clientIds.length > 1) throw conflict('I riferimenti cliente non sono coerenti');
+
+    for (const [targetType, fields] of Object.entries(STRONG_REFERENCE_FIELDS)) {
+      for (const field of fields) {
+        const referenceId = asId(payload?.[field]);
+        if (!referenceId) continue;
+        if (!super.get(targetType, referenceId)) {
+          throw conflict(`${REFERENCE_LABELS[targetType]} collegato non trovato`);
+        }
+      }
     }
 
+    const clientId = this.clientIdOf(payload);
     const projectId = asId(payload?.projectId);
     if (projectId) {
       const project = super.get('project', projectId);
-      if (!project) throw conflict('Progetto collegato non trovato');
       const projectClientId = this.clientIdOf(project);
       if (clientId && projectClientId && clientId !== projectClientId) {
         throw conflict('Il progetto selezionato appartiene a un altro cliente');
@@ -184,7 +210,6 @@ class CrmDatabase extends core.CrmDatabase {
     const quoteId = asId(payload?.quoteId);
     if (quoteId) {
       const quote = super.get('quote', quoteId);
-      if (!quote) throw conflict('Preventivo collegato non trovato');
       const quoteClientId = this.clientIdOf(quote);
       if (clientId && quoteClientId && clientId !== quoteClientId) {
         throw conflict('Il preventivo selezionato appartiene a un altro cliente');
@@ -194,17 +219,18 @@ class CrmDatabase extends core.CrmDatabase {
       }
     }
 
-    if (type === 'payment') {
-      const invoiceId = asId(payload.invoiceId);
-      if (!invoiceId) return;
+    const invoiceId = asId(payload?.invoiceId);
+    if (invoiceId) {
       const invoice = super.get('invoice', invoiceId);
-      if (!invoice) throw conflict('Fattura dell’incasso non trovata');
-      if (clientId && this.clientIdOf(invoice) !== clientId) {
+      if (clientId && this.clientIdOf(invoice) && this.clientIdOf(invoice) !== clientId) {
         throw conflict('La fattura selezionata non appartiene al cliente');
       }
       if (projectId && asId(invoice.projectId) && projectId !== asId(invoice.projectId)) {
-        throw conflict('L’incasso non appartiene al progetto della fattura');
+        throw conflict('Il record non appartiene al progetto della fattura');
       }
+    }
+
+    if (type === 'payment' && invoiceId) {
       const summary = this.paymentSummary(invoiceId, currentPaymentId);
       const amount = roundMoney(payload.amount);
       if (summary && amount > summary.remaining + 0.005) {
@@ -227,26 +253,13 @@ class CrmDatabase extends core.CrmDatabase {
 
   deletionBlocker(type, id) {
     const target = asId(id);
-    const references = {
-      client: [
-        ['project', (item) => this.clientIdOf(item) === target],
-        ['quote', (item) => this.clientIdOf(item) === target],
-        ['invoice', (item) => this.clientIdOf(item) === target],
-        ['payment', (item) => asId(item.clientId) === target],
-        ['service_case', (item) => asId(item.clientId) === target],
-        ['message_draft', (item) => asId(item.clientId) === target],
-      ],
-      project: [
-        ['quote', (item) => asId(item.projectId) === target],
-        ['invoice', (item) => asId(item.projectId) === target],
-        ['payment', (item) => asId(item.projectId) === target],
-      ],
-      quote: [['invoice', (item) => asId(item.quoteId) === target]],
-      invoice: [['payment', (item) => asId(item.invoiceId) === target]],
-    }[type] || [];
-
-    for (const [relatedType, predicate] of references) {
-      if (super.list(relatedType).some(predicate)) return relatedType;
+    const fields = STRONG_REFERENCE_FIELDS[type] || [];
+    if (!target || !fields.length) return '';
+    for (const relatedType of core.ENTITY_TYPES) {
+      const referenced = super.list(relatedType).some((item) => (
+        fields.some((field) => asId(item?.[field]) === target)
+      ));
+      if (referenced) return relatedType;
     }
     return '';
   }
