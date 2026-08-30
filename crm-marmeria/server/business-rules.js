@@ -67,10 +67,10 @@ const prepareWorkLines = (lines) => Array.isArray(lines) ? lines.map((line) => (
 const invoiceLineTax = (item, line) => {
   const itemNature = text(item?.taxNature).toUpperCase();
   const lineNature = text(line?.taxNature).toUpperCase();
-  const nature = itemNature || lineNature;
   const itemRate = hasOwn(item, 'taxRate') ? numeric(item.taxRate) : null;
   const lineRate = hasOwn(line, 'taxRate') ? numeric(line.taxRate) : null;
-  if (nature) return { taxRate: itemRate ?? lineRate ?? 0, taxNature: nature };
+  if (itemNature) return { taxRate: itemRate ?? 0, taxNature: itemNature };
+  if (lineNature) return { taxRate: lineRate ?? 0, taxNature: lineNature };
   if (itemRate != null && itemRate > 0) return { taxRate: itemRate, taxNature: '' };
   if (lineRate != null && lineRate > 0) return { taxRate: lineRate, taxNature: '' };
   return { taxRate: 22, taxNature: '' };
@@ -225,6 +225,7 @@ const installDatabaseRules = (DatabaseClass = CrmDatabase) => {
   const originalNormalize = prototype.normalizeData;
 
   const normalizedCandidate = (db, type, input) => originalNormalize.call(db, type, prepareMutationInput(type, input));
+  const replayExists = (db, operationId) => Boolean(operationId && db.getOperation(operationId));
 
   const syncInvoiceStatus = (db, invoiceId, user) => {
     if (!invoiceId) return null;
@@ -236,6 +237,7 @@ const installDatabaseRules = (DatabaseClass = CrmDatabase) => {
   };
 
   prototype.create = function createWithBusinessRules(type, input, user, operationId) {
+    if (replayExists(this, operationId)) return originalCreate.call(this, type, input, user, operationId);
     const prepared = prepareMutationInput(type, input);
     const normalized = normalizedCandidate(this, type, prepared);
     validateRelations(this, type, normalized);
@@ -246,6 +248,7 @@ const installDatabaseRules = (DatabaseClass = CrmDatabase) => {
   };
 
   prototype.update = function updateWithBusinessRules(type, id, input, expectedVersion, user, operationId) {
+    if (replayExists(this, operationId)) return originalUpdate.call(this, type, id, input, expectedVersion, user, operationId);
     const current = this.get(type, id);
     if (!current) return originalUpdate.call(this, type, id, input, expectedVersion, user, operationId);
     const prepared = prepareMutationInput(type, input);
@@ -263,6 +266,7 @@ const installDatabaseRules = (DatabaseClass = CrmDatabase) => {
   };
 
   prototype.delete = function deleteWithBusinessRules(type, id, expectedVersion, user, operationId) {
+    if (replayExists(this, operationId)) return originalDelete.call(this, type, id, expectedVersion, user, operationId);
     const current = this.get(type, id);
     if (current) assertDeletable(this, type, id);
     const result = originalDelete.call(this, type, id, expectedVersion, user, operationId);
