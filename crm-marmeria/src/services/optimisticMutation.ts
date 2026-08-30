@@ -6,6 +6,12 @@ const spreadable = (value: unknown): Record<string, unknown> => (
     : {}
 );
 
+export const stripOptimisticMetadata = <T>(value: T): T => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const { _queued: _ignored, ...rest } = value as Record<string, unknown>;
+  return rest as T;
+};
+
 export const mutationResourceId = (url: string, data?: unknown): string => {
   if (data && typeof data === 'object' && !Array.isArray(data) && (data as any).id != null) {
     return String((data as any).id);
