@@ -167,9 +167,8 @@ class CrmDatabase extends core.CrmDatabase {
 
   validateReferences(type, payload, { currentPaymentId = '' } = {}) {
     const clientId = this.clientIdOf(payload);
-    const strictClientId = type === 'project' ? asId(payload?.clientId) : clientId;
-    if (['project', 'quote', 'invoice', 'payment', 'service_case', 'message_draft'].includes(type) && strictClientId) {
-      if (!super.get('client', strictClientId)) throw conflict('Cliente collegato non trovato');
+    if (['project', 'quote', 'invoice', 'payment', 'service_case', 'message_draft'].includes(type) && clientId) {
+      if (!super.get('client', clientId)) throw conflict('Cliente collegato non trovato');
     }
 
     const projectId = asId(payload?.projectId);
