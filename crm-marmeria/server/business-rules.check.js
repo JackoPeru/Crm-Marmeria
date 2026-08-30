@@ -163,7 +163,7 @@ async function run() {
     const forcedOpen = await requestJson(baseUrl, `/invoices/${invoice.body.id}`, {
       method: 'PUT',
       headers: { ...auth, 'If-Match': String(paidInvoice.body.version) },
-      body: JSON.stringify({ status: 'Non Pagata' }),
+      body: JSON.stringify({ status: 'Non Pagata', dueDate: paidInvoice.body.dueDate }),
     });
     assert.equal(forcedOpen.response.status, 200);
     assert.equal(forcedOpen.body.status, 'Pagata', 'Lo stato manuale non deve contraddire gli incassi');
