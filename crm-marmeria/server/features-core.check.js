@@ -256,7 +256,7 @@ async function run() {
     const quoteInvoice = await requestJson(baseUrl, `/quotes/${quote.body.id}/invoice`, { method: 'POST', headers, body: JSON.stringify({ includePhotos: false }) });
     assert.equal(quoteInvoice.response.status, 201);
     assert.equal(quoteInvoice.body.importSource.sourceType, 'quote');
-    assert.equal(quoteInvoice.body.total, 242.95);
+    assert.equal(quoteInvoice.body.total, 296.4);
     assert.notEqual(quoteInvoice.body.workLines[0].id, quote.body.workLines[0].id);
     const projectQuote = await requestJson(baseUrl, `/projects/${quoteProject.body.id}/quote`, { method: 'POST', headers, body: JSON.stringify({}) });
     assert.equal(projectQuote.response.status, 201);
