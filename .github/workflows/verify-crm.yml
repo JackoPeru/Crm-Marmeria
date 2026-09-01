@@ -112,6 +112,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Verify dependency bootstrap without Python
+        shell: pwsh
+        run: |
+          $env:NODE_GYP_FORCE_PYTHON = Join-Path $env:RUNNER_TEMP 'missing-python.exe'
+          node crm-marmeria/verifica-dipendenze.cjs --force
+
       - name: Verify single Windows launcher
         shell: pwsh
         run: |

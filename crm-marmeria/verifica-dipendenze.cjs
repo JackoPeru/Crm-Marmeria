@@ -34,7 +34,7 @@ const dependencySets = [
   {
     label: 'server LAN',
     directory: path.join(root, 'server'),
-    ignoreScripts: false,
+    ignoreScripts: true,
     runtimeModules: [
       'bcrypt',
       'better-sqlite3',
