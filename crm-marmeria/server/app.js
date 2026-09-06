@@ -1184,6 +1184,7 @@ async function createCrmServer(options = {}) {
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,
     tlsFingerprint: options.tls?.fingerprint || null,
+    caFingerprint: options.tls?.caFingerprint || null,
     port: server.address()?.port || requestedPort,
     timestamp: new Date().toISOString(),
     websocket: true,
@@ -1192,6 +1193,36 @@ async function createCrmServer(options = {}) {
     setupRequired: !hasActiveAdmin(),
   }));
   app.head('/api/health', (req, res) => res.sendStatus(200));
+
+  // CA locale: materiale pubblico (solo chiave pubblica). Serve ai client per
+  // fidarsi dell'HTTPS senza avvisi dopo una installazione una tantum.
+  app.get('/api/tls/ca', (req, res) => {
+    const caCert = options.tls?.caCert;
+    if (!caCert) return res.status(404).json({ error: 'CA locale non configurata' });
+    res.setHeader('Content-Type', 'application/x-x509-ca-cert');
+    res.setHeader('Content-Disposition', 'attachment; filename="crm-marmeria-ca.crt"');
+    return res.send(Buffer.isBuffer(caCert) ? caCert : Buffer.from(caCert));
+  });
+
+  app.get('/sicurezza', (req, res) => {
+    if (!options.tls) return res.status(404).send('HTTPS non attivo su questo server.');
+    const caFingerprint = options.tls.caFingerprint || 'non disponibile';
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(`<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CRM Marmeria - Connessione sicura</title>
+<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;line-height:1.5}code{background:#f0f0f0;padding:.1rem .3rem;border-radius:4px}.card{border:1px solid #ddd;border-radius:8px;padding:1rem;margin:1rem 0}a.btn{display:inline-block;background:#1a73e8;color:#fff;padding:.6rem 1.2rem;border-radius:6px;text-decoration:none;margin:.5rem 0}</style>
+</head><body>
+<h1>Connessione sicura al CRM</h1>
+<p>Questo server usa HTTPS con una <strong>autorità locale</strong> creata in ufficio: i dati viaggiano cifrati, ma il browser la segnala come sconosciuta finché non la installi <strong>una sola volta</strong> su ogni dispositivo.</p>
+<div class="card"><strong>Impronta CA da verificare:</strong><br><code>${caFingerprint}</code></div>
+<p><a class="btn" href="/api/tls/ca">Scarica la CA (crm-marmeria-ca.crt)</a></p>
+<div class="card"><strong>PC server (Windows):</strong> nessun passaggio, il file <code>avvia-server-lan.cmd</code> installa la CA da solo.</div>
+<div class="card"><strong>Altri PC Windows:</strong> doppio clic sul file scaricato &gt; Installa certificato &gt; Computer locale &gt; Autorità di certificazione radice attendibili. Verifica che l'impronta coincida con quella sopra.</div>
+<div class="card"><strong>Android:</strong> Impostazioni &gt; Sicurezza &gt; Installa da archivio (certificato CA), seleziona il file. <strong>iPhone/iPad:</strong> apri il file, installa il profilo, poi Impostazioni &gt; Generali &gt; Info &gt; Attendibilità certificati &gt; abilita la CA.</div>
+<p>Dopo l'installazione l'avviso sparisce per sempre (salvo cambio CA, circa ogni 10 anni).</p>
+</body></html>`);
+  });
 
   app.post('/api/auth/login', async (req, res) => {
     try {

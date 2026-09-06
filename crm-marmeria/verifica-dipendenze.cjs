@@ -42,7 +42,7 @@ const dependencySets = [
       'express',
       'jsonwebtoken',
       'multer',
-      'selfsigned',
+      'node-forge',
       'ws',
     ],
   },

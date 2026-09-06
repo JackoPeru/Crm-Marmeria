@@ -172,13 +172,36 @@ if %ERRORLEVEL% EQU 3 (
 exit /b %ERRORLEVEL%
 
 :show_address
+call :install_ca
 echo.
 echo CRM pronto. Apri da telefono o browser:
 for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique"`) do echo   https://%%I:%PORT%
-echo HTTPS locale: certificato self-signed; verifica l'impronta al primo accesso.
+echo HTTPS locale: certificato firmato dalla CA locale CRM.
+echo Altri dispositivi: apri la pagina /sicurezza del server una volta per fidarti della CA.
 echo Login iniziale: admin / marmo2026!
 echo Puoi chiudere questa finestra: server resta attivo.
 pause
+exit /b 0
+
+:install_ca
+set "CRM_CA_FILE=%ROOT%server\data\.tls\ca-cert.pem"
+set "CRM_CA_WAIT=0"
+:install_ca_wait
+if exist "%CRM_CA_FILE%" goto install_ca_store
+if %CRM_CA_WAIT% GEQ 30 goto install_ca_missing
+timeout /t 2 /nobreak >nul
+set /a CRM_CA_WAIT+=1
+goto install_ca_wait
+:install_ca_missing
+echo [AVVISO] CA locale non ancora pronta: completala da /sicurezza.
+exit /b 0
+:install_ca_store
+certutil -addstore -f "Root" "%CRM_CA_FILE%" >nul 2>&1
+if errorlevel 1 goto install_ca_failed
+echo [OK] Autorita locale CRM fidata su questo PC: niente piu avvisi HTTPS.
+exit /b 0
+:install_ca_failed
+echo [AVVISO] Installazione automatica CA non riuscita: usa /sicurezza dal browser.
 exit /b 0
 
 :addresses_check
