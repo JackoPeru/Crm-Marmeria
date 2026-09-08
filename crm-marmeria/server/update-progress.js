@@ -14,7 +14,8 @@ const readUpdateProgress = (dataDir) => {
   }
 };
 
-const writeUpdateProgress = (dataDir, { stage, percent, message, error = false }) => {
+const writeUpdateProgress = (dataDir, { stage, percent, message, error = false, updateId } = {}) => {
+  const current = readUpdateProgress(dataDir);
   const safePercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
   const value = {
     stage: String(stage || 'unknown'),
@@ -22,6 +23,11 @@ const writeUpdateProgress = (dataDir, { stage, percent, message, error = false }
     message: String(message || ''),
     error: Boolean(error),
     updatedAt: new Date().toISOString(),
+    ...(updateId !== undefined
+      ? { updateId: String(updateId || '') }
+      : current?.updateId
+        ? { updateId: current.updateId }
+        : {}),
   };
   fs.mkdirSync(dataDir, { recursive: true });
   const target = statusPath(dataDir);
