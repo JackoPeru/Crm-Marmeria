@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const statusPath = (dataDir) => path.join(dataDir, '.update-progress.json');
+const transactionPath = (dataDir) => path.join(dataDir, '.update-transaction.json');
 
 const readUpdateProgress = (dataDir) => {
   try {
@@ -32,6 +33,14 @@ const writeUpdateProgress = (dataDir, { stage, percent, message, error = false }
 
 const markUpdateReady = (dataDir) => {
   const current = readUpdateProgress(dataDir);
+  if (fs.existsSync(transactionPath(dataDir))) {
+    if (current?.stage === 'healthcheck' && current.percent === 95 && !current.error) return current;
+    return writeUpdateProgress(dataDir, {
+      stage: 'healthcheck',
+      percent: 95,
+      message: 'Server aggiornato avviato. Verifico che resti operativo...',
+    });
+  }
   if (!current || current.stage === 'ready') return current;
   return writeUpdateProgress(dataDir, {
     stage: 'ready',
