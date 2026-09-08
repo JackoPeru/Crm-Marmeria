@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createServerUpdateService } = require('./self-update');
+const { createServerUpdateService, createTargetPreflight, createRuntimeRunnerLauncher } = require('./self-update');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, content = '') => {
@@ -94,6 +94,51 @@ const main = async () => {
     assert.equal(transaction.branch, 'main');
     assert.equal(transaction.state, 'prepared');
     assert.equal(fs.existsSync(path.join(local, 'crm-marmeria', '.crm-update-pending')), false);
+
+    const preflightSeen = [];
+    const preflight = createTargetPreflight({
+      verifyTarget: async ({ applicationRoot: candidateRoot, targetRevision: candidateRevision }) => {
+        preflightSeen.push(candidateRevision);
+        assert.equal(fs.readFileSync(path.join(candidateRoot, 'README.md'), 'utf8'), 'versione aggiornata\n');
+        assert.notEqual(path.resolve(candidateRoot), path.resolve(path.join(local, 'crm-marmeria')));
+      },
+    });
+    await preflight({
+      applicationRoot: path.join(local, 'crm-marmeria'),
+      repositoryRoot: local,
+      targetRevision,
+    });
+    assert.deepEqual(preflightSeen, [targetRevision]);
+    assert.equal(
+      fs.readFileSync(path.join(local, 'crm-marmeria', 'README.md'), 'utf8'),
+      'versione iniziale\n',
+      'Il preflight non deve modificare l’installazione live',
+    );
+    assert.equal(
+      git(['worktree', 'list', '--porcelain'], local).includes('crm-update-preflight-'),
+      false,
+      'La worktree temporanea del preflight deve essere sempre rimossa',
+    );
+
+    const spawned = [];
+    const runtimeLauncher = createRuntimeRunnerLauncher({
+      spawnRunner: (node, args, options) => {
+        spawned.push({ node, args, options });
+        return { pid: 7654, unref() {} };
+      },
+    });
+    runtimeLauncher({
+      applicationRoot: path.join(local, 'crm-marmeria'),
+      dataDir: path.join(local, 'crm-marmeria', 'server', 'data'),
+      transactionPath,
+    });
+    const runtimeDir = path.join(local, 'crm-marmeria', 'server', 'data', '.update-runtime');
+    assert.equal(fs.existsSync(path.join(runtimeDir, 'update-runner.cjs')), true);
+    assert.equal(fs.existsSync(path.join(runtimeDir, 'update-progress.js')), true);
+    assert.equal(spawned.length, 1);
+    assert.equal(spawned[0].args[0], path.join(runtimeDir, 'update-runner.cjs'));
+    assert.equal(spawned[0].args[1], transactionPath);
+    assert.equal(spawned[0].options.detached, true);
 
     write(path.join(local, 'uncommitted.txt'), 'unsafe\n');
     await assert.rejects(updater.applyServerUpdate(), (error) => error.status === 409);
