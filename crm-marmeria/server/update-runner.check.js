@@ -52,6 +52,7 @@ const fixture = () => {
     applicationRoot: app,
     repositoryRoot: repo,
     parentPid: 999999,
+    launcherPid: 555555,
   }));
   return { root, repo, app, data, transaction, from, target };
 };
@@ -64,14 +65,17 @@ const assertData = (fx) => assert.equal(
 const runSuccess = async () => {
   const fx = fixture();
   try {
+    const legacyStops = [];
     const result = await runUpdateTransaction(fx.transaction, {
       waitForParentExit: async () => {},
+      stopLegacyLauncher: async ({ launcherPid }) => legacyStops.push(launcherPid),
       verifyApplication: async () => {},
       startServer: async ({ expectedVersion }) => ({ pid: 100, expectedVersion }),
       waitForHealthy: async ({ expectedVersion }) => expectedVersion === '2.0.0',
       stopServer: async () => {},
     });
     assert.equal(result.updated, true);
+    assert.deepEqual(legacyStops, [555555]);
     assert.equal(git(['rev-parse', 'HEAD'], fx.repo), fx.target);
     assert.equal(fs.readFileSync(path.join(fx.app, 'README.md'), 'utf8'), 'NEW\n');
     assertData(fx);
@@ -91,6 +95,7 @@ const runRollback = async (failureMode) => {
     const stopped = [];
     const result = await runUpdateTransaction(fx.transaction, {
       waitForParentExit: async () => {},
+      stopLegacyLauncher: async () => {},
       verifyApplication: async ({ revision }) => {
         if (failureMode === 'verify' && revision === fx.target) throw new Error('target invalid');
       },
