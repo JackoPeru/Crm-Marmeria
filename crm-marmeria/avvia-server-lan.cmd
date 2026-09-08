@@ -91,8 +91,15 @@ if not defined NPM_CMD exit /b 1
 call :set_server_environment
 
 :serve_loop
+if exist "server\data\.update-transaction.json" (
+  echo Aggiornamento transazionale in corso. Cedo il controllo al supervisore...
+  exit /b 0
+)
 call :port_status
-if %ERRORLEVEL% EQU 0 exit /b 0
+if %ERRORLEVEL% EQU 0 (
+  timeout /t 2 /nobreak >nul
+  goto serve_loop
+)
 if %ERRORLEVEL% EQU 2 exit /b 1
 if exist ".crm-update-pending" (
   echo Aggiornamento trovato. Verifico dipendenze...
@@ -103,7 +110,6 @@ if exist ".crm-update-pending" (
 )
 call "%NODE_EXE%" server\index.js
 call :port_status
-if %ERRORLEVEL% EQU 0 exit /b 0
 if %ERRORLEVEL% EQU 2 exit /b 1
 
 :serve_retry
