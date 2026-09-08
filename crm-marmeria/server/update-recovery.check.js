@@ -14,13 +14,16 @@ const main = async () => {
     fs.writeFileSync(transactionPath, '{"state":"applying"}\n', 'utf8');
     fs.writeFileSync(
       path.join(runtimeDir, 'update-runner.cjs'),
-      "module.exports={runUpdateTransaction:async p=>{require('fs').writeFileSync(p+'.recovered','ok')}};\n",
+      "module.exports={runUpdateTransaction:async p=>{const fs=require('fs');const tx=JSON.parse(fs.readFileSync(p,'utf8'));fs.writeFileSync(p+'.recovered',JSON.stringify({parentPid:tx.parentPid,launcherPid:tx.launcherPid}))}};\n",
       'utf8',
     );
 
-    const recovered = await recoverPendingUpdate({ dataDir, env: {} });
+    const recovered = await recoverPendingUpdate({ dataDir, env: {}, currentParentPid: 777 });
     assert.equal(recovered, true);
-    assert.equal(fs.readFileSync(`${transactionPath}.recovered`, 'utf8'), 'ok');
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(`${transactionPath}.recovered`, 'utf8')),
+      { parentPid: 0, launcherPid: 777 },
+    );
 
     fs.rmSync(`${transactionPath}.recovered`);
     const bypassed = await recoverPendingUpdate({
