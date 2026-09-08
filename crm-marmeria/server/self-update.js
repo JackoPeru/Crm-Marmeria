@@ -8,6 +8,25 @@ const { readUpdateProgress, writeUpdateProgress } = require('./update-progress')
 const REPOSITORY = 'github.com/jackoperu/crm-marmeria';
 const defaultApplicationRoot = path.resolve(__dirname, '..');
 
+const resolveNpmBuildInvocation = ({
+  platform = process.platform,
+  execPath = process.execPath,
+  npmExecPath = process.env.npm_execpath,
+  existsSync = fs.existsSync,
+} = {}) => {
+  if (platform !== 'win32') return { command: 'npm', args: ['run', 'build'] };
+  const candidates = [
+    npmExecPath,
+    path.join(path.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter(Boolean);
+  const npmCli = candidates.find((candidate) => existsSync(candidate));
+  if (npmCli) return { command: execPath, args: [npmCli, 'run', 'build'] };
+  return {
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', 'npm.cmd run build'],
+  };
+};
+
 const execCommand = (command, args, { cwd, timeout = 10 * 60 * 1000 } = {}) => new Promise((resolve, reject) => {
   execFile(command, args, { cwd, timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
     if (error) {
@@ -21,8 +40,8 @@ const execCommand = (command, args, { cwd, timeout = 10 * 60 * 1000 } = {}) => n
 
 const defaultVerifyTarget = async ({ applicationRoot }) => {
   await execCommand(process.execPath, ['verifica-dipendenze.cjs', '--force'], { cwd: applicationRoot });
-  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  await execCommand(npmCommand, ['run', 'build'], { cwd: applicationRoot });
+  const build = resolveNpmBuildInvocation();
+  await execCommand(build.command, build.args, { cwd: applicationRoot });
 };
 
 const createTargetPreflight = ({ verifyTarget = defaultVerifyTarget } = {}) => async ({
@@ -300,4 +319,5 @@ module.exports = {
   createServerUpdateService,
   createTargetPreflight,
   createRuntimeRunnerLauncher,
+  resolveNpmBuildInvocation,
 };
