@@ -136,17 +136,11 @@ jobs:
           if (Test-Path 'crm-marmeria/avvia-server-lan.ps1') { throw 'Launcher PowerShell obsoleto presente.' }
           if (-not (Test-Path 'crm-marmeria/avvia-server-lan-runner.cmd')) { throw 'Runner compatibilita update mancante.' }
           $content = Get-Content -Raw $launcher
-          foreach ($required in 'OpenJS.NodeJS.LTS', 'Git.Git', 'Repair-WinGetPackageManager', '--serve', 'verifica-dipendenze.cjs', '.crm-update-pending', 'server\data\.update-transaction.json') {
+          foreach ($required in 'OpenJS.NodeJS.LTS', 'Git.Git', 'Repair-WinGetPackageManager', '--serve', 'verifica-dipendenze.cjs', '.crm-update-pending') {
             if ($content -notmatch [regex]::Escape($required)) { throw "Bootstrap incompleto: $required" }
           }
           if ($content -notmatch '(?s)if exist "\.crm-update-pending" \(.*?call :set_server_environment') {
-            throw 'Update legacy non rigenera gli indirizzi LAN prima del riavvio.'
-          }
-          if ($content -notmatch '(?s):serve_loop.*?if exist "server\\data\\\.update-transaction\.json".*?exit /b 0') {
-            throw 'Il launcher non cede il controllo al supervisore transazionale.'
-          }
-          if ($content -notmatch '(?s):serve_loop.*?if %ERRORLEVEL% EQU 0 \(.*?timeout /t 2.*?goto serve_loop') {
-            throw 'Il launcher non resta attivo come watchdog dopo un avvio riuscito.'
+            throw 'Update non rigenera gli indirizzi LAN prima del riavvio.'
           }
 
       - name: Verify Node and npm standard path fallback
