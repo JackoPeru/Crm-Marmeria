@@ -73,6 +73,9 @@ jobs:
       - name: Verify update progress handshake
         run: node server/update-progress.check.js
 
+      - name: Verify external update supervisor
+        run: node server/update-runner.check.js
+
       - name: Verify calendar, Word templates and quote attachments
         run: node server/features.check.js
 
