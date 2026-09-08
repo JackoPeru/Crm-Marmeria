@@ -169,6 +169,7 @@ const defaultStartServer = async ({ applicationRoot }) => {
       ...process.env,
       CRM_WEB_ROOT: path.join(applicationRoot, 'dist'),
       CRM_ENABLE_TLS: process.env.CRM_ENABLE_TLS || '1',
+      CRM_UPDATE_CHILD: '1',
     },
   });
   child.once('error', () => {
