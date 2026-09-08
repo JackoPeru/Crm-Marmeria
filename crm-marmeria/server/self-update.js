@@ -1,4 +1,5 @@
 const { execFile, spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -195,7 +196,8 @@ const createServerUpdateService = ({
     };
   };
 
-  const applyServerUpdate = async () => {
+  const applyServerUpdate = async ({ updateId = '' } = {}) => {
+    const resolvedUpdateId = String(updateId || crypto.randomUUID());
     if (updateInProgress) throw updateError('Aggiornamento già in corso.', 409);
     const previousTransaction = readTransaction();
     if (previousTransaction && !['completed', 'rolled_back'].includes(String(previousTransaction.state || ''))) {
@@ -205,7 +207,7 @@ const createServerUpdateService = ({
     updateInProgress = true;
     let transactionCreated = false;
     try {
-      writeUpdateProgress(dataDir, { stage: 'checking', percent: 5, message: 'Controllo aggiornamento su GitHub...' });
+      writeUpdateProgress(dataDir, { stage: 'checking', percent: 5, message: 'Controllo aggiornamento su GitHub...', updateId: resolvedUpdateId });
       await workingTreeIsSafe();
       const status = await checkForServerUpdate({ refresh: true });
       if (!status.updateAvailable) {
