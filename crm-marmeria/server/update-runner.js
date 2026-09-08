@@ -174,7 +174,7 @@ const defaultStartServer = async ({ applicationRoot }) => {
   child.once('error', () => {
     try { fs.closeSync(output); } catch { /* best effort */ }
   });
-  if (typeof child.unref === 'function') child.unref();
+  try { fs.closeSync(output); } catch { /* best effort */ }
   return child;
 };
 
@@ -225,21 +225,31 @@ const defaultWaitForHealthy = async ({
   return false;
 };
 
-const defaultStartWatchdog = async ({ applicationRoot }) => {
+const defaultStartWatchdog = async ({ applicationRoot, server }) => {
   if (process.platform !== 'win32') return null;
+  if (!server || typeof server.once !== 'function') {
+    throw new Error('Processo server non monitorabile dal watchdog.');
+  }
   const command = process.env.ComSpec || 'cmd.exe';
   const launcher = path.join(applicationRoot, 'avvia-server-lan.cmd');
-  if (!fs.existsSync(launcher)) throw new Error('Launcher aggiornato non trovato dopo update.');
-  const child = spawn(command, ['/d', '/c', launcher, '--serve'], {
-    cwd: applicationRoot,
-    detached: true,
-    windowsHide: true,
-    stdio: 'ignore',
-    env: { ...process.env },
+  if (!fs.existsSync(launcher)) throw new Error('Launcher CRM non trovato dopo update.');
+
+  server.once('exit', () => {
+    try {
+      const child = spawn(command, ['/d', '/c', launcher, '--serve'], {
+        cwd: applicationRoot,
+        detached: true,
+        windowsHide: true,
+        stdio: 'ignore',
+        env: { ...process.env },
+      });
+      if (typeof child.unref === 'function') child.unref();
+    } catch {
+      // Il server è già terminato: il successivo avvio manuale del launcher
+      // resta comunque disponibile. Non riapriamo qui la transazione conclusa.
+    }
   });
-  if (!child || !Number(child.pid)) throw new Error('Riavvio watchdog CRM non riuscito.');
-  if (typeof child.unref === 'function') child.unref();
-  return { pid: child.pid };
+  return { watchingPid: server.pid };
 };
 
 const defaultStopServer = async (server) => {
@@ -319,14 +329,14 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
     return server;
   };
 
-  await waitForParentExit({
-    parentPid: transaction.parentPid,
+  await stopLegacyLauncher({
+    launcherPid: transaction.launcherPid,
     applicationRoot,
     repositoryRoot,
     transaction,
   });
-  await stopLegacyLauncher({
-    launcherPid: transaction.launcherPid,
+  await waitForParentExit({
+    parentPid: transaction.parentPid,
     applicationRoot,
     repositoryRoot,
     transaction,
@@ -380,10 +390,17 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
         toRevision: transaction.fromRevision,
       });
       await verifyRevision(transaction.fromRevision, 'Verifico la versione precedente ripristinata...');
-      await startAndCheck(transaction.fromRevision, 'Riavvio la versione precedente...');
+      const rollbackServer = await startAndCheck(transaction.fromRevision, 'Riavvio la versione precedente...');
 
       fs.rmSync(transactionPath, { force: true });
       fs.rmSync(marker, { force: true });
+      await startWatchdog({
+        applicationRoot,
+        repositoryRoot,
+        revision: transaction.fromRevision,
+        server: rollbackServer,
+        transaction,
+      });
       writeUpdateProgress(dataDir, {
         stage: 'rolled_back',
         percent: 100,
