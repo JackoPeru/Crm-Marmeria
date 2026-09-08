@@ -52,10 +52,22 @@ const main = async () => {
     commit(publisher, 'update');
     git(['push'], publisher);
 
+    const initialRevision = git(['rev-parse', 'HEAD'], local);
+    const targetRevision = git(['rev-parse', 'HEAD'], publisher);
+    const launches = [];
+    let preflightCalls = 0;
     const updater = createServerUpdateService({
       applicationRoot: path.join(local, 'crm-marmeria'),
       repositoryRoot: local,
       repository: remote,
+      preflightUpdate: async ({ targetRevision: target }) => {
+        preflightCalls += 1;
+        assert.equal(target, targetRevision);
+      },
+      launchUpdateRunner: (payload) => {
+        launches.push(payload);
+        return { pid: 4321 };
+      },
     });
     const available = await updater.checkForServerUpdate({ refresh: true });
     assert.equal(available.updateAvailable, true);
@@ -64,13 +76,25 @@ const main = async () => {
     const applied = await updater.applyServerUpdate();
     assert.equal(applied.updated, true);
     assert.equal(applied.restartRequired, true);
-    assert.equal(applied.updateAvailable, false);
-    assert.equal(applied.progress.percent, 35);
-    assert.equal(fs.existsSync(path.join(local, 'crm-marmeria', '.crm-update-pending')), true);
-    assert.equal(git(['rev-list', '--count', 'HEAD..origin/main'], local), '0');
-    assert.equal(fs.readFileSync(path.join(local, 'crm-marmeria', 'server', 'data', 'users.json'), 'utf8'), '[{"username":"cliente-reale"}]\n');
+    assert.equal(preflightCalls, 1, 'L’update deve essere validato prima di fermare il server');
+    assert.equal(launches.length, 1, 'Deve partire un runner esterno prima dello shutdown');
+    assert.equal(
+      fs.readFileSync(path.join(local, 'crm-marmeria', 'README.md'), 'utf8'),
+      'versione iniziale\n',
+      'Il processo server non deve modificare il codice che sta eseguendo',
+    );
+    assert.equal(git(['rev-parse', 'HEAD'], local), initialRevision, 'HEAD resta sulla versione attiva fino al riavvio');
+    assert.equal(git(['rev-list', '--count', 'HEAD..origin/main'], local), '1');
 
-    fs.rmSync(path.join(local, 'crm-marmeria', '.crm-update-pending'));
+    const transactionPath = path.join(local, 'crm-marmeria', 'server', 'data', '.update-transaction.json');
+    assert.equal(fs.existsSync(transactionPath), true, 'La transazione deve essere persistita prima dello shutdown');
+    const transaction = JSON.parse(fs.readFileSync(transactionPath, 'utf8'));
+    assert.equal(transaction.fromRevision, initialRevision);
+    assert.equal(transaction.targetRevision, targetRevision);
+    assert.equal(transaction.branch, 'main');
+    assert.equal(transaction.state, 'prepared');
+    assert.equal(fs.existsSync(path.join(local, 'crm-marmeria', '.crm-update-pending')), false);
+
     write(path.join(local, 'uncommitted.txt'), 'unsafe\n');
     await assert.rejects(updater.applyServerUpdate(), (error) => error.status === 409);
 
