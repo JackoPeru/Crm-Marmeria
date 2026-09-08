@@ -16,6 +16,7 @@ const MUTATING = new Set(['post', 'put', 'patch', 'delete']);
 const ENTITY_CREATE = /^\/(clients|orders|projects|materials|edge-types|linear-items|quotes|invoices|appointments)\/?$/;
 const QUEUEABLE_MUTATION = /^\/(clients|orders|projects|materials|edge-types|linear-items|quotes|invoices|appointments)(\/[^/?]+(\/status)?)?\/?$/;
 const AUTH_ACTION = /^\/auth\/(login|logout)\/?$/;
+const SYSTEM_UPDATE = /^\/system\/update(?:\/|$)/;
 const SERVER_ID_KEY = 'crm_server_id';
 const SERVER_URL_KEY = 'crm_server_identity_url';
 const DATA_EPOCH_KEY = 'crm_data_epoch';
@@ -215,7 +216,7 @@ class ApiClient {
           }
         }
 
-        if (isNetworkFailure) {
+        if (isNetworkFailure && !SYSTEM_UPDATE.test(url)) {
           const previous = Number(localStorage.getItem('lastNetworkErrorToast') || 0);
           if (Date.now() - previous > 30000) {
             toast.error('Server centrale non raggiungibile. I dati disponibili restano consultabili.', {
