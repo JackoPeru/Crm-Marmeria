@@ -67,9 +67,13 @@ const runSuccess = async () => {
   try {
     const legacyStops = [];
     const watchdogs = [];
+    const handoffOrder = [];
     const result = await runUpdateTransaction(fx.transaction, {
-      waitForParentExit: async () => {},
-      stopLegacyLauncher: async ({ launcherPid }) => legacyStops.push(launcherPid),
+      waitForParentExit: async () => handoffOrder.push('server-exit'),
+      stopLegacyLauncher: async ({ launcherPid }) => {
+        legacyStops.push(launcherPid);
+        handoffOrder.push('launcher-stop');
+      },
       startWatchdog: async ({ revision }) => watchdogs.push(revision),
       verifyApplication: async () => {},
       startServer: async ({ expectedVersion }) => ({ pid: 100, expectedVersion }),
@@ -78,6 +82,7 @@ const runSuccess = async () => {
     });
     assert.equal(result.updated, true);
     assert.deepEqual(legacyStops, [555555]);
+    assert.deepEqual(handoffOrder, ['launcher-stop', 'server-exit']);
     assert.deepEqual(watchdogs, [fx.target]);
     assert.equal(git(['rev-parse', 'HEAD'], fx.repo), fx.target);
     assert.equal(fs.readFileSync(path.join(fx.app, 'README.md'), 'utf8'), 'NEW\n');
@@ -96,10 +101,11 @@ const runRollback = async (failureMode) => {
   try {
     const starts = [];
     const stopped = [];
+    const watchdogs = [];
     const result = await runUpdateTransaction(fx.transaction, {
       waitForParentExit: async () => {},
       stopLegacyLauncher: async () => {},
-      startWatchdog: async () => { throw new Error('watchdog non deve partire dopo rollback'); },
+      startWatchdog: async ({ revision }) => watchdogs.push(revision),
       verifyApplication: async ({ revision }) => {
         if (failureMode === 'verify' && revision === fx.target) throw new Error('target invalid');
       },
@@ -118,6 +124,7 @@ const runRollback = async (failureMode) => {
     const progress = JSON.parse(fs.readFileSync(path.join(fx.data, '.update-progress.json'), 'utf8'));
     assert.equal(progress.stage, 'rolled_back');
     assert.equal(progress.error, true);
+    assert.deepEqual(watchdogs, [fx.from]);
     if (failureMode === 'verify') assert.deepEqual(starts, ['1.0.0']);
     if (failureMode === 'health') {
       assert.deepEqual(starts, ['2.0.0', '1.0.0']);
