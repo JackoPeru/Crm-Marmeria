@@ -28,6 +28,8 @@ const main = async () => {
     fs.mkdirSync(applicationRoot, { recursive: true });
     write(path.join(applicationRoot, 'package.json'), '{"version":"1.0.0"}\n');
     write(path.join(applicationRoot, 'server', 'data', 'users.json'), '[{"username":"admin"}]\n');
+    write(path.join(applicationRoot, 'server', 'update-runner.js'), "'use strict';\n");
+    write(path.join(applicationRoot, 'server', 'update-progress.js'), "'use strict';\n");
     write(path.join(applicationRoot, 'README.md'), 'versione iniziale\n');
     git(['init', '-b', 'main'], seed);
     git(['config', 'user.email', 'test@crm.local'], seed);
