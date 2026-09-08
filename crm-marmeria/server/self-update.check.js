@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createServerUpdateService, createTargetPreflight, createRuntimeRunnerLauncher } = require('./self-update');
+const { createServerUpdateService, createTargetPreflight, createRuntimeRunnerLauncher, resolveNpmBuildInvocation } = require('./self-update');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, content = '') => {
@@ -14,6 +14,19 @@ const commit = (cwd, message) => {
   git(['add', '.'], cwd);
   git(['commit', '-m', message], cwd);
 };
+
+const windowsNpm = resolveNpmBuildInvocation({
+  platform: 'win32',
+  execPath: 'C:\\Program Files\\nodejs\\node.exe',
+  npmExecPath: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js',
+  existsSync: () => true,
+});
+assert.equal(windowsNpm.command, 'C:\\Program Files\\nodejs\\node.exe');
+assert.deepEqual(windowsNpm.args, [
+  'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js',
+  'run',
+  'build',
+]);
 
 const main = async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-self-update-'));
