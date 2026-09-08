@@ -66,9 +66,11 @@ const runSuccess = async () => {
   const fx = fixture();
   try {
     const legacyStops = [];
+    const watchdogs = [];
     const result = await runUpdateTransaction(fx.transaction, {
       waitForParentExit: async () => {},
       stopLegacyLauncher: async ({ launcherPid }) => legacyStops.push(launcherPid),
+      startWatchdog: async ({ revision }) => watchdogs.push(revision),
       verifyApplication: async () => {},
       startServer: async ({ expectedVersion }) => ({ pid: 100, expectedVersion }),
       waitForHealthy: async ({ expectedVersion }) => expectedVersion === '2.0.0',
@@ -76,6 +78,7 @@ const runSuccess = async () => {
     });
     assert.equal(result.updated, true);
     assert.deepEqual(legacyStops, [555555]);
+    assert.deepEqual(watchdogs, [fx.target]);
     assert.equal(git(['rev-parse', 'HEAD'], fx.repo), fx.target);
     assert.equal(fs.readFileSync(path.join(fx.app, 'README.md'), 'utf8'), 'NEW\n');
     assertData(fx);
@@ -96,6 +99,7 @@ const runRollback = async (failureMode) => {
     const result = await runUpdateTransaction(fx.transaction, {
       waitForParentExit: async () => {},
       stopLegacyLauncher: async () => {},
+      startWatchdog: async () => { throw new Error('watchdog non deve partire dopo rollback'); },
       verifyApplication: async ({ revision }) => {
         if (failureMode === 'verify' && revision === fx.target) throw new Error('target invalid');
       },
