@@ -10,6 +10,19 @@ try {
   const prepared = writeUpdateProgress(dataDir, { stage: 'build', percent: 82.8, message: 'Compilo interfaccia' });
   assert.equal(prepared.percent, 83);
   assert.equal(readUpdateProgress(dataDir).stage, 'build');
+
+  fs.writeFileSync(
+    path.join(dataDir, '.update-transaction.json'),
+    JSON.stringify({ state: 'applying', targetRevision: 'target-sha' }),
+    'utf8',
+  );
+  writeUpdateProgress(dataDir, { stage: 'restarting', percent: 92, message: 'Avvio nuova versione' });
+  const healthcheck = markUpdateReady(dataDir);
+  assert.equal(healthcheck.stage, 'healthcheck', 'Il server avviato non deve segnare 100% finché il supervisore non verifica /api/health');
+  assert.equal(healthcheck.percent, 95);
+  assert.equal(healthcheck.error, false);
+
+  fs.rmSync(path.join(dataDir, '.update-transaction.json'));
   const ready = markUpdateReady(dataDir);
   assert.equal(ready.percent, 100);
   assert.equal(ready.stage, 'ready');
