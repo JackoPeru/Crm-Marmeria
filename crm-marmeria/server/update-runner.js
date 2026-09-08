@@ -101,6 +101,21 @@ const materializeRevision = async ({
   await git(repositoryRoot, ['reset', '--mixed', toRevision], 120000);
 };
 
+const defaultStopLegacyLauncher = async ({ launcherPid }) => {
+  const pid = Number(launcherPid);
+  if (process.platform !== 'win32' || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return;
+  const script = [
+    `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue`,
+    "if (-not $p) { exit 0 }",
+    "if ($p.Name -ne 'cmd.exe') { exit 0 }",
+    "if ($p.CommandLine -notmatch 'avvia-server-lan\\.cmd.*--serve') { exit 0 }",
+    `Stop-Process -Id ${pid} -Force -ErrorAction Stop`,
+  ].join('; ');
+  await execFilePromise('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    timeout: 10000,
+  });
+};
+
 const defaultWaitForParentExit = async ({ parentPid, timeoutMs = 30000 }) => {
   const deadline = Date.now() + timeoutMs;
   while (Number(parentPid) > 0 && Date.now() < deadline) {
@@ -147,7 +162,7 @@ const defaultStartServer = async ({ applicationRoot }) => {
   const output = fs.openSync(path.join(logDir, 'server-update-start.log'), 'a');
   const child = spawn(process.execPath, [path.join(applicationRoot, 'server', 'index.js')], {
     cwd: applicationRoot,
-    detached: false,
+    detached: true,
     windowsHide: true,
     stdio: ['ignore', output, output],
     env: {
@@ -159,6 +174,7 @@ const defaultStartServer = async ({ applicationRoot }) => {
   child.once('error', () => {
     try { fs.closeSync(output); } catch { /* best effort */ }
   });
+  if (typeof child.unref === 'function') child.unref();
   return child;
 };
 
@@ -231,6 +247,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
   const dataDir = path.dirname(path.resolve(transactionPath));
   const marker = path.join(applicationRoot, '.crm-update-pending');
   const waitForParentExit = dependencies.waitForParentExit || defaultWaitForParentExit;
+  const stopLegacyLauncher = dependencies.stopLegacyLauncher || defaultStopLegacyLauncher;
   const verifyApplication = dependencies.verifyApplication || defaultVerifyApplication;
   const startServer = dependencies.startServer || defaultStartServer;
   const waitForHealthy = dependencies.waitForHealthy || defaultWaitForHealthy;
@@ -286,6 +303,12 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
 
   await waitForParentExit({
     parentPid: transaction.parentPid,
+    applicationRoot,
+    repositoryRoot,
+    transaction,
+  });
+  await stopLegacyLauncher({
+    launcherPid: transaction.launcherPid,
     applicationRoot,
     repositoryRoot,
     transaction,
@@ -368,4 +391,22 @@ module.exports = {
   runUpdateTransaction,
   materializeRevision,
   defaultWaitForHealthy,
+  defaultStopLegacyLauncher,
 };
+
+if (require.main === module) {
+  const transactionPath = process.argv[2];
+  if (!transactionPath) {
+    console.error('Percorso transazione aggiornamento mancante.');
+    process.exitCode = 2;
+  } else {
+    runUpdateTransaction(transactionPath)
+      .then((result) => {
+        console.log(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error('Aggiornamento transazionale fallito:', error);
+        process.exitCode = 1;
+      });
+  }
+}
