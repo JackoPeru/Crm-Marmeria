@@ -2524,7 +2524,7 @@ async function createCrmServer(options = {}) {
   });
   app.post('/api/system/update/apply', authenticateToken, requirePermission('settings.edit'), async (req, res) => {
     try {
-      const result = await applyServerUpdate();
+      const result = await applyServerUpdate({ updateId: req.body?.updateId });
       res.json(result);
       if (result.restartRequired && typeof options.onUpdateApplied === 'function') {
         setTimeout(() => options.onUpdateApplied(), 750);

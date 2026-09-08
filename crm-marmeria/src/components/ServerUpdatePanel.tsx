@@ -1,6 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Download, RefreshCw, Rocket, Server } from 'lucide-react';
 import { apiClient } from '../services/api';
+import {
+  progressMatchesAttempt,
+  updateAttemptExpired,
+  updateAttemptOutcome,
+  type UpdateAttempt,
+} from '../domain/server-update/tracking';
+import { createId } from '../utils/ids';
 
 type UpdateProgress = {
   stage: string;
@@ -8,6 +15,7 @@ type UpdateProgress = {
   message: string;
   error?: boolean;
   updatedAt: string;
+  updateId?: string;
 };
 
 type ServerUpdateStatus = {
@@ -22,58 +30,111 @@ type ServerUpdateStatus = {
 
 const UPDATE_TRACKING_KEY = 'crm-marmeria-update-in-progress';
 const errorMessage = (error: any) => error?.response?.data?.error || error?.message || 'Operazione non riuscita';
-const initialTracking = () => typeof window !== 'undefined' && window.sessionStorage.getItem(UPDATE_TRACKING_KEY) === '1';
+
+const initialTracking = (): UpdateAttempt | null => {
+  if (typeof window === 'undefined') return null;
+  const raw = window.sessionStorage.getItem(UPDATE_TRACKING_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const startedAt = Number(parsed?.startedAt);
+    if (!parsed?.id || !Number.isFinite(startedAt)) throw new Error('tracking legacy');
+    return {
+      id: String(parsed.id),
+      startedAt,
+      confirmed: Boolean(parsed.confirmed),
+    };
+  } catch {
+    window.sessionStorage.removeItem(UPDATE_TRACKING_KEY);
+    return null;
+  }
+};
 
 const ServerUpdatePanel: React.FC = () => {
   const [status, setStatus] = useState<ServerUpdateStatus | null>(null);
   const [message, setMessage] = useState('Controllo disponibilità aggiornamenti...');
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [trackingUpdate, setTrackingUpdate] = useState(initialTracking);
+  const [trackingAttempt, setTrackingAttempt] = useState<UpdateAttempt | null>(initialTracking);
+  const trackingUpdate = Boolean(trackingAttempt);
 
-  const finishTracking = () => {
+  const persistTracking = useCallback((attempt: UpdateAttempt) => {
+    window.sessionStorage.setItem(UPDATE_TRACKING_KEY, JSON.stringify(attempt));
+    setTrackingAttempt(attempt);
+  }, []);
+
+  const finishTracking = useCallback(() => {
     window.sessionStorage.removeItem(UPDATE_TRACKING_KEY);
-    setTrackingUpdate(false);
+    setTrackingAttempt(null);
     setBusy(false);
-  };
+  }, []);
 
   const load = useCallback(async (refresh = false) => {
     try {
       const response = refresh
-        ? await apiClient.post('/system/update/check')
+        ? await apiClient.post('/system/update/check', undefined, { timeout: 90_000 })
         : await apiClient.get('/system/update/status');
       const next = response.data as ServerUpdateStatus;
       const progress = next.progress || null;
       setStatus(next);
 
-      if (trackingUpdate && progress?.error) {
-        finishTracking();
-        setError(true);
-        setMessage(progress.message || 'Aggiornamento non riuscito.');
-        return;
-      }
-      if (trackingUpdate && progress?.stage === 'ready' && progress.percent === 100) {
-        finishTracking();
+      if (trackingAttempt) {
+        const outcome = updateAttemptOutcome(progress, trackingAttempt);
+        if (outcome !== 'waiting' && !trackingAttempt.confirmed) {
+          persistTracking({ ...trackingAttempt, confirmed: true });
+        }
+
+        if (outcome === 'error') {
+          finishTracking();
+          setError(true);
+          setMessage(progress?.message || 'Aggiornamento non riuscito.');
+          return;
+        }
+        if (outcome === 'ready') {
+          finishTracking();
+          setError(false);
+          setMessage(progress?.message || 'Aggiornamento completato. CRM pronto per l’uso.');
+          return;
+        }
+        if (outcome === 'active') {
+          setError(false);
+          setMessage(progress?.message || 'Aggiornamento in corso...');
+          return;
+        }
+        if (updateAttemptExpired(trackingAttempt)) {
+          finishTracking();
+          setError(true);
+          setMessage('Il server non ha confermato l’avvio dell’aggiornamento. Controlla di nuovo gli aggiornamenti.');
+          return;
+        }
+
         setError(false);
-        setMessage(progress.message || 'Aggiornamento completato. CRM pronto per l’uso.');
+        setMessage('Richiesta aggiornamento inviata. Attendo conferma dal server...');
         return;
       }
+
       setError(false);
-      setMessage(trackingUpdate && progress
-        ? progress.message
-        : next.updateAvailable
-          ? `Disponibili ${next.pendingCommits} aggiornamenti del server.`
-          : 'Server già aggiornato.');
+      setMessage(next.updateAvailable
+        ? `Disponibili ${next.pendingCommits} aggiornamenti del server.`
+        : 'Server già aggiornato.');
     } catch (requestError) {
-      if (trackingUpdate) {
+      if (trackingAttempt) {
+        if (updateAttemptExpired(trackingAttempt)) {
+          finishTracking();
+          setError(true);
+          setMessage('Il server non ha confermato l’avvio dell’aggiornamento. Controlla che sia online e riprova.');
+          return;
+        }
         setError(false);
-        setMessage('Server in riavvio. Attendo che torni operativo...');
+        setMessage(trackingAttempt.confirmed
+          ? 'Server in riavvio. Attendo che torni operativo...'
+          : 'Richiesta aggiornamento inviata. Attendo conferma dal server...');
         return;
       }
       setError(true);
       setMessage(errorMessage(requestError));
     }
-  }, [trackingUpdate]);
+  }, [finishTracking, persistTracking, trackingAttempt]);
 
   useEffect(() => {
     void load();
@@ -90,30 +151,58 @@ const ServerUpdatePanel: React.FC = () => {
   };
 
   const apply = async () => {
+    const attempt: UpdateAttempt = {
+      id: createId(),
+      startedAt: Date.now(),
+      confirmed: false,
+    };
+    persistTracking(attempt);
     setBusy(true);
     setError(false);
     setMessage('Preparo aggiornamento...');
+
     try {
-      const result = (await apiClient.post('/system/update/apply')).data as ServerUpdateStatus & { updated: boolean };
+      const result = (await apiClient.post(
+        '/system/update/apply',
+        { updateId: attempt.id },
+        { timeout: 30_000 },
+      )).data as ServerUpdateStatus & { updated: boolean };
       setStatus(result);
+
       if (!result.updated) {
+        finishTracking();
+        setError(false);
         setMessage(result.progress?.message || 'Nessun aggiornamento da installare.');
-        setBusy(false);
         return;
       }
-      window.sessionStorage.setItem(UPDATE_TRACKING_KEY, '1');
-      setTrackingUpdate(true);
-      setMessage(result.progress?.message || 'Codice aggiornato. Riavvio server...');
-    } catch (requestError) {
-      setError(true);
-      setMessage(errorMessage(requestError));
+
+      const confirmed = progressMatchesAttempt(result.progress, attempt);
+      persistTracking(confirmed ? { ...attempt, confirmed: true } : attempt);
       setBusy(false);
+      setMessage(result.progress?.message || 'Aggiornamento avviato. Attendo il riavvio del server...');
+    } catch (requestError: any) {
+      if (requestError?.response) {
+        finishTracking();
+        setError(true);
+        setMessage(errorMessage(requestError));
+        return;
+      }
+
+      // Un timeout o la perdita della connessione durante il riavvio non
+      // significa che l'update sia fallito: il polling con updateId decide
+      // l'esito usando lo stato persistito dal server.
+      setBusy(false);
+      setError(false);
+      setMessage('Richiesta inviata. Continuo a verificare lo stato dell’aggiornamento...');
     }
   };
 
-  const progress = status?.progress;
-  const showProgress = trackingUpdate || Boolean(progress && progress.stage !== 'ready');
-  const percent = Math.max(0, Math.min(100, progress?.percent || 0));
+  const progress = status?.progress || null;
+  const displayProgress = trackingAttempt
+    ? (progressMatchesAttempt(progress, trackingAttempt) ? progress : null)
+    : progress;
+  const showProgress = trackingUpdate || Boolean(displayProgress && displayProgress.stage !== 'ready');
+  const percent = Math.max(0, Math.min(100, displayProgress?.percent || 0));
 
   return (
     <section className="mb-10 p-6 bg-light-card dark:bg-dark-card text-light-text dark:text-dark-text border border-light-border dark:border-dark-border rounded-lg shadow-md">
@@ -128,7 +217,7 @@ const ServerUpdatePanel: React.FC = () => {
       {showProgress && (
         <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-900 dark:bg-indigo-950/30">
           <div className="mb-2 flex items-center justify-between gap-3 text-sm font-medium text-indigo-900 dark:text-indigo-100">
-            <span>{progress?.message || 'Avvio aggiornamento...'}</span><span>{percent}%</span>
+            <span>{displayProgress?.message || 'Richiesta aggiornamento inviata...'}</span><span>{percent}%</span>
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-indigo-200 dark:bg-indigo-900"><div className="h-full rounded-full bg-indigo-600 transition-all duration-500" style={{ width: `${percent}%` }} /></div>
           <p className="mt-2 text-xs text-indigo-800 dark:text-indigo-200">100% solo quando CRM aggiornato risponde ed è pronto per essere usato.</p>

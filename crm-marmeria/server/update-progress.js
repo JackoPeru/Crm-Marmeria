@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const statusPath = (dataDir) => path.join(dataDir, '.update-progress.json');
+const transactionPath = (dataDir) => path.join(dataDir, '.update-transaction.json');
 
 const readUpdateProgress = (dataDir) => {
   try {
@@ -13,7 +14,8 @@ const readUpdateProgress = (dataDir) => {
   }
 };
 
-const writeUpdateProgress = (dataDir, { stage, percent, message, error = false }) => {
+const writeUpdateProgress = (dataDir, { stage, percent, message, error = false, updateId } = {}) => {
+  const current = readUpdateProgress(dataDir);
   const safePercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
   const value = {
     stage: String(stage || 'unknown'),
@@ -21,6 +23,11 @@ const writeUpdateProgress = (dataDir, { stage, percent, message, error = false }
     message: String(message || ''),
     error: Boolean(error),
     updatedAt: new Date().toISOString(),
+    ...(updateId !== undefined
+      ? { updateId: String(updateId || '') }
+      : current?.updateId
+        ? { updateId: current.updateId }
+        : {}),
   };
   fs.mkdirSync(dataDir, { recursive: true });
   const target = statusPath(dataDir);
@@ -32,6 +39,14 @@ const writeUpdateProgress = (dataDir, { stage, percent, message, error = false }
 
 const markUpdateReady = (dataDir) => {
   const current = readUpdateProgress(dataDir);
+  if (fs.existsSync(transactionPath(dataDir))) {
+    if (current?.stage === 'healthcheck' && current.percent === 95 && !current.error) return current;
+    return writeUpdateProgress(dataDir, {
+      stage: 'healthcheck',
+      percent: 95,
+      message: 'Server aggiornato avviato. Verifico che resti operativo...',
+    });
+  }
   if (!current || current.stage === 'ready') return current;
   return writeUpdateProgress(dataDir, {
     stage: 'ready',
