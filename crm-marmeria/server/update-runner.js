@@ -225,6 +225,23 @@ const defaultWaitForHealthy = async ({
   return false;
 };
 
+const defaultStartWatchdog = async ({ applicationRoot }) => {
+  if (process.platform !== 'win32') return null;
+  const command = process.env.ComSpec || 'cmd.exe';
+  const launcher = path.join(applicationRoot, 'avvia-server-lan.cmd');
+  if (!fs.existsSync(launcher)) throw new Error('Launcher aggiornato non trovato dopo update.');
+  const child = spawn(command, ['/d', '/c', launcher, '--serve'], {
+    cwd: applicationRoot,
+    detached: true,
+    windowsHide: true,
+    stdio: 'ignore',
+    env: { ...process.env },
+  });
+  if (!child || !Number(child.pid)) throw new Error('Riavvio watchdog CRM non riuscito.');
+  if (typeof child.unref === 'function') child.unref();
+  return { pid: child.pid };
+};
+
 const defaultStopServer = async (server) => {
   if (!server) return;
   if (typeof server.kill === 'function') {
@@ -252,6 +269,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
   const startServer = dependencies.startServer || defaultStartServer;
   const waitForHealthy = dependencies.waitForHealthy || defaultWaitForHealthy;
   const stopServer = dependencies.stopServer || defaultStopServer;
+  const startWatchdog = dependencies.startWatchdog || defaultStartWatchdog;
   let targetServer = null;
 
   if (!isInside(repositoryRoot, applicationRoot) || !isInside(applicationRoot, dataDir)) {
@@ -330,6 +348,13 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
     updateTransaction('completed');
     fs.rmSync(transactionPath, { force: true });
     fs.rmSync(marker, { force: true });
+    await startWatchdog({
+      applicationRoot,
+      repositoryRoot,
+      revision: transaction.targetRevision,
+      server: targetServer,
+      transaction,
+    });
     writeUpdateProgress(dataDir, {
       stage: 'ready',
       percent: 100,
@@ -392,6 +417,7 @@ module.exports = {
   materializeRevision,
   defaultWaitForHealthy,
   defaultStopLegacyLauncher,
+  defaultStartWatchdog,
 };
 
 if (require.main === module) {
