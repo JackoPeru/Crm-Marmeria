@@ -7,9 +7,10 @@ const { readUpdateProgress, writeUpdateProgress, markUpdateReady } = require('./
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-update-progress-'));
 try {
   assert.equal(readUpdateProgress(dataDir), null);
-  const prepared = writeUpdateProgress(dataDir, { stage: 'build', percent: 82.8, message: 'Compilo interfaccia' });
+  const prepared = writeUpdateProgress(dataDir, { stage: 'build', percent: 82.8, message: 'Compilo interfaccia', updateId: 'update-test-1' });
   assert.equal(prepared.percent, 83);
   assert.equal(readUpdateProgress(dataDir).stage, 'build');
+  assert.equal(readUpdateProgress(dataDir).updateId, 'update-test-1');
 
   fs.writeFileSync(
     path.join(dataDir, '.update-transaction.json'),
@@ -21,11 +22,13 @@ try {
   assert.equal(healthcheck.stage, 'healthcheck', 'Il server avviato non deve segnare 100% finché il supervisore non verifica /api/health');
   assert.equal(healthcheck.percent, 95);
   assert.equal(healthcheck.error, false);
+  assert.equal(healthcheck.updateId, 'update-test-1');
 
   fs.rmSync(path.join(dataDir, '.update-transaction.json'));
   const ready = markUpdateReady(dataDir);
   assert.equal(ready.percent, 100);
   assert.equal(ready.stage, 'ready');
+  assert.equal(ready.updateId, 'update-test-1');
   console.log('UPDATE_PROGRESS_CHECK_OK');
 } finally {
   fs.rmSync(dataDir, { recursive: true, force: true });
