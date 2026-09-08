@@ -1,17 +1,106 @@
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { readUpdateProgress, writeUpdateProgress } = require('./update-progress');
 
 const REPOSITORY = 'github.com/jackoperu/crm-marmeria';
 const defaultApplicationRoot = path.resolve(__dirname, '..');
 
+const execCommand = (command, args, { cwd, timeout = 10 * 60 * 1000 } = {}) => new Promise((resolve, reject) => {
+  execFile(command, args, { cwd, timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    if (error) {
+      error.message = String(stderr || stdout || error.message || `${command} non riuscito`).trim();
+      reject(error);
+      return;
+    }
+    resolve(String(stdout || '').trim());
+  });
+});
+
+const defaultVerifyTarget = async ({ applicationRoot }) => {
+  await execCommand(process.execPath, ['verifica-dipendenze.cjs', '--force'], { cwd: applicationRoot });
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  await execCommand(npmCommand, ['run', 'build'], { cwd: applicationRoot });
+};
+
+const createTargetPreflight = ({ verifyTarget = defaultVerifyTarget } = {}) => async ({
+  applicationRoot,
+  repositoryRoot,
+  targetRevision,
+}) => {
+  const relativeApplication = path.relative(repositoryRoot, applicationRoot);
+  if (!relativeApplication || path.isAbsolute(relativeApplication) || relativeApplication.startsWith('..')) {
+    throw new Error('Percorso applicazione non valido per il preflight.');
+  }
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-update-preflight-'));
+  const worktreeRoot = path.join(temporaryRoot, 'worktree');
+  try {
+    await execCommand('git', ['worktree', 'add', '--detach', worktreeRoot, targetRevision], {
+      cwd: repositoryRoot,
+      timeout: 120000,
+    });
+    const candidateApplication = path.join(worktreeRoot, relativeApplication);
+    await verifyTarget({
+      applicationRoot: candidateApplication,
+      repositoryRoot: worktreeRoot,
+      targetRevision,
+    });
+  } finally {
+    try {
+      await execCommand('git', ['worktree', 'remove', '--force', worktreeRoot], {
+        cwd: repositoryRoot,
+        timeout: 120000,
+      });
+    } catch {
+      // Se git non ha registrato la worktree o la pulizia fallisce, rimuoviamo
+      // comunque il contenuto temporaneo senza toccare l'installazione live.
+    }
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+};
+
+const createRuntimeRunnerLauncher = ({ spawnRunner = spawn } = {}) => ({
+  applicationRoot,
+  dataDir,
+  transactionPath,
+}) => {
+  const runtimeDir = path.join(dataDir, '.update-runtime');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const runtimeRunner = path.join(runtimeDir, 'update-runner.cjs');
+  const runtimeProgress = path.join(runtimeDir, 'update-progress.js');
+  fs.copyFileSync(path.join(applicationRoot, 'server', 'update-runner.js'), runtimeRunner);
+  fs.copyFileSync(path.join(applicationRoot, 'server', 'update-progress.js'), runtimeProgress);
+
+  const logPath = path.join(dataDir, 'update-runner.log');
+  const output = fs.openSync(logPath, 'a');
+  let child;
+  try {
+    child = spawnRunner(process.execPath, [runtimeRunner, transactionPath], {
+      cwd: applicationRoot,
+      detached: true,
+      windowsHide: true,
+      stdio: ['ignore', output, output],
+      env: { ...process.env },
+    });
+  } finally {
+    try { fs.closeSync(output); } catch { /* best effort */ }
+  }
+  if (!child || !Number(child.pid)) throw new Error('Avvio supervisore aggiornamento non riuscito.');
+  if (typeof child.unref === 'function') child.unref();
+  return { pid: child.pid, runtimeRunner };
+};
+
+const defaultPreflightUpdate = createTargetPreflight();
+const defaultLaunchUpdateRunner = createRuntimeRunnerLauncher();
+
+
 const createServerUpdateService = ({
   applicationRoot = defaultApplicationRoot,
   repositoryRoot = path.resolve(applicationRoot, '..'),
   repository = REPOSITORY,
-  preflightUpdate = async () => {},
-  launchUpdateRunner = null,
+  preflightUpdate = defaultPreflightUpdate,
+  launchUpdateRunner = defaultLaunchUpdateRunner,
 } = {}) => {
   const dataDir = path.join(applicationRoot, 'server', 'data');
   const transactionPath = path.join(dataDir, '.update-transaction.json');
@@ -150,6 +239,7 @@ const createServerUpdateService = ({
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         parentPid: process.pid,
+        launcherPid: process.ppid,
       };
       atomicJson(transactionPath, transaction);
       transactionCreated = true;
@@ -206,4 +296,6 @@ const defaultService = createServerUpdateService();
 module.exports = {
   ...defaultService,
   createServerUpdateService,
+  createTargetPreflight,
+  createRuntimeRunnerLauncher,
 };
