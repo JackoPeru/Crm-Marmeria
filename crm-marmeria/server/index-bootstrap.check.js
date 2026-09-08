@@ -19,7 +19,10 @@ async function run() {
     console.warn = (...args) => warnings.push(args.join(' '));
 
     Module._load = function loadWithIndexMocks(request, parent, isMain) {
-      if (parent?.filename?.endsWith(`${path.sep}server${path.sep}index.js`)) {
+      if (
+        parent?.filename?.endsWith(`${path.sep}server${path.sep}index.js`)
+        || parent?.filename?.endsWith(`${path.sep}server${path.sep}index-server.js`)
+      ) {
         if (request === './app') {
           return {
             createCrmServer: async (options) => {
