@@ -230,9 +230,19 @@ const createServerUpdateService = ({
   const applyServerUpdate = async ({ updateId = '' } = {}) => {
     const resolvedUpdateId = String(updateId || crypto.randomUUID());
     if (updateInProgress) throw updateError('Aggiornamento già in corso.', 409);
+    const transactionExists = fs.existsSync(transactionPath);
     const previousTransaction = readTransaction();
+    if (transactionExists && !previousTransaction) {
+      throw updateError('La transazione aggiornamento esistente non è leggibile. Recovery manuale richiesto.', 409);
+    }
     if (previousTransaction && !['completed', 'rolled_back'].includes(String(previousTransaction.state || ''))) {
       throw updateError('Esiste già un aggiornamento da completare o recuperare.', 409);
+    }
+    if (previousTransaction) {
+      fs.rmSync(transactionPath, { force: true });
+      fs.rmSync(path.join(resolvedDataDir, '.update-data-backup'), { recursive: true, force: true });
+    } else if (!transactionExists) {
+      fs.rmSync(path.join(resolvedDataDir, '.update-data-backup'), { recursive: true, force: true });
     }
 
     updateInProgress = true;
