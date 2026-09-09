@@ -408,19 +408,41 @@ const defaultStartWatchdog = async ({ applicationRoot, dataDir, server, revision
   return { watchingPid: server.pid };
 };
 
-const defaultStopServer = async (server) => {
-  if (!server) return;
-  if (typeof server.kill === 'function') {
-    try { server.kill('SIGTERM'); } catch { /* best effort */ }
-    await delay(1000);
-    if (server.exitCode == null) {
-      try { server.kill('SIGKILL'); } catch { /* best effort */ }
-    }
+const waitForChildExit = (server, timeoutMs) => {
+  if (!serverProcessIsAlive(server)) return Promise.resolve(true);
+  if (!server || typeof server.once !== 'function') return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(!serverProcessIsAlive(server)), timeoutMs);
+    server.once('exit', onExit);
+    if (!serverProcessIsAlive(server)) finish(true);
+  });
+};
+
+const defaultStopServer = async (server, {
+  graceMs = 30000,
+  forceMs = 5000,
+} = {}) => {
+  if (!server || !serverProcessIsAlive(server)) return;
+  if (typeof server.kill !== 'function') {
+    try { process.kill(Number(server.pid), 'SIGTERM'); } catch { /* best effort */ }
     return;
   }
-  if (Number(server.pid) > 0) {
-    try { process.kill(Number(server.pid), 'SIGTERM'); } catch { /* best effort */ }
-  }
+
+  try { server.kill('SIGTERM'); } catch { /* best effort */ }
+  if (await waitForChildExit(server, graceMs)) return;
+
+  try { server.kill('SIGKILL'); } catch { /* best effort */ }
+  if (await waitForChildExit(server, forceMs)) return;
+
+  throw new Error('Il processo server non si è arrestato prima del rollback dati.');
 };
 
 const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
@@ -616,6 +638,8 @@ module.exports = {
   watchdogEnvironment,
   defaultStopLegacyLauncher,
   defaultStartWatchdog,
+  waitForChildExit,
+  defaultStopServer,
 };
 
 if (require.main === module) {
