@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runUpdateTransaction, healthIsValid, watchdogRestartAllowed } = require('./update-runner');
+const { runUpdateTransaction, healthIsValid, watchdogRestartAllowed, watchdogEnvironment } = require('./update-runner');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, value) => {
@@ -34,6 +34,15 @@ assert.equal(watchdogRestartAllowed({
   applicationRoot: 'C:\\crm',
   existsSync: () => false,
 }), true, 'Il watchdog deve rilanciare il server dopo un crash normale');
+
+assert.equal(
+  watchdogEnvironment({ baseEnv: { CRM_RUNTIME_REVISION: 'old-sha', KEEP: '1' }, revision: 'new-sha' }).CRM_RUNTIME_REVISION,
+  'new-sha',
+);
+assert.equal(
+  watchdogEnvironment({ baseEnv: { CRM_RUNTIME_REVISION: 'old-sha', KEEP: '1' }, revision: 'new-sha' }).KEEP,
+  '1',
+);
 
 const fixture = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-'));
