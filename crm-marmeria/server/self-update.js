@@ -125,11 +125,18 @@ const createServerUpdateService = ({
 } = {}) => {
   const resolvedDataDir = path.resolve(dataDir);
   const transactionPath = path.join(resolvedDataDir, '.update-transaction.json');
-  const runtimeDataRelative = path.relative(repositoryRoot, resolvedDataDir);
-  const runtimeDataInsideRepository = runtimeDataRelative
-    && !path.isAbsolute(runtimeDataRelative)
-    && !runtimeDataRelative.startsWith('..');
-  const runtimeDataPath = runtimeDataRelative.replace(/\\/g, '/').toLowerCase();
+  const protectedRuntimePaths = [
+    path.resolve(path.join(applicationRoot, 'server', 'data')),
+    resolvedDataDir,
+  ]
+    .filter((entry, index, items) => items.indexOf(entry) === index)
+    .map((entry) => path.relative(repositoryRoot, entry))
+    .filter((relative) => (
+      relative
+      && !path.isAbsolute(relative)
+      && !relative.startsWith('..')
+    ))
+    .map((relative) => relative.replace(/\\/g, '/').toLowerCase());
   let updateInProgress = false;
 
   const command = (args, timeout = 20000, trim = true) => new Promise((resolve, reject) => {
@@ -154,8 +161,9 @@ const createServerUpdateService = ({
 
   const isRuntimeFile = (file) => {
     const normalized = file.replace(/\\/g, '/').toLowerCase();
-    return Boolean(runtimeDataInsideRepository)
-      && (normalized === runtimeDataPath || normalized.startsWith(`${runtimeDataPath}/`));
+    return protectedRuntimePaths.some(
+      (runtimePath) => normalized === runtimePath || normalized.startsWith(`${runtimePath}/`),
+    );
   };
   const updateError = (message, status = 503) => Object.assign(new Error(message), { status });
   const atomicJson = (target, value) => {
