@@ -89,6 +89,10 @@ const start = async () => {
     serverId,
     revision: String(process.env.CRM_RUNTIME_REVISION || ''),
     isStartupReady: () => startupReady,
+    isUpdateProbationActive: () => (
+      String(process.env.CRM_UPDATE_CHILD || '') === '1'
+      && require('fs').existsSync(path.join(dataDir, '.update-transaction.json'))
+    ),
     setupSecret,
     tls: tlsIdentity,
     webRoot,
