@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runUpdateTransaction, healthIsValid } = require('./update-runner');
+const { runUpdateTransaction, healthIsValid, watchdogRestartAllowed } = require('./update-runner');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, value) => {
@@ -25,6 +25,15 @@ assert.equal(healthIsValid({
   expectedVersion: '2.0.0',
   expectedRevision: 'target-sha',
 }), false, 'Un altro processo con stessa versione ma SHA diverso non deve superare il health check');
+
+assert.equal(watchdogRestartAllowed({
+  applicationRoot: 'C:\\crm',
+  existsSync: (candidate) => candidate.endsWith('.update-transaction.json'),
+}), false, 'Il watchdog precedente non deve rilanciare il server durante un nuovo update');
+assert.equal(watchdogRestartAllowed({
+  applicationRoot: 'C:\\crm',
+  existsSync: () => false,
+}), true, 'Il watchdog deve rilanciare il server dopo un crash normale');
 
 const fixture = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-'));
