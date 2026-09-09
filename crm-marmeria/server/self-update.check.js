@@ -3,7 +3,13 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createServerUpdateService, createTargetPreflight, createRuntimeRunnerLauncher, resolveNpmBuildInvocation } = require('./self-update');
+const {
+  createServerUpdateService,
+  createTargetPreflight,
+  createRuntimeRunnerLauncher,
+  resolveNpmBuildInvocation,
+  normalizeRepositoryRemote,
+} = require('./self-update');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, content = '') => {
@@ -27,6 +33,18 @@ assert.deepEqual(windowsNpm.args, [
   'run',
   'build',
 ]);
+assert.equal(
+  normalizeRepositoryRemote('git@github.com:JackoPeru/Crm-Marmeria.git'),
+  'github.com/jackoperu/crm-marmeria',
+);
+assert.equal(
+  normalizeRepositoryRemote('https://github.com/JackoPeru/Crm-Marmeria.git'),
+  'github.com/jackoperu/crm-marmeria',
+);
+assert.notEqual(
+  normalizeRepositoryRemote('https://evil.example/github.com/jackoperu/crm-marmeria.git'),
+  'github.com/jackoperu/crm-marmeria',
+);
 
 const main = async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-self-update-'));
