@@ -163,8 +163,28 @@ const main = async () => {
     assert.equal(spawned[0].args[1], transactionPath);
     assert.equal(spawned[0].options.detached, true);
 
+    fs.rmSync(transactionPath, { force: true });
+    fs.mkdirSync(path.join(customDataDir, '.update-data-backup'), { recursive: true });
+    write(path.join(customDataDir, '.update-data-backup', 'stale.txt'), 'stale\n');
+    await updater.checkForServerUpdate();
+    assert.equal(fs.existsSync(path.join(customDataDir, '.update-data-backup')), true);
+
+    write(transactionPath, '{corrotto');
+    await assert.rejects(updater.applyServerUpdate(), (error) => error.status === 409);
+    assert.equal(
+      fs.existsSync(path.join(customDataDir, '.update-data-backup')),
+      true,
+      'Un checkpoint non deve essere eliminato se esiste una transazione illeggibile',
+    );
+    fs.rmSync(transactionPath, { force: true });
+
     write(path.join(local, 'uncommitted.txt'), 'unsafe\n');
     await assert.rejects(updater.applyServerUpdate(), (error) => error.status === 409);
+    assert.equal(
+      fs.existsSync(path.join(customDataDir, '.update-data-backup')),
+      false,
+      'Senza transazione attiva un checkpoint orfano può essere rimosso in sicurezza',
+    );
 
     console.log('SELF_UPDATE_CHECK_OK');
   } finally {
