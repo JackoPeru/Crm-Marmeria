@@ -205,6 +205,13 @@ const healthRequest = ({ port = 3001, secure = true, timeoutMs = 3000 }) => new 
   request.on('error', () => resolve(null));
 });
 
+const serverProcessIsAlive = (server) => Boolean(
+  server
+  && Number(server.pid) > 0
+  && server.exitCode == null
+  && server.signalCode == null
+);
+
 const healthIsValid = ({ health, expectedVersion, expectedRevision }) => health?.statusCode === 200
   && health.body?.mode === 'central-server'
   && health.body?.status === 'ok'
@@ -220,6 +227,7 @@ const defaultWaitForHealthy = async ({
   const deadline = Date.now() + timeoutMs;
   let consecutive = 0;
   while (Date.now() < deadline) {
+    if (!serverProcessIsAlive(server)) return false;
     const secure = await healthRequest({ port, secure: true });
     const plain = secure || await healthRequest({ port, secure: false });
     const health = plain;
@@ -459,6 +467,7 @@ module.exports = {
   materializeRevision,
   defaultWaitForHealthy,
   healthIsValid,
+  serverProcessIsAlive,
   watchdogRestartAllowed,
   watchdogEnvironment,
   defaultStopLegacyLauncher,
