@@ -2844,6 +2844,7 @@ async function createCrmServer(options = {}) {
       clearInterval(sdiReceiptTimer);
       return gracefulShutdown({
         barrier: mutationBarrier,
+        drain: drainUserMutations,
         server,
         websocketServer: realtime.wss,
         database: db,
