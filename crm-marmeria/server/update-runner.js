@@ -135,12 +135,19 @@ const defaultWaitForParentExit = async ({ parentPid, timeoutMs = 30000 }) => {
   if (Number(parentPid) > 0) throw new Error('Il vecchio server non si è arrestato entro il tempo previsto.');
 };
 
-const runCommandInherited = (command, args, cwd, timeout = 10 * 60 * 1000) => new Promise((resolve, reject) => {
+const runCommandInherited = (
+  command,
+  args,
+  cwd,
+  timeout = 10 * 60 * 1000,
+  env = process.env,
+) => new Promise((resolve, reject) => {
   const child = spawn(command, args, {
     cwd,
     windowsHide: true,
     stdio: 'inherit',
     shell: false,
+    env,
   });
   const timer = setTimeout(() => {
     try { child.kill(); } catch { /* best effort */ }
@@ -157,9 +164,18 @@ const runCommandInherited = (command, args, cwd, timeout = 10 * 60 * 1000) => ne
   });
 });
 
-const defaultVerifyApplication = async ({ applicationRoot }) => {
+const defaultVerifyApplication = async ({ applicationRoot, dataDir }) => {
   fs.writeFileSync(path.join(applicationRoot, '.crm-update-pending'), 'transactional update\n', 'utf8');
-  await runCommandInherited(process.execPath, ['verifica-dipendenze.cjs'], applicationRoot);
+  await runCommandInherited(
+    process.execPath,
+    ['verifica-dipendenze.cjs'],
+    applicationRoot,
+    10 * 60 * 1000,
+    {
+      ...process.env,
+      ...(dataDir ? { CRM_DATA_DIR: path.resolve(dataDir) } : {}),
+    },
+  );
 };
 
 const defaultStartServer = async ({ applicationRoot, revision, dataDir }) => {
@@ -370,6 +386,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       expectedVersion,
       expectedRevision: revision,
       server,
+      dataDir,
       transaction,
     });
     if (!healthy) {
@@ -439,6 +456,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       await materializeRevision({
         repositoryRoot,
         applicationRoot,
+        dataDir,
         fromRevision: transaction.targetRevision,
         toRevision: transaction.fromRevision,
       });
@@ -450,6 +468,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       await startWatchdog({
         applicationRoot,
         repositoryRoot,
+        dataDir,
         revision: transaction.fromRevision,
         server: rollbackServer,
         transaction,
