@@ -220,17 +220,33 @@ const defaultStopLegacyLauncher = async ({ launcherPid }) => {
   });
 };
 
-const defaultWaitForParentExit = async ({ parentPid, timeoutMs = 30000 }) => {
-  const deadline = Date.now() + timeoutMs;
-  while (Number(parentPid) > 0 && Date.now() < deadline) {
+const defaultWaitForParentExit = async ({
+  parentPid,
+  timeoutMs = 130000,
+  forceTimeoutMs = 5000,
+  pollMs = 250,
+  killProcess = process.kill,
+}) => {
+  const pid = Number(parentPid);
+  if (!Number.isInteger(pid) || pid <= 0) return;
+
+  const isAlive = () => {
     try {
-      process.kill(Number(parentPid), 0);
-      await delay(250);
+      killProcess(pid, 0);
+      return true;
     } catch {
-      return;
+      return false;
     }
-  }
-  if (Number(parentPid) > 0) throw new Error('Il vecchio server non si è arrestato entro il tempo previsto.');
+  };
+
+  let deadline = Date.now() + timeoutMs;
+  while (isAlive() && Date.now() < deadline) await delay(pollMs);
+  if (!isAlive()) return;
+
+  try { killProcess(pid, 'SIGKILL'); } catch { /* processo già terminato */ }
+  deadline = Date.now() + forceTimeoutMs;
+  while (isAlive() && Date.now() < deadline) await delay(pollMs);
+  if (isAlive()) throw new Error('Il vecchio server non si è arrestato entro il tempo massimo previsto.');
 };
 
 const runCommandInherited = (
@@ -652,6 +668,7 @@ module.exports = {
   watchdogRestartAllowed,
   watchdogEnvironment,
   defaultStopLegacyLauncher,
+  defaultWaitForParentExit,
   defaultStartWatchdog,
   waitForChildExit,
   defaultStopServer,
