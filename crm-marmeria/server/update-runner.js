@@ -236,7 +236,15 @@ const watchdogRestartAllowed = ({
   existsSync = fs.existsSync,
 }) => !existsSync(path.join(applicationRoot, 'server', 'data', '.update-transaction.json'));
 
-const defaultStartWatchdog = async ({ applicationRoot, server }) => {
+const watchdogEnvironment = ({
+  baseEnv = process.env,
+  revision,
+}) => ({
+  ...baseEnv,
+  CRM_RUNTIME_REVISION: String(revision || ''),
+});
+
+const defaultStartWatchdog = async ({ applicationRoot, server, revision }) => {
   if (process.platform !== 'win32') return null;
   if (!server || typeof server.once !== 'function') {
     throw new Error('Processo server non monitorabile dal watchdog.');
@@ -253,7 +261,7 @@ const defaultStartWatchdog = async ({ applicationRoot, server }) => {
         detached: true,
         windowsHide: true,
         stdio: 'ignore',
-        env: { ...process.env },
+        env: watchdogEnvironment({ revision }),
       });
       if (typeof child.unref === 'function') child.unref();
     } catch {
@@ -448,6 +456,7 @@ module.exports = {
   defaultWaitForHealthy,
   healthIsValid,
   watchdogRestartAllowed,
+  watchdogEnvironment,
   defaultStopLegacyLauncher,
   defaultStartWatchdog,
 };
