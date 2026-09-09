@@ -27,6 +27,7 @@ async function run() {
   let completed = false;
   const shutdown = gracefulShutdown({
     barrier,
+    drain: async () => events.push('users-drained'),
     server,
     websocketServer,
     database,
@@ -41,6 +42,7 @@ async function run() {
   release();
   await shutdown;
   assert.deepEqual(events, [
+    'users-drained',
     'ws-terminate',
     'server-close',
     'pragma:wal_checkpoint(TRUNCATE)',
