@@ -231,6 +231,11 @@ const defaultWaitForHealthy = async ({
   return false;
 };
 
+const watchdogRestartAllowed = ({
+  applicationRoot,
+  existsSync = fs.existsSync,
+}) => !existsSync(path.join(applicationRoot, 'server', 'data', '.update-transaction.json'));
+
 const defaultStartWatchdog = async ({ applicationRoot, server }) => {
   if (process.platform !== 'win32') return null;
   if (!server || typeof server.once !== 'function') {
@@ -241,6 +246,7 @@ const defaultStartWatchdog = async ({ applicationRoot, server }) => {
   if (!fs.existsSync(launcher)) throw new Error('Launcher CRM non trovato dopo update.');
 
   server.once('exit', () => {
+    if (!watchdogRestartAllowed({ applicationRoot })) return;
     try {
       const child = spawn(command, ['/d', '/c', launcher, '--serve'], {
         cwd: applicationRoot,
@@ -441,6 +447,7 @@ module.exports = {
   materializeRevision,
   defaultWaitForHealthy,
   healthIsValid,
+  watchdogRestartAllowed,
   defaultStopLegacyLauncher,
   defaultStartWatchdog,
 };
