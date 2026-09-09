@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runUpdateTransaction, healthIsValid, watchdogRestartAllowed, watchdogEnvironment } = require('./update-runner');
+const { runUpdateTransaction, healthIsValid, serverProcessIsAlive, watchdogRestartAllowed, watchdogEnvironment } = require('./update-runner');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, value) => {
@@ -45,6 +45,10 @@ const watchdogEnv = watchdogEnvironment({
 });
 assert.equal(watchdogEnv.KEEP, '1');
 assert.equal(watchdogEnv.CRM_UPDATE_CHILD, undefined, 'Il launcher riavviato non deve ereditare il bypass del recovery');
+
+assert.equal(serverProcessIsAlive({ pid: 123, exitCode: null, signalCode: null }), true);
+assert.equal(serverProcessIsAlive({ pid: 123, exitCode: 1, signalCode: null }), false);
+assert.equal(serverProcessIsAlive({ pid: undefined, exitCode: null, signalCode: null }), false);
 
 const fixture = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-'));
