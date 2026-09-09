@@ -64,6 +64,8 @@ const main = async () => {
     write(path.join(publisher, 'crm-marmeria', '.gitignore'), 'server/data/*\n!server/data/.gitkeep\n');
     write(path.join(publisher, 'crm-marmeria', 'server', 'data', '.gitkeep'));
     write(path.join(publisher, 'crm-marmeria', 'README.md'), 'versione aggiornata\n');
+    write(path.join(publisher, 'crm-marmeria', 'server', 'update-runner.js'), "'use strict';\nmodule.exports = { targetRunner: true };\n");
+    write(path.join(publisher, 'crm-marmeria', 'server', 'update-progress.js'), "'use strict';\nmodule.exports = { targetProgress: true };\n");
     commit(publisher, 'update');
     git(['push'], publisher);
 
@@ -152,12 +154,23 @@ const main = async () => {
     });
     runtimeLauncher({
       applicationRoot: path.join(local, 'crm-marmeria'),
+      repositoryRoot: local,
       dataDir: customDataDir,
       transactionPath,
+      transaction: { targetRevision },
     });
     const runtimeDir = path.join(customDataDir, '.update-runtime');
     assert.equal(fs.existsSync(path.join(runtimeDir, 'update-runner.cjs')), true);
     assert.equal(fs.existsSync(path.join(runtimeDir, 'update-progress.js')), true);
+    assert.match(
+      fs.readFileSync(path.join(runtimeDir, 'update-runner.cjs'), 'utf8'),
+      /targetRunner: true/,
+      'Il supervisore deve essere preso dalla revisione target già verificata',
+    );
+    assert.match(
+      fs.readFileSync(path.join(runtimeDir, 'update-progress.js'), 'utf8'),
+      /targetProgress: true/,
+    );
     assert.equal(spawned.length, 1);
     assert.equal(spawned[0].args[0], path.join(runtimeDir, 'update-runner.cjs'));
     assert.equal(spawned[0].args[1], transactionPath);
