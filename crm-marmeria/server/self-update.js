@@ -104,7 +104,57 @@ const createTargetPreflight = ({ verifyTarget = defaultVerifyTarget } = {}) => a
   }
 };
 
-const createRuntimeRunnerLauncher = ({ spawnRunner = spawn } = {}) => ({
+const defaultValidateUpdateRuntime = ({ runtimeRunner, runtimeProgress, runtimeDir }) => {
+  for (const file of [runtimeRunner, runtimeProgress]) {
+    execFileSync(process.execPath, ['--check', file], {
+      cwd: runtimeDir,
+      windowsHide: true,
+      stdio: 'pipe',
+    });
+  }
+  execFileSync(
+    process.execPath,
+    ['-e', `require(${JSON.stringify(runtimeRunner)})`],
+    {
+      cwd: runtimeDir,
+      windowsHide: true,
+      stdio: 'pipe',
+    },
+  );
+};
+
+const defaultWaitForRunnerReady = ({ child, readyPath, timeoutMs = 5000 }) => new Promise((resolve, reject) => {
+  const deadline = Date.now() + timeoutMs;
+  const poll = () => {
+    if (fs.existsSync(readyPath)) {
+      try {
+        const ready = JSON.parse(fs.readFileSync(readyPath, 'utf8'));
+        if (Number(ready?.pid) === Number(child?.pid)) {
+          resolve(true);
+          return;
+        }
+      } catch {
+        // Il file può essere osservato durante la scrittura: riprova.
+      }
+    }
+    if (!child || child.exitCode != null || child.signalCode != null) {
+      reject(new Error('Il supervisore aggiornamento è terminato prima dell’handshake.'));
+      return;
+    }
+    if (Date.now() >= deadline) {
+      reject(new Error('Timeout handshake supervisore aggiornamento.'));
+      return;
+    }
+    setTimeout(poll, 50);
+  };
+  poll();
+});
+
+const createRuntimeRunnerLauncher = ({
+  spawnRunner = spawn,
+  validateRuntime = defaultValidateUpdateRuntime,
+  waitForReady = defaultWaitForRunnerReady,
+} = {}) => async ({
   applicationRoot,
   repositoryRoot,
   dataDir,
@@ -140,11 +190,15 @@ const createRuntimeRunnerLauncher = ({ spawnRunner = spawn } = {}) => ({
   targetFile(path.join(applicationRoot, 'server', 'update-runner.js'), runtimeRunner);
   targetFile(path.join(applicationRoot, 'server', 'update-progress.js'), runtimeProgress);
 
+  validateRuntime({ runtimeRunner, runtimeProgress, runtimeDir });
+
+  const readyPath = path.join(runtimeDir, '.runner-ready.json');
+  fs.rmSync(readyPath, { force: true });
   const logPath = path.join(dataDir, 'update-runner.log');
   const output = fs.openSync(logPath, 'a');
   let child;
   try {
-    child = spawnRunner(process.execPath, [runtimeRunner, transactionPath], {
+    child = spawnRunner(process.execPath, [runtimeRunner, transactionPath, readyPath], {
       cwd: applicationRoot,
       detached: true,
       windowsHide: true,
@@ -155,6 +209,14 @@ const createRuntimeRunnerLauncher = ({ spawnRunner = spawn } = {}) => ({
     try { fs.closeSync(output); } catch { /* best effort */ }
   }
   if (!child || !Number(child.pid)) throw new Error('Avvio supervisore aggiornamento non riuscito.');
+  try {
+    await waitForReady({ child, readyPath, transactionPath, runtimeRunner });
+  } catch (error) {
+    try { child.kill(); } catch { /* best effort */ }
+    throw error;
+  } finally {
+    fs.rmSync(readyPath, { force: true });
+  }
   if (typeof child.unref === 'function') child.unref();
   return { pid: child.pid, runtimeRunner };
 };
@@ -345,7 +407,7 @@ const createServerUpdateService = ({
       if (typeof launchUpdateRunner !== 'function') {
         throw updateError('Supervisore aggiornamento non disponibile.');
       }
-      launchUpdateRunner({
+      await launchUpdateRunner({
         applicationRoot,
         repositoryRoot,
         dataDir: resolvedDataDir,
@@ -392,4 +454,6 @@ module.exports = {
   createRuntimeRunnerLauncher,
   resolveNpmBuildInvocation,
   normalizeRepositoryRemote,
+  defaultValidateUpdateRuntime,
+  defaultWaitForRunnerReady,
 };
