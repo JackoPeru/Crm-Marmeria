@@ -224,6 +224,31 @@ const main = async () => {
       'Senza transazione attiva un checkpoint orfano può essere rimosso in sicurezza',
     );
 
+    const diverged = path.join(temp, 'diverged');
+    git(['clone', '--branch', 'main', remote, diverged], temp);
+    git(['config', 'user.email', 'test@crm.local'], diverged);
+    git(['config', 'user.name', 'CRM update test'], diverged);
+    write(path.join(diverged, 'local-only.txt'), 'locale\n');
+    commit(diverged, 'local divergence');
+
+    write(path.join(publisher, 'remote-only.txt'), 'remoto\n');
+    commit(publisher, 'remote divergence');
+    git(['push'], publisher);
+
+    const divergedUpdater = createServerUpdateService({
+      applicationRoot: path.join(diverged, 'crm-marmeria'),
+      repositoryRoot: diverged,
+      repository: remote,
+      dataDir: path.join(temp, 'diverged-data'),
+      preflightUpdate: async () => {},
+      launchUpdateRunner: async () => ({ pid: 9999 }),
+    });
+    await assert.rejects(
+      divergedUpdater.checkForServerUpdate({ refresh: true }),
+      (error) => error.status === 409 && /divergente/i.test(error.message),
+      'Una cronologia non fast-forward deve essere bloccata senza modifiche',
+    );
+
     console.log('SELF_UPDATE_CHECK_OK');
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
