@@ -39,10 +39,12 @@ assert.equal(
   watchdogEnvironment({ baseEnv: { CRM_RUNTIME_REVISION: 'old-sha', KEEP: '1' }, revision: 'new-sha' }).CRM_RUNTIME_REVISION,
   'new-sha',
 );
-assert.equal(
-  watchdogEnvironment({ baseEnv: { CRM_RUNTIME_REVISION: 'old-sha', KEEP: '1' }, revision: 'new-sha' }).KEEP,
-  '1',
-);
+const watchdogEnv = watchdogEnvironment({
+  baseEnv: { CRM_RUNTIME_REVISION: 'old-sha', CRM_UPDATE_CHILD: '1', KEEP: '1' },
+  revision: 'new-sha',
+});
+assert.equal(watchdogEnv.KEEP, '1');
+assert.equal(watchdogEnv.CRM_UPDATE_CHILD, undefined, 'Il launcher riavviato non deve ereditare il bypass del recovery');
 
 const fixture = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-'));
