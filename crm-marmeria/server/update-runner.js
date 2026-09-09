@@ -63,16 +63,23 @@ const materializeRevision = async ({
   fromRevision,
   toRevision,
 }) => {
-  const runtimeRoot = path.resolve(dataDir || path.join(applicationRoot, 'server', 'data'));
-  const runtimeRelativeRaw = path.relative(repositoryRoot, runtimeRoot);
-  const runtimeInsideRepository = runtimeRelativeRaw
-    && !path.isAbsolute(runtimeRelativeRaw)
-    && !runtimeRelativeRaw.startsWith('..');
-  const runtimeRelative = normalized(runtimeRelativeRaw);
+  const runtimeRoots = [
+    path.resolve(path.join(applicationRoot, 'server', 'data')),
+    path.resolve(dataDir || path.join(applicationRoot, 'server', 'data')),
+  ].filter((entry, index, items) => items.indexOf(entry) === index);
+  const protectedRuntimePaths = runtimeRoots
+    .map((runtimeRoot) => path.relative(repositoryRoot, runtimeRoot))
+    .filter((relative) => (
+      relative
+      && !path.isAbsolute(relative)
+      && !relative.startsWith('..')
+    ))
+    .map(normalized);
   const isRuntimeFile = (file) => {
     const candidate = normalized(file);
-    return Boolean(runtimeInsideRepository)
-      && (candidate === runtimeRelative || candidate.startsWith(`${runtimeRelative}/`));
+    return protectedRuntimePaths.some(
+      (runtimePath) => candidate === runtimePath || candidate.startsWith(`${runtimePath}/`),
+    );
   };
   const assertRepositoryPath = (file) => {
     const target = path.resolve(repositoryRoot, file);
