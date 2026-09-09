@@ -12,6 +12,7 @@ const {
   watchdogEnvironment,
   defaultStopServer,
   signalRunnerReady,
+  defaultWaitForParentExit,
 } = require('./update-runner');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -250,6 +251,25 @@ const runExternalDataSuccess = async () => {
 };
 
 (async () => {
+  {
+    let alive = true;
+    const signals = [];
+    const fakeKill = (pid, signal) => {
+      if (!alive) throw Object.assign(new Error('not found'), { code: 'ESRCH' });
+      if (signal === 'SIGKILL') {
+        signals.push(signal);
+        alive = false;
+      }
+    };
+    await defaultWaitForParentExit({
+      parentPid: 777,
+      timeoutMs: 5,
+      forceTimeoutMs: 50,
+      pollMs: 1,
+      killProcess: fakeKill,
+    });
+    assert.deepEqual(signals, ['SIGKILL']);
+  }
   {
     const child = new EventEmitter();
     const signals = [];
