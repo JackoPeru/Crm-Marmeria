@@ -59,14 +59,20 @@ const git = (repositoryRoot, args, timeout = 120000, raw = false) => execFilePro
 const materializeRevision = async ({
   repositoryRoot,
   applicationRoot,
+  dataDir,
   fromRevision,
   toRevision,
 }) => {
-  const runtimeRoot = path.join(applicationRoot, 'server', 'data');
-  const runtimeRelative = normalized(path.relative(repositoryRoot, runtimeRoot));
+  const runtimeRoot = path.resolve(dataDir || path.join(applicationRoot, 'server', 'data'));
+  const runtimeRelativeRaw = path.relative(repositoryRoot, runtimeRoot);
+  const runtimeInsideRepository = runtimeRelativeRaw
+    && !path.isAbsolute(runtimeRelativeRaw)
+    && !runtimeRelativeRaw.startsWith('..');
+  const runtimeRelative = normalized(runtimeRelativeRaw);
   const isRuntimeFile = (file) => {
     const candidate = normalized(file);
-    return candidate === runtimeRelative || candidate.startsWith(`${runtimeRelative}/`);
+    return Boolean(runtimeInsideRepository)
+      && (candidate === runtimeRelative || candidate.startsWith(`${runtimeRelative}/`));
   };
   const assertRepositoryPath = (file) => {
     const target = path.resolve(repositoryRoot, file);
@@ -156,8 +162,8 @@ const defaultVerifyApplication = async ({ applicationRoot }) => {
   await runCommandInherited(process.execPath, ['verifica-dipendenze.cjs'], applicationRoot);
 };
 
-const defaultStartServer = async ({ applicationRoot, revision }) => {
-  const logDir = path.join(applicationRoot, 'server', 'data');
+const defaultStartServer = async ({ applicationRoot, revision, dataDir }) => {
+  const logDir = path.resolve(dataDir || path.join(applicationRoot, 'server', 'data'));
   fs.mkdirSync(logDir, { recursive: true });
   const output = fs.openSync(path.join(logDir, 'server-update-start.log'), 'a');
   const child = spawn(process.execPath, [path.join(applicationRoot, 'server', 'index.js')], {
@@ -169,6 +175,7 @@ const defaultStartServer = async ({ applicationRoot, revision }) => {
       ...process.env,
       CRM_WEB_ROOT: path.join(applicationRoot, 'dist'),
       CRM_ENABLE_TLS: process.env.CRM_ENABLE_TLS || '1',
+      CRM_DATA_DIR: logDir,
       CRM_UPDATE_CHILD: '1',
       CRM_RUNTIME_REVISION: String(revision || ''),
     },
@@ -221,6 +228,7 @@ const healthIsValid = ({ health, expectedVersion, expectedRevision }) => health?
 const defaultWaitForHealthy = async ({
   expectedVersion,
   expectedRevision,
+  server,
   timeoutMs = 90000,
   port = Number(process.env.PORT || 3001),
 }) => {
@@ -241,22 +249,28 @@ const defaultWaitForHealthy = async ({
 
 const watchdogRestartAllowed = ({
   applicationRoot,
+  dataDir,
   existsSync = fs.existsSync,
-}) => !existsSync(path.join(applicationRoot, 'server', 'data', '.update-transaction.json'));
+}) => !existsSync(path.join(
+  path.resolve(dataDir || path.join(applicationRoot, 'server', 'data')),
+  '.update-transaction.json',
+));
 
 const watchdogEnvironment = ({
   baseEnv = process.env,
   revision,
+  dataDir,
 }) => {
   const env = {
     ...baseEnv,
     CRM_RUNTIME_REVISION: String(revision || ''),
+    ...(dataDir ? { CRM_DATA_DIR: path.resolve(dataDir) } : {}),
   };
   delete env.CRM_UPDATE_CHILD;
   return env;
 };
 
-const defaultStartWatchdog = async ({ applicationRoot, server, revision }) => {
+const defaultStartWatchdog = async ({ applicationRoot, dataDir, server, revision }) => {
   if (process.platform !== 'win32') return null;
   if (!server || typeof server.once !== 'function') {
     throw new Error('Processo server non monitorabile dal watchdog.');
@@ -266,14 +280,14 @@ const defaultStartWatchdog = async ({ applicationRoot, server, revision }) => {
   if (!fs.existsSync(launcher)) throw new Error('Launcher CRM non trovato dopo update.');
 
   server.once('exit', () => {
-    if (!watchdogRestartAllowed({ applicationRoot })) return;
+    if (!watchdogRestartAllowed({ applicationRoot, dataDir })) return;
     try {
       const child = spawn(command, ['/d', '/c', launcher, '--serve'], {
         cwd: applicationRoot,
         detached: true,
         windowsHide: true,
         stdio: 'ignore',
-        env: watchdogEnvironment({ revision }),
+        env: watchdogEnvironment({ revision, dataDir }),
       });
       if (typeof child.unref === 'function') child.unref();
     } catch {
@@ -314,7 +328,10 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
   const startWatchdog = dependencies.startWatchdog || defaultStartWatchdog;
   let targetServer = null;
 
-  if (!isInside(repositoryRoot, applicationRoot) || !isInside(applicationRoot, dataDir)) {
+  if (
+    !isInside(repositoryRoot, applicationRoot)
+    || path.basename(path.resolve(transactionPath)) !== '.update-transaction.json'
+  ) {
     throw new Error('Percorsi transazione aggiornamento non validi.');
   }
 
@@ -329,7 +346,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       percent: revision === transaction.targetRevision ? 65 : 35,
       message: progressMessage,
     });
-    await verifyApplication({ applicationRoot, repositoryRoot, revision, transaction });
+    await verifyApplication({ applicationRoot, repositoryRoot, dataDir, revision, transaction });
   };
 
   const startAndCheck = async (revision, progressMessage) => {
@@ -344,6 +361,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       repositoryRoot,
       revision,
       expectedVersion,
+      dataDir,
       transaction,
     });
     const healthy = await waitForHealthy({
@@ -381,6 +399,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
     await materializeRevision({
       repositoryRoot,
       applicationRoot,
+      dataDir,
       fromRevision: transaction.fromRevision,
       toRevision: transaction.targetRevision,
     });
@@ -394,6 +413,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
     await startWatchdog({
       applicationRoot,
       repositoryRoot,
+      dataDir,
       revision: transaction.targetRevision,
       server: targetServer,
       transaction,
