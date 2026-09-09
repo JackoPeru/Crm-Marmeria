@@ -1178,7 +1178,9 @@ async function createCrmServer(options = {}) {
   }));
 
   app.get('/api/health', (req, res) => res.json({
-    status: mutationBarrier.isMaintenance ? 'maintenance' : 'ok',
+    status: mutationBarrier.isMaintenance
+      ? 'maintenance'
+      : (typeof options.isStartupReady === 'function' && !options.isStartupReady() ? 'starting' : 'ok'),
     version: SERVER_VERSION,
     revision: String(options.revision || ''),
     mode: 'central-server',
