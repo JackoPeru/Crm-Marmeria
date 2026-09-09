@@ -77,6 +77,8 @@ const fixture = ({ externalData = false } = {}) => {
   git(['reset', '--hard', from], repo);
   const data = externalData ? path.join(root, 'external-data') : path.join(app, 'server', 'data');
   write(path.join(data, 'users.json'), 'REAL-DATA\n');
+  write(path.join(data, 'crm-marmeria.db'), 'REAL-DB\n');
+  write(path.join(data, 'attachments', 'keep.txt'), 'REAL-ATTACHMENT\n');
   const transaction = path.join(data, '.update-transaction.json');
   write(transaction, JSON.stringify({
     schemaVersion: 1,
@@ -92,10 +94,14 @@ const fixture = ({ externalData = false } = {}) => {
   return { root, repo, app, data, transaction, from, target };
 };
 
-const assertData = (fx) => assert.equal(
-  fs.readFileSync(path.join(fx.data, 'users.json'), 'utf8'),
-  'REAL-DATA\n',
-);
+const assertData = (fx) => {
+  assert.equal(fs.readFileSync(path.join(fx.data, 'users.json'), 'utf8'), 'REAL-DATA\n');
+  assert.equal(fs.readFileSync(path.join(fx.data, 'crm-marmeria.db'), 'utf8'), 'REAL-DB\n');
+  assert.equal(
+    fs.readFileSync(path.join(fx.data, 'attachments', 'keep.txt'), 'utf8'),
+    'REAL-ATTACHMENT\n',
+  );
+};
 
 const runSuccess = async () => {
   const fx = fixture();
@@ -123,6 +129,7 @@ const runSuccess = async () => {
     assert.equal(fs.readFileSync(path.join(fx.app, 'README.md'), 'utf8'), 'NEW\n');
     assertData(fx);
     assert.equal(fs.existsSync(fx.transaction), false);
+    assert.equal(fs.existsSync(path.join(fx.data, '.update-data-backup')), false);
     const progress = JSON.parse(fs.readFileSync(path.join(fx.data, '.update-progress.json'), 'utf8'));
     assert.equal(progress.stage, 'ready');
     assert.equal(progress.percent, 100);
@@ -144,8 +151,14 @@ const runRollback = async (failureMode) => {
       verifyApplication: async ({ revision }) => {
         if (failureMode === 'verify' && revision === fx.target) throw new Error('target invalid');
       },
-      startServer: async ({ expectedVersion }) => {
+      startServer: async ({ expectedVersion, dataDir }) => {
         starts.push(expectedVersion);
+        if (failureMode === 'health' && expectedVersion === '2.0.0') {
+          write(path.join(dataDir, 'users.json'), 'MIGRATED-USERS\n');
+          write(path.join(dataDir, 'crm-marmeria.db'), 'MIGRATED-DB\n');
+          write(path.join(dataDir, 'attachments', 'keep.txt'), 'MIGRATED-ATTACHMENT\n');
+          write(path.join(dataDir, 'attachments', 'new.txt'), 'TARGET-ONLY\n');
+        }
         return { pid: expectedVersion === '2.0.0' ? 200 : 201 };
       },
       waitForHealthy: async ({ expectedVersion, expectedRevision }) => {
