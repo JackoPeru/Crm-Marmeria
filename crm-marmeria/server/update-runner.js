@@ -156,7 +156,7 @@ const defaultVerifyApplication = async ({ applicationRoot }) => {
   await runCommandInherited(process.execPath, ['verifica-dipendenze.cjs'], applicationRoot);
 };
 
-const defaultStartServer = async ({ applicationRoot }) => {
+const defaultStartServer = async ({ applicationRoot, revision }) => {
   const logDir = path.join(applicationRoot, 'server', 'data');
   fs.mkdirSync(logDir, { recursive: true });
   const output = fs.openSync(path.join(logDir, 'server-update-start.log'), 'a');
@@ -170,6 +170,7 @@ const defaultStartServer = async ({ applicationRoot }) => {
       CRM_WEB_ROOT: path.join(applicationRoot, 'dist'),
       CRM_ENABLE_TLS: process.env.CRM_ENABLE_TLS || '1',
       CRM_UPDATE_CHILD: '1',
+      CRM_RUNTIME_REVISION: String(revision || ''),
     },
   });
   child.once('error', () => {
@@ -204,8 +205,15 @@ const healthRequest = ({ port = 3001, secure = true, timeoutMs = 3000 }) => new 
   request.on('error', () => resolve(null));
 });
 
+const healthIsValid = ({ health, expectedVersion, expectedRevision }) => health?.statusCode === 200
+  && health.body?.mode === 'central-server'
+  && health.body?.status === 'ok'
+  && String(health.body?.version || '') === String(expectedVersion || '')
+  && String(health.body?.revision || '') === String(expectedRevision || '');
+
 const defaultWaitForHealthy = async ({
   expectedVersion,
+  expectedRevision,
   timeoutMs = 90000,
   port = Number(process.env.PORT || 3001),
 }) => {
@@ -215,10 +223,7 @@ const defaultWaitForHealthy = async ({
     const secure = await healthRequest({ port, secure: true });
     const plain = secure || await healthRequest({ port, secure: false });
     const health = plain;
-    const valid = health?.statusCode === 200
-      && health.body?.mode === 'central-server'
-      && health.body?.status === 'ok'
-      && String(health.body?.version || '') === String(expectedVersion || '');
+    const valid = healthIsValid({ health, expectedVersion, expectedRevision });
     consecutive = valid ? consecutive + 1 : 0;
     if (consecutive >= 2) return true;
     await delay(1000);
@@ -319,6 +324,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       applicationRoot,
       revision,
       expectedVersion,
+      expectedRevision: revision,
       server,
       transaction,
     });
@@ -434,6 +440,7 @@ module.exports = {
   runUpdateTransaction,
   materializeRevision,
   defaultWaitForHealthy,
+  healthIsValid,
   defaultStopLegacyLauncher,
   defaultStartWatchdog,
 };
