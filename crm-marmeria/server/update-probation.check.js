@@ -33,6 +33,13 @@ const main = async () => {
       attachmentsDir: path.join(root, 'attachments'),
       setupSecret: 'probation-secret',
       serverName: 'Probation CI',
+      bootstrapAdmin: {
+        username: 'admin-probation',
+        password: 'Admin-password-123',
+        email: 'admin-probation@example.test',
+        firstName: 'Admin',
+        lastName: 'Probation',
+      },
       isUpdateProbationActive: () => probation,
     });
     const baseUrl = `http://127.0.0.1:${instance.port}/api`;
@@ -40,16 +47,18 @@ const main = async () => {
     const health = await requestJson(baseUrl, '/health');
     assert.equal(health.response.status, 200);
     assert.equal(health.body.status, 'ok');
+    assert.equal(health.body.setupRequired, false);
+    assert.deepEqual(
+      fs.readdirSync(path.join(root, 'backups')).filter((name) => !name.startsWith('.')),
+      [],
+      'La versione in probation non deve creare snapshot automatici',
+    );
 
     const blocked = await requestJson(baseUrl, '/auth/login', {
       method: 'POST',
-      headers: { 'X-CRM-Setup-Secret': 'probation-secret' },
       body: JSON.stringify({
-        username: 'owner',
-        password: 'Password-forte-123',
-        email: 'owner@example.test',
-        firstName: 'Mario',
-        lastName: 'Rossi',
+        username: 'admin-probation',
+        password: 'Admin-password-123',
       }),
     });
     assert.equal(blocked.response.status, 503);
@@ -58,16 +67,12 @@ const main = async () => {
     probation = false;
     const allowed = await requestJson(baseUrl, '/auth/login', {
       method: 'POST',
-      headers: { 'X-CRM-Setup-Secret': 'probation-secret' },
       body: JSON.stringify({
-        username: 'owner',
-        password: 'Password-forte-123',
-        email: 'owner@example.test',
-        firstName: 'Mario',
-        lastName: 'Rossi',
+        username: 'admin-probation',
+        password: 'Admin-password-123',
       }),
     });
-    assert.equal(allowed.response.status, 201);
+    assert.equal(allowed.response.status, 200);
     assert.equal(allowed.body.user.role, 'admin');
 
     console.log('UPDATE_PROBATION_CHECK_OK');
