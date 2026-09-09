@@ -1,4 +1,4 @@
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -82,15 +82,39 @@ const createTargetPreflight = ({ verifyTarget = defaultVerifyTarget } = {}) => a
 
 const createRuntimeRunnerLauncher = ({ spawnRunner = spawn } = {}) => ({
   applicationRoot,
+  repositoryRoot,
   dataDir,
   transactionPath,
+  transaction,
 }) => {
+  const targetRevision = String(transaction?.targetRevision || '').trim();
+  if (!repositoryRoot || !targetRevision) {
+    throw new Error('Revisione target mancante per il supervisore aggiornamento.');
+  }
   const runtimeDir = path.join(dataDir, '.update-runtime');
   fs.mkdirSync(runtimeDir, { recursive: true });
   const runtimeRunner = path.join(runtimeDir, 'update-runner.cjs');
   const runtimeProgress = path.join(runtimeDir, 'update-progress.js');
-  fs.copyFileSync(path.join(applicationRoot, 'server', 'update-runner.js'), runtimeRunner);
-  fs.copyFileSync(path.join(applicationRoot, 'server', 'update-progress.js'), runtimeProgress);
+
+  const targetFile = (sourcePath, destination) => {
+    const relative = path.relative(repositoryRoot, sourcePath);
+    if (!relative || path.isAbsolute(relative) || relative.startsWith('..')) {
+      throw new Error('Percorso runtime updater non valido.');
+    }
+    const gitPath = relative.replace(/\\/g, '/');
+    const content = execFileSync(
+      'git',
+      ['show', `${targetRevision}:${gitPath}`],
+      {
+        cwd: repositoryRoot,
+        windowsHide: true,
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    );
+    fs.writeFileSync(destination, content);
+  };
+  targetFile(path.join(applicationRoot, 'server', 'update-runner.js'), runtimeRunner);
+  targetFile(path.join(applicationRoot, 'server', 'update-progress.js'), runtimeProgress);
 
   const logPath = path.join(dataDir, 'update-runner.log');
   const output = fs.openSync(logPath, 'a');
