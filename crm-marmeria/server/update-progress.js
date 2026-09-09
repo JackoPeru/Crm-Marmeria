@@ -47,7 +47,8 @@ const markUpdateReady = (dataDir) => {
       message: 'Server aggiornato avviato. Verifico che resti operativo...',
     });
   }
-  if (!current || current.stage === 'ready') return current;
+  if (!current || current.stage === 'ready' || current.error) return current;
+  if (current.stage !== 'restarting') return current;
   return writeUpdateProgress(dataDir, {
     stage: 'ready',
     percent: 100,
