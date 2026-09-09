@@ -111,6 +111,20 @@ const removeDataCheckpoint = (dataDir) => {
   fs.rmSync(path.join(dataDir, DATA_CHECKPOINT_NAME), { recursive: true, force: true });
 };
 
+const signalRunnerReady = ({ readyPath, transactionPath }) => {
+  if (!readyPath) return false;
+  const transaction = readJson(transactionPath);
+  if (!transaction?.fromRevision || !transaction?.targetRevision) {
+    throw new Error('Transazione aggiornamento incompleta per handshake supervisore.');
+  }
+  atomicJson(readyPath, {
+    pid: process.pid,
+    transactionPath: path.resolve(transactionPath),
+    startedAt: new Date().toISOString(),
+  });
+  return true;
+};
+
 const normalized = (value) => String(value || '').replace(/\\/g, '/').toLowerCase();
 
 const isInside = (parent, child) => {
@@ -631,6 +645,7 @@ module.exports = {
   createDataCheckpoint,
   restoreDataCheckpoint,
   removeDataCheckpoint,
+  signalRunnerReady,
   defaultWaitForHealthy,
   healthIsValid,
   serverProcessIsAlive,
@@ -648,6 +663,13 @@ if (require.main === module) {
     console.error('Percorso transazione aggiornamento mancante.');
     process.exitCode = 2;
   } else {
+    try {
+      signalRunnerReady({ readyPath: process.argv[3], transactionPath });
+    } catch (error) {
+      console.error('Handshake supervisore aggiornamento fallito:', error);
+      process.exitCode = 1;
+      return;
+    }
     runUpdateTransaction(transactionPath)
       .then((result) => {
         console.log(JSON.stringify(result));
