@@ -65,6 +65,7 @@ const defaultAdmin = () => process.env.CRM_SIMPLE_DEFAULT_ADMIN === '1'
   : null;
 
 const start = async () => {
+  let startupReady = false;
   const dataDir = process.env.CRM_DATA_DIR || path.join(__dirname, 'data');
   const backupDir = process.env.CRM_BACKUP_DIR || path.join(dataDir, 'backups');
   const serverId = persistentServerId(dataDir);
@@ -87,6 +88,7 @@ const start = async () => {
     serverName: process.env.CRM_SERVER_NAME || 'crm-marmeria',
     serverId,
     revision: String(process.env.CRM_RUNTIME_REVISION || ''),
+    isStartupReady: () => startupReady,
     setupSecret,
     tls: tlsIdentity,
     webRoot,
@@ -94,12 +96,12 @@ const start = async () => {
     bootstrapAdmin: defaultAdmin(),
     onUpdateApplied: () => void shutdown(),
   });
-  markUpdateReady(dataDir);
-
   const upgradedSnapshots = upgradeLegacySnapshots({ dataDir, backupDir });
   if (upgradedSnapshots > 0) {
     console.log(`Aggiornati ${upgradedSnapshots} snapshot legacy con gli account correnti`);
   }
+  startupReady = true;
+  markUpdateReady(dataDir);
   console.log(`CRM Marmeria centrale ${tlsIdentity ? 'HTTPS' : 'HTTP'} attivo su ${instance.host}:${instance.port}`);
   console.log(`ID server: ${serverId}`);
   if (tlsIdentity) console.log(`Impronta certificato TLS: ${tlsIdentity.fingerprint}`);
