@@ -322,10 +322,28 @@ const createServerUpdateService = ({
     let pendingCommits = 0;
     try {
       remoteRevision = await command(['rev-parse', '--short', `origin/${branch}`]);
-      pendingCommits = Number(await command(['rev-list', '--count', `HEAD..origin/${branch}`])) || 0;
     } catch {
       // Primo avvio offline o branch non ancora tracciato: nessun update applicabile.
+      return {
+        supported: true,
+        version: localVersion(),
+        branch,
+        localRevision,
+        remoteRevision,
+        updateAvailable: false,
+        pendingCommits: 0,
+        progress: readUpdateProgress(resolvedDataDir),
+      };
     }
+    try {
+      await command(['merge-base', '--is-ancestor', 'HEAD', `origin/${branch}`]);
+    } catch {
+      throw updateError(
+        'Cronologia Git locale divergente dal branch remoto: aggiornamento automatico bloccato.',
+        409,
+      );
+    }
+    pendingCommits = Number(await command(['rev-list', '--count', `HEAD..origin/${branch}`])) || 0;
     return {
       supported: true,
       version: localVersion(),
