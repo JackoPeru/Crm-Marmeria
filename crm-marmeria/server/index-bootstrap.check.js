@@ -8,6 +8,7 @@ async function run() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-index-bootstrap-'));
   const previousDataDir = process.env.CRM_DATA_DIR;
   const previousSetupSecret = process.env.CRM_SETUP_SECRET;
+  const previousRuntimeRevision = process.env.CRM_RUNTIME_REVISION;
   const originalLoad = Module._load;
   const originalWarn = console.warn;
   const warnings = [];
@@ -16,6 +17,7 @@ async function run() {
   try {
     process.env.CRM_DATA_DIR = root;
     delete process.env.CRM_SETUP_SECRET;
+    process.env.CRM_RUNTIME_REVISION = 'target-sha-test';
     console.warn = (...args) => warnings.push(args.join(' '));
 
     Module._load = function loadWithIndexMocks(request, parent, isMain) {
@@ -62,6 +64,7 @@ async function run() {
     assert.ok(receivedOptions, 'Il server standalone deve avviare createCrmServer');
     assert.match(receivedOptions.serverId, /^[0-9a-f-]{36}$/i);
     assert.match(receivedOptions.setupSecret, /^[0-9a-f]{96}$/i);
+    assert.equal(receivedOptions.revision, 'target-sha-test');
     assert.deepEqual(
       receivedOptions.tls,
       { key: 'test-key', cert: 'test-cert', fingerprint: 'test-fingerprint' },
@@ -83,6 +86,8 @@ async function run() {
     else process.env.CRM_DATA_DIR = previousDataDir;
     if (previousSetupSecret === undefined) delete process.env.CRM_SETUP_SECRET;
     else process.env.CRM_SETUP_SECRET = previousSetupSecret;
+    if (previousRuntimeRevision === undefined) delete process.env.CRM_RUNTIME_REVISION;
+    else process.env.CRM_RUNTIME_REVISION = previousRuntimeRevision;
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
