@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runUpdateTransaction } = require('./update-runner');
+const { runUpdateTransaction, healthIsValid } = require('./update-runner');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, value) => {
@@ -14,6 +14,17 @@ const commit = (cwd, message) => {
   git(['add', '.'], cwd);
   git(['commit', '-m', message], cwd);
 };
+
+assert.equal(healthIsValid({
+  health: { statusCode: 200, body: { mode: 'central-server', status: 'ok', version: '2.0.0', revision: 'target-sha' } },
+  expectedVersion: '2.0.0',
+  expectedRevision: 'target-sha',
+}), true);
+assert.equal(healthIsValid({
+  health: { statusCode: 200, body: { mode: 'central-server', status: 'ok', version: '2.0.0', revision: 'other-sha' } },
+  expectedVersion: '2.0.0',
+  expectedRevision: 'target-sha',
+}), false, 'Un altro processo con stessa versione ma SHA diverso non deve superare il health check');
 
 const fixture = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-'));
@@ -77,7 +88,7 @@ const runSuccess = async () => {
       startWatchdog: async ({ revision }) => watchdogs.push(revision),
       verifyApplication: async () => {},
       startServer: async ({ expectedVersion }) => ({ pid: 100, expectedVersion }),
-      waitForHealthy: async ({ expectedVersion }) => expectedVersion === '2.0.0',
+      waitForHealthy: async ({ expectedVersion, expectedRevision }) => expectedVersion === '2.0.0' && expectedRevision === fx.target,
       stopServer: async () => {},
     });
     assert.equal(result.updated, true);
@@ -113,7 +124,10 @@ const runRollback = async (failureMode) => {
         starts.push(expectedVersion);
         return { pid: expectedVersion === '2.0.0' ? 200 : 201 };
       },
-      waitForHealthy: async ({ expectedVersion }) => failureMode !== 'health' || expectedVersion === '1.0.0',
+      waitForHealthy: async ({ expectedVersion, expectedRevision }) => {
+        assert.ok([fx.target, fx.from].includes(expectedRevision));
+        return failureMode !== 'health' || expectedVersion === '1.0.0';
+      },
       stopServer: async ({ pid }) => stopped.push(pid),
     });
     assert.equal(result.rolledBack, true);
