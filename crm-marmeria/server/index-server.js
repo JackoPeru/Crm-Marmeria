@@ -86,6 +86,7 @@ const start = async () => {
     backupDir,
     serverName: process.env.CRM_SERVER_NAME || 'crm-marmeria',
     serverId,
+    revision: String(process.env.CRM_RUNTIME_REVISION || ''),
     setupSecret,
     tls: tlsIdentity,
     webRoot,
