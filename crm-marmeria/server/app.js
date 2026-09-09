@@ -1070,6 +1070,10 @@ async function createCrmServer(options = {}) {
   app.use(express.json({ limit: '256kb' }));
   app.use(express.urlencoded({ extended: true, limit: '64kb' }));
 
+  const updateProbationActive = () => (
+    typeof options.isUpdateProbationActive === 'function'
+    && options.isUpdateProbationActive()
+  );
   const isMaintenanceControlRequest = (req) => {
     if (req.method !== 'POST') return false;
     const route = String(req.originalUrl || '').split('?')[0];
@@ -1086,6 +1090,12 @@ async function createCrmServer(options = {}) {
   app.use('/api', (req, res, next) => {
     const healthRequest = req.path === '/health';
     const controlRequest = isMaintenanceControlRequest(req);
+    const mutatingRequest = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+    if (updateProbationActive() && mutatingRequest) {
+      return res.status(503).json({
+        error: 'Aggiornamento in verifica: modifiche temporaneamente sospese',
+      });
+    }
     if (mutationBarrier.isMaintenance && !healthRequest && !controlRequest && req.method !== 'OPTIONS') {
       return res.status(503).json({ error: 'Server in manutenzione: riprovare tra pochi secondi' });
     }
@@ -2595,6 +2605,9 @@ async function createCrmServer(options = {}) {
   });
   app.get('/oauth2/gmail', async (req, res) => {
     try {
+      if (updateProbationActive()) {
+        return res.status(503).type('text').send('Aggiornamento in verifica: riprova tra pochi secondi.');
+      }
       if (!isLoopback(req)) return res.status(403).type('text').send('Autorizzazione Gmail consentita solo dal PC server.');
       if (req.query.error) return res.status(400).type('html').send('<!doctype html><title>CRM Marmeria</title><p>Autorizzazione Gmail annullata. Puoi chiudere questa finestra.</p>');
       await gmail.completeAuthorization({ code: req.query.code, state: req.query.state });
@@ -2805,6 +2818,7 @@ async function createCrmServer(options = {}) {
   }, 15 * 60 * 1000);
   void runGoogleDriveBackup(false).catch((error) => console.error('Backup Google Drive automatico fallito:', error.message));
   const pollSdiReceipts = async () => {
+    if (updateProbationActive()) return;
     const status = sdiPec.status();
     if (!status.email || !status.hasPassword) return;
     try {
