@@ -8,6 +8,7 @@ const closeHttpServer = (server) => new Promise((resolve, reject) => {
 
 const gracefulShutdown = async ({
   barrier,
+  drain,
   server,
   websocketServer,
   database,
@@ -16,6 +17,7 @@ const gracefulShutdown = async ({
 }) => {
   if (timer) clearInterval(timer);
   return barrier.runMaintenance(async () => {
+    if (typeof drain === 'function') await drain();
     for (const client of websocketServer?.clients || []) client.terminate();
     await closeHttpServer(server);
     if (database?.db?.open) {
