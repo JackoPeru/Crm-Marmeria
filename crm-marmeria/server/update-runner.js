@@ -34,6 +34,83 @@ const atomicJson = (target, value) => {
 
 const readJson = (target) => JSON.parse(fs.readFileSync(target, 'utf8'));
 
+const DATA_CHECKPOINT_NAME = '.update-data-backup';
+
+const copyRuntimePath = (source, destination) => {
+  const stat = fs.lstatSync(source);
+  if (stat.isSymbolicLink()) throw new Error(`Collegamento simbolico non consentito nel checkpoint update: ${source}`);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(destination, { recursive: true });
+    for (const entry of fs.readdirSync(source)) {
+      copyRuntimePath(path.join(source, entry), path.join(destination, entry));
+    }
+    return;
+  }
+  if (!stat.isFile()) throw new Error(`File runtime non regolare nel checkpoint update: ${source}`);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(source, destination);
+};
+
+const checkpointManifestMatches = (manifest, transaction) => (
+  String(manifest?.fromRevision || '') === String(transaction?.fromRevision || '')
+  && String(manifest?.targetRevision || '') === String(transaction?.targetRevision || '')
+);
+
+const createDataCheckpoint = ({ dataDir, transaction }) => {
+  const root = path.join(dataDir, DATA_CHECKPOINT_NAME);
+  if (fs.existsSync(root)) {
+    const manifest = readJson(path.join(root, 'manifest.json'));
+    if (!checkpointManifestMatches(manifest, transaction)) {
+      throw new Error('Checkpoint dati precedente non corrisponde alla transazione corrente.');
+    }
+    return root;
+  }
+
+  const temporary = `${root}.${process.pid}.tmp`;
+  fs.rmSync(temporary, { recursive: true, force: true });
+  fs.mkdirSync(temporary, { recursive: true });
+  const entries = {};
+  try {
+    for (const name of ['crm-marmeria.db', 'crm-marmeria.db-wal', 'crm-marmeria.db-shm', 'users.json', 'attachments']) {
+      const source = path.join(dataDir, name);
+      entries[name] = fs.existsSync(source);
+      if (entries[name]) copyRuntimePath(source, path.join(temporary, name));
+    }
+    atomicJson(path.join(temporary, 'manifest.json'), {
+      schemaVersion: 1,
+      fromRevision: transaction.fromRevision,
+      targetRevision: transaction.targetRevision,
+      createdAt: new Date().toISOString(),
+      entries,
+    });
+    fs.renameSync(temporary, root);
+    return root;
+  } catch (error) {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw error;
+  }
+};
+
+const restoreDataCheckpoint = ({ dataDir, transaction }) => {
+  const root = path.join(dataDir, DATA_CHECKPOINT_NAME);
+  if (!fs.existsSync(root)) return false;
+  const manifest = readJson(path.join(root, 'manifest.json'));
+  if (!checkpointManifestMatches(manifest, transaction)) {
+    throw new Error('Checkpoint dati non valido per il rollback corrente.');
+  }
+
+  for (const name of ['crm-marmeria.db', 'crm-marmeria.db-wal', 'crm-marmeria.db-shm', 'users.json', 'attachments']) {
+    const destination = path.join(dataDir, name);
+    fs.rmSync(destination, { recursive: true, force: true });
+    if (manifest.entries?.[name]) copyRuntimePath(path.join(root, name), destination);
+  }
+  return true;
+};
+
+const removeDataCheckpoint = (dataDir) => {
+  fs.rmSync(path.join(dataDir, DATA_CHECKPOINT_NAME), { recursive: true, force: true });
+};
+
 const normalized = (value) => String(value || '').replace(/\\/g, '/').toLowerCase();
 
 const isInside = (parent, child) => {
@@ -418,7 +495,11 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
   });
 
   try {
-    updateTransaction('applying');
+    updateTransaction('checkpointing');
+    writeUpdateProgress(dataDir, { stage: 'checkpoint', percent: 35, message: 'Creo checkpoint dati pre-aggiornamento...' });
+    createDataCheckpoint({ dataDir, transaction });
+
+    updateTransaction('applying', { dataCheckpoint: true });
     writeUpdateProgress(dataDir, { stage: 'installing', percent: 40, message: 'Applico la nuova versione...' });
     await materializeRevision({
       repositoryRoot,
@@ -432,8 +513,6 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
     targetServer = await startAndCheck(transaction.targetRevision, 'Avvio la nuova versione e ne verifico la stabilità...');
 
     updateTransaction('completed');
-    fs.rmSync(transactionPath, { force: true });
-    fs.rmSync(marker, { force: true });
     await startWatchdog({
       applicationRoot,
       repositoryRoot,
@@ -442,6 +521,9 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       server: targetServer,
       transaction,
     });
+    fs.rmSync(transactionPath, { force: true });
+    removeDataCheckpoint(dataDir);
+    fs.rmSync(marker, { force: true });
     writeUpdateProgress(dataDir, {
       stage: 'ready',
       percent: 100,
@@ -467,11 +549,11 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
         fromRevision: transaction.targetRevision,
         toRevision: transaction.fromRevision,
       });
+      restoreDataCheckpoint({ dataDir, transaction });
       await verifyRevision(transaction.fromRevision, 'Verifico la versione precedente ripristinata...');
       const rollbackServer = await startAndCheck(transaction.fromRevision, 'Riavvio la versione precedente...');
 
-      fs.rmSync(transactionPath, { force: true });
-      fs.rmSync(marker, { force: true });
+      updateTransaction('rolled_back');
       await startWatchdog({
         applicationRoot,
         repositoryRoot,
@@ -480,6 +562,9 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
         server: rollbackServer,
         transaction,
       });
+      fs.rmSync(transactionPath, { force: true });
+      removeDataCheckpoint(dataDir);
+      fs.rmSync(marker, { force: true });
       writeUpdateProgress(dataDir, {
         stage: 'rolled_back',
         percent: 100,
@@ -511,6 +596,9 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
 module.exports = {
   runUpdateTransaction,
   materializeRevision,
+  createDataCheckpoint,
+  restoreDataCheckpoint,
+  removeDataCheckpoint,
   defaultWaitForHealthy,
   healthIsValid,
   serverProcessIsAlive,
