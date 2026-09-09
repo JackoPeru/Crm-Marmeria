@@ -1180,6 +1180,7 @@ async function createCrmServer(options = {}) {
   app.get('/api/health', (req, res) => res.json({
     status: mutationBarrier.isMaintenance ? 'maintenance' : 'ok',
     version: SERVER_VERSION,
+    revision: String(options.revision || ''),
     mode: 'central-server',
     hostname: options.serverName || 'crm-marmeria',
     serverId: options.serverId || null,
