@@ -34,6 +34,97 @@ const atomicJson = (target, value) => {
 
 const readJson = (target) => JSON.parse(fs.readFileSync(target, 'utf8'));
 
+const DATA_CHECKPOINT_NAME = '.update-data-backup';
+
+const copyRuntimePath = (source, destination) => {
+  const stat = fs.lstatSync(source);
+  if (stat.isSymbolicLink()) throw new Error(`Collegamento simbolico non consentito nel checkpoint update: ${source}`);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(destination, { recursive: true });
+    for (const entry of fs.readdirSync(source)) {
+      copyRuntimePath(path.join(source, entry), path.join(destination, entry));
+    }
+    return;
+  }
+  if (!stat.isFile()) throw new Error(`File runtime non regolare nel checkpoint update: ${source}`);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(source, destination);
+};
+
+const checkpointManifestMatches = (manifest, transaction) => (
+  String(manifest?.fromRevision || '') === String(transaction?.fromRevision || '')
+  && String(manifest?.targetRevision || '') === String(transaction?.targetRevision || '')
+);
+
+const createDataCheckpoint = ({ dataDir, transaction }) => {
+  const root = path.join(dataDir, DATA_CHECKPOINT_NAME);
+  if (fs.existsSync(root)) {
+    const manifest = readJson(path.join(root, 'manifest.json'));
+    if (!checkpointManifestMatches(manifest, transaction)) {
+      throw new Error('Checkpoint dati precedente non corrisponde alla transazione corrente.');
+    }
+    return root;
+  }
+
+  const temporary = `${root}.${process.pid}.tmp`;
+  fs.rmSync(temporary, { recursive: true, force: true });
+  fs.mkdirSync(temporary, { recursive: true });
+  const entries = {};
+  try {
+    for (const name of ['crm-marmeria.db', 'crm-marmeria.db-wal', 'crm-marmeria.db-shm', 'users.json', 'attachments']) {
+      const source = path.join(dataDir, name);
+      entries[name] = fs.existsSync(source);
+      if (entries[name]) copyRuntimePath(source, path.join(temporary, name));
+    }
+    atomicJson(path.join(temporary, 'manifest.json'), {
+      schemaVersion: 1,
+      fromRevision: transaction.fromRevision,
+      targetRevision: transaction.targetRevision,
+      createdAt: new Date().toISOString(),
+      entries,
+    });
+    fs.renameSync(temporary, root);
+    return root;
+  } catch (error) {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw error;
+  }
+};
+
+const restoreDataCheckpoint = ({ dataDir, transaction }) => {
+  const root = path.join(dataDir, DATA_CHECKPOINT_NAME);
+  if (!fs.existsSync(root)) return false;
+  const manifest = readJson(path.join(root, 'manifest.json'));
+  if (!checkpointManifestMatches(manifest, transaction)) {
+    throw new Error('Checkpoint dati non valido per il rollback corrente.');
+  }
+
+  for (const name of ['crm-marmeria.db', 'crm-marmeria.db-wal', 'crm-marmeria.db-shm', 'users.json', 'attachments']) {
+    const destination = path.join(dataDir, name);
+    fs.rmSync(destination, { recursive: true, force: true });
+    if (manifest.entries?.[name]) copyRuntimePath(path.join(root, name), destination);
+  }
+  return true;
+};
+
+const removeDataCheckpoint = (dataDir) => {
+  fs.rmSync(path.join(dataDir, DATA_CHECKPOINT_NAME), { recursive: true, force: true });
+};
+
+const signalRunnerReady = ({ readyPath, transactionPath }) => {
+  if (!readyPath) return false;
+  const transaction = readJson(transactionPath);
+  if (!transaction?.fromRevision || !transaction?.targetRevision) {
+    throw new Error('Transazione aggiornamento incompleta per handshake supervisore.');
+  }
+  atomicJson(readyPath, {
+    pid: process.pid,
+    transactionPath: path.resolve(transactionPath),
+    startedAt: new Date().toISOString(),
+  });
+  return true;
+};
+
 const normalized = (value) => String(value || '').replace(/\\/g, '/').toLowerCase();
 
 const isInside = (parent, child) => {
@@ -59,14 +150,27 @@ const git = (repositoryRoot, args, timeout = 120000, raw = false) => execFilePro
 const materializeRevision = async ({
   repositoryRoot,
   applicationRoot,
+  dataDir,
   fromRevision,
   toRevision,
 }) => {
-  const runtimeRoot = path.join(applicationRoot, 'server', 'data');
-  const runtimeRelative = normalized(path.relative(repositoryRoot, runtimeRoot));
+  const runtimeRoots = [
+    path.resolve(path.join(applicationRoot, 'server', 'data')),
+    path.resolve(dataDir || path.join(applicationRoot, 'server', 'data')),
+  ].filter((entry, index, items) => items.indexOf(entry) === index);
+  const protectedRuntimePaths = runtimeRoots
+    .map((runtimeRoot) => path.relative(repositoryRoot, runtimeRoot))
+    .filter((relative) => (
+      relative
+      && !path.isAbsolute(relative)
+      && !relative.startsWith('..')
+    ))
+    .map(normalized);
   const isRuntimeFile = (file) => {
     const candidate = normalized(file);
-    return candidate === runtimeRelative || candidate.startsWith(`${runtimeRelative}/`);
+    return protectedRuntimePaths.some(
+      (runtimePath) => candidate === runtimePath || candidate.startsWith(`${runtimePath}/`),
+    );
   };
   const assertRepositoryPath = (file) => {
     const target = path.resolve(repositoryRoot, file);
@@ -116,25 +220,48 @@ const defaultStopLegacyLauncher = async ({ launcherPid }) => {
   });
 };
 
-const defaultWaitForParentExit = async ({ parentPid, timeoutMs = 30000 }) => {
-  const deadline = Date.now() + timeoutMs;
-  while (Number(parentPid) > 0 && Date.now() < deadline) {
+const defaultWaitForParentExit = async ({
+  parentPid,
+  timeoutMs = 130000,
+  forceTimeoutMs = 5000,
+  pollMs = 250,
+  killProcess = process.kill,
+}) => {
+  const pid = Number(parentPid);
+  if (!Number.isInteger(pid) || pid <= 0) return;
+
+  const isAlive = () => {
     try {
-      process.kill(Number(parentPid), 0);
-      await delay(250);
+      killProcess(pid, 0);
+      return true;
     } catch {
-      return;
+      return false;
     }
-  }
-  if (Number(parentPid) > 0) throw new Error('Il vecchio server non si è arrestato entro il tempo previsto.');
+  };
+
+  let deadline = Date.now() + timeoutMs;
+  while (isAlive() && Date.now() < deadline) await delay(pollMs);
+  if (!isAlive()) return;
+
+  try { killProcess(pid, 'SIGKILL'); } catch { /* processo già terminato */ }
+  deadline = Date.now() + forceTimeoutMs;
+  while (isAlive() && Date.now() < deadline) await delay(pollMs);
+  if (isAlive()) throw new Error('Il vecchio server non si è arrestato entro il tempo massimo previsto.');
 };
 
-const runCommandInherited = (command, args, cwd, timeout = 10 * 60 * 1000) => new Promise((resolve, reject) => {
+const runCommandInherited = (
+  command,
+  args,
+  cwd,
+  timeout = 10 * 60 * 1000,
+  env = process.env,
+) => new Promise((resolve, reject) => {
   const child = spawn(command, args, {
     cwd,
     windowsHide: true,
     stdio: 'inherit',
     shell: false,
+    env,
   });
   const timer = setTimeout(() => {
     try { child.kill(); } catch { /* best effort */ }
@@ -151,13 +278,22 @@ const runCommandInherited = (command, args, cwd, timeout = 10 * 60 * 1000) => ne
   });
 });
 
-const defaultVerifyApplication = async ({ applicationRoot }) => {
+const defaultVerifyApplication = async ({ applicationRoot, dataDir }) => {
   fs.writeFileSync(path.join(applicationRoot, '.crm-update-pending'), 'transactional update\n', 'utf8');
-  await runCommandInherited(process.execPath, ['verifica-dipendenze.cjs'], applicationRoot);
+  await runCommandInherited(
+    process.execPath,
+    ['verifica-dipendenze.cjs'],
+    applicationRoot,
+    10 * 60 * 1000,
+    {
+      ...process.env,
+      ...(dataDir ? { CRM_DATA_DIR: path.resolve(dataDir) } : {}),
+    },
+  );
 };
 
-const defaultStartServer = async ({ applicationRoot }) => {
-  const logDir = path.join(applicationRoot, 'server', 'data');
+const defaultStartServer = async ({ applicationRoot, revision, dataDir }) => {
+  const logDir = path.resolve(dataDir || path.join(applicationRoot, 'server', 'data'));
   fs.mkdirSync(logDir, { recursive: true });
   const output = fs.openSync(path.join(logDir, 'server-update-start.log'), 'a');
   const child = spawn(process.execPath, [path.join(applicationRoot, 'server', 'index.js')], {
@@ -169,7 +305,9 @@ const defaultStartServer = async ({ applicationRoot }) => {
       ...process.env,
       CRM_WEB_ROOT: path.join(applicationRoot, 'dist'),
       CRM_ENABLE_TLS: process.env.CRM_ENABLE_TLS || '1',
+      CRM_DATA_DIR: logDir,
       CRM_UPDATE_CHILD: '1',
+      CRM_RUNTIME_REVISION: String(revision || ''),
     },
   });
   child.once('error', () => {
@@ -204,21 +342,34 @@ const healthRequest = ({ port = 3001, secure = true, timeoutMs = 3000 }) => new 
   request.on('error', () => resolve(null));
 });
 
+const serverProcessIsAlive = (server) => Boolean(
+  server
+  && Number(server.pid) > 0
+  && server.exitCode == null
+  && server.signalCode == null
+);
+
+const healthIsValid = ({ health, expectedVersion, expectedRevision }) => health?.statusCode === 200
+  && health.body?.mode === 'central-server'
+  && health.body?.status === 'ok'
+  && String(health.body?.version || '') === String(expectedVersion || '')
+  && String(health.body?.revision || '') === String(expectedRevision || '');
+
 const defaultWaitForHealthy = async ({
   expectedVersion,
+  expectedRevision,
+  server,
   timeoutMs = 90000,
   port = Number(process.env.PORT || 3001),
 }) => {
   const deadline = Date.now() + timeoutMs;
   let consecutive = 0;
   while (Date.now() < deadline) {
+    if (!serverProcessIsAlive(server)) return false;
     const secure = await healthRequest({ port, secure: true });
     const plain = secure || await healthRequest({ port, secure: false });
     const health = plain;
-    const valid = health?.statusCode === 200
-      && health.body?.mode === 'central-server'
-      && health.body?.status === 'ok'
-      && String(health.body?.version || '') === String(expectedVersion || '');
+    const valid = healthIsValid({ health, expectedVersion, expectedRevision });
     consecutive = valid ? consecutive + 1 : 0;
     if (consecutive >= 2) return true;
     await delay(1000);
@@ -226,9 +377,42 @@ const defaultWaitForHealthy = async ({
   return false;
 };
 
-const defaultStartWatchdog = async ({ applicationRoot, server }) => {
+const watchdogRestartAllowed = ({
+  applicationRoot,
+  dataDir,
+  existsSync = fs.existsSync,
+  readFileSync = fs.readFileSync,
+}) => {
+  const transactionPath = path.join(
+    path.resolve(dataDir || path.join(applicationRoot, 'server', 'data')),
+    '.update-transaction.json',
+  );
+  if (!existsSync(transactionPath)) return true;
+  try {
+    const transaction = JSON.parse(readFileSync(transactionPath, 'utf8'));
+    return ['completed', 'rolled_back'].includes(String(transaction?.state || ''));
+  } catch {
+    return false;
+  }
+};
+
+const watchdogEnvironment = ({
+  baseEnv = process.env,
+  revision,
+  dataDir,
+}) => {
+  const env = {
+    ...baseEnv,
+    CRM_RUNTIME_REVISION: String(revision || ''),
+    ...(dataDir ? { CRM_DATA_DIR: path.resolve(dataDir) } : {}),
+  };
+  delete env.CRM_UPDATE_CHILD;
+  return env;
+};
+
+const defaultStartWatchdog = async ({ applicationRoot, dataDir, server, revision }) => {
   if (process.platform !== 'win32') return null;
-  if (!server || typeof server.once !== 'function') {
+  if (!server || typeof server.once !== 'function' || !serverProcessIsAlive(server)) {
     throw new Error('Processo server non monitorabile dal watchdog.');
   }
   const command = process.env.ComSpec || 'cmd.exe';
@@ -236,13 +420,14 @@ const defaultStartWatchdog = async ({ applicationRoot, server }) => {
   if (!fs.existsSync(launcher)) throw new Error('Launcher CRM non trovato dopo update.');
 
   server.once('exit', () => {
+    if (!watchdogRestartAllowed({ applicationRoot, dataDir })) return;
     try {
       const child = spawn(command, ['/d', '/c', launcher, '--serve'], {
         cwd: applicationRoot,
         detached: true,
         windowsHide: true,
         stdio: 'ignore',
-        env: { ...process.env },
+        env: watchdogEnvironment({ revision, dataDir }),
       });
       if (typeof child.unref === 'function') child.unref();
     } catch {
@@ -253,19 +438,41 @@ const defaultStartWatchdog = async ({ applicationRoot, server }) => {
   return { watchingPid: server.pid };
 };
 
-const defaultStopServer = async (server) => {
-  if (!server) return;
-  if (typeof server.kill === 'function') {
-    try { server.kill('SIGTERM'); } catch { /* best effort */ }
-    await delay(1000);
-    if (server.exitCode == null) {
-      try { server.kill('SIGKILL'); } catch { /* best effort */ }
-    }
+const waitForChildExit = (server, timeoutMs) => {
+  if (!serverProcessIsAlive(server)) return Promise.resolve(true);
+  if (!server || typeof server.once !== 'function') return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(!serverProcessIsAlive(server)), timeoutMs);
+    server.once('exit', onExit);
+    if (!serverProcessIsAlive(server)) finish(true);
+  });
+};
+
+const defaultStopServer = async (server, {
+  graceMs = 30000,
+  forceMs = 5000,
+} = {}) => {
+  if (!server || !serverProcessIsAlive(server)) return;
+  if (typeof server.kill !== 'function') {
+    try { process.kill(Number(server.pid), 'SIGTERM'); } catch { /* best effort */ }
     return;
   }
-  if (Number(server.pid) > 0) {
-    try { process.kill(Number(server.pid), 'SIGTERM'); } catch { /* best effort */ }
-  }
+
+  try { server.kill('SIGTERM'); } catch { /* best effort */ }
+  if (await waitForChildExit(server, graceMs)) return;
+
+  try { server.kill('SIGKILL'); } catch { /* best effort */ }
+  if (await waitForChildExit(server, forceMs)) return;
+
+  throw new Error('Il processo server non si è arrestato prima del rollback dati.');
 };
 
 const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
@@ -283,7 +490,10 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
   const startWatchdog = dependencies.startWatchdog || defaultStartWatchdog;
   let targetServer = null;
 
-  if (!isInside(repositoryRoot, applicationRoot) || !isInside(applicationRoot, dataDir)) {
+  if (
+    !isInside(repositoryRoot, applicationRoot)
+    || path.basename(path.resolve(transactionPath)) !== '.update-transaction.json'
+  ) {
     throw new Error('Percorsi transazione aggiornamento non validi.');
   }
 
@@ -298,7 +508,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       percent: revision === transaction.targetRevision ? 65 : 35,
       message: progressMessage,
     });
-    await verifyApplication({ applicationRoot, repositoryRoot, revision, transaction });
+    await verifyApplication({ applicationRoot, repositoryRoot, dataDir, revision, transaction });
   };
 
   const startAndCheck = async (revision, progressMessage) => {
@@ -313,16 +523,19 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       repositoryRoot,
       revision,
       expectedVersion,
+      dataDir,
       transaction,
     });
     const healthy = await waitForHealthy({
       applicationRoot,
       revision,
       expectedVersion,
+      expectedRevision: revision,
       server,
+      dataDir,
       transaction,
     });
-    if (!healthy) {
+    if (!healthy || !serverProcessIsAlive(server)) {
       const error = new Error(`Il server ${expectedVersion} non ha superato il controllo di salute.`);
       error.server = server;
       throw error;
@@ -344,11 +557,16 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
   });
 
   try {
-    updateTransaction('applying');
+    updateTransaction('checkpointing');
+    writeUpdateProgress(dataDir, { stage: 'checkpoint', percent: 35, message: 'Creo checkpoint dati pre-aggiornamento...' });
+    createDataCheckpoint({ dataDir, transaction });
+
+    updateTransaction('applying', { dataCheckpoint: true });
     writeUpdateProgress(dataDir, { stage: 'installing', percent: 40, message: 'Applico la nuova versione...' });
     await materializeRevision({
       repositoryRoot,
       applicationRoot,
+      dataDir,
       fromRevision: transaction.fromRevision,
       toRevision: transaction.targetRevision,
     });
@@ -357,15 +575,17 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
     targetServer = await startAndCheck(transaction.targetRevision, 'Avvio la nuova versione e ne verifico la stabilità...');
 
     updateTransaction('completed');
-    fs.rmSync(transactionPath, { force: true });
-    fs.rmSync(marker, { force: true });
     await startWatchdog({
       applicationRoot,
       repositoryRoot,
+      dataDir,
       revision: transaction.targetRevision,
       server: targetServer,
       transaction,
     });
+    removeDataCheckpoint(dataDir);
+    fs.rmSync(transactionPath, { force: true });
+    fs.rmSync(marker, { force: true });
     writeUpdateProgress(dataDir, {
       stage: 'ready',
       percent: 100,
@@ -387,21 +607,26 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       await materializeRevision({
         repositoryRoot,
         applicationRoot,
+        dataDir,
         fromRevision: transaction.targetRevision,
         toRevision: transaction.fromRevision,
       });
+      restoreDataCheckpoint({ dataDir, transaction });
       await verifyRevision(transaction.fromRevision, 'Verifico la versione precedente ripristinata...');
       const rollbackServer = await startAndCheck(transaction.fromRevision, 'Riavvio la versione precedente...');
 
-      fs.rmSync(transactionPath, { force: true });
-      fs.rmSync(marker, { force: true });
+      updateTransaction('rolled_back');
       await startWatchdog({
         applicationRoot,
         repositoryRoot,
+        dataDir,
         revision: transaction.fromRevision,
         server: rollbackServer,
         transaction,
       });
+      removeDataCheckpoint(dataDir);
+      fs.rmSync(transactionPath, { force: true });
+      fs.rmSync(marker, { force: true });
       writeUpdateProgress(dataDir, {
         stage: 'rolled_back',
         percent: 100,
@@ -433,9 +658,20 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
 module.exports = {
   runUpdateTransaction,
   materializeRevision,
+  createDataCheckpoint,
+  restoreDataCheckpoint,
+  removeDataCheckpoint,
+  signalRunnerReady,
   defaultWaitForHealthy,
+  healthIsValid,
+  serverProcessIsAlive,
+  watchdogRestartAllowed,
+  watchdogEnvironment,
   defaultStopLegacyLauncher,
+  defaultWaitForParentExit,
   defaultStartWatchdog,
+  waitForChildExit,
+  defaultStopServer,
 };
 
 if (require.main === module) {
@@ -444,6 +680,13 @@ if (require.main === module) {
     console.error('Percorso transazione aggiornamento mancante.');
     process.exitCode = 2;
   } else {
+    try {
+      signalRunnerReady({ readyPath: process.argv[3], transactionPath });
+    } catch (error) {
+      console.error('Handshake supervisore aggiornamento fallito:', error);
+      process.exitCode = 1;
+      return;
+    }
     runUpdateTransaction(transactionPath)
       .then((result) => {
         console.log(JSON.stringify(result));

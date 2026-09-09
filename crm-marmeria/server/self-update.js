@@ -1,4 +1,4 @@
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -7,6 +7,30 @@ const { readUpdateProgress, writeUpdateProgress } = require('./update-progress')
 
 const REPOSITORY = 'github.com/jackoperu/crm-marmeria';
 const defaultApplicationRoot = path.resolve(__dirname, '..');
+
+const normalizeRepositoryRemote = (value) => {
+  const raw = String(value || '').trim().replace(/\\/g, '/');
+  if (!raw) return '';
+  if (/^git@[^:]+:/i.test(raw)) {
+    return raw
+      .replace(/^git@([^:]+):/i, '$1/')
+      .replace(/\.git\/?$/i, '')
+      .replace(/\/$/, '')
+      .toLowerCase();
+  }
+  try {
+    const url = new URL(raw);
+    if (url.hostname) {
+      return `${url.hostname}${url.pathname}`
+        .replace(/\.git\/?$/i, '')
+        .replace(/\/$/, '')
+        .toLowerCase();
+    }
+  } catch {
+    // Path locale o sintassi Git non-URL.
+  }
+  return raw.replace(/\.git\/?$/i, '').replace(/\/$/, '').toLowerCase();
+};
 
 const resolveNpmBuildInvocation = ({
   platform = process.platform,
@@ -80,23 +104,101 @@ const createTargetPreflight = ({ verifyTarget = defaultVerifyTarget } = {}) => a
   }
 };
 
-const createRuntimeRunnerLauncher = ({ spawnRunner = spawn } = {}) => ({
+const defaultValidateUpdateRuntime = ({ runtimeRunner, runtimeProgress, runtimeDir }) => {
+  for (const file of [runtimeRunner, runtimeProgress]) {
+    execFileSync(process.execPath, ['--check', file], {
+      cwd: runtimeDir,
+      windowsHide: true,
+      stdio: 'pipe',
+    });
+  }
+  execFileSync(
+    process.execPath,
+    ['-e', `require(${JSON.stringify(runtimeRunner)})`],
+    {
+      cwd: runtimeDir,
+      windowsHide: true,
+      stdio: 'pipe',
+    },
+  );
+};
+
+const defaultWaitForRunnerReady = ({ child, readyPath, timeoutMs = 5000 }) => new Promise((resolve, reject) => {
+  const deadline = Date.now() + timeoutMs;
+  const poll = () => {
+    if (fs.existsSync(readyPath)) {
+      try {
+        const ready = JSON.parse(fs.readFileSync(readyPath, 'utf8'));
+        if (Number(ready?.pid) === Number(child?.pid)) {
+          resolve(true);
+          return;
+        }
+      } catch {
+        // Il file può essere osservato durante la scrittura: riprova.
+      }
+    }
+    if (!child || child.exitCode != null || child.signalCode != null) {
+      reject(new Error('Il supervisore aggiornamento è terminato prima dell’handshake.'));
+      return;
+    }
+    if (Date.now() >= deadline) {
+      reject(new Error('Timeout handshake supervisore aggiornamento.'));
+      return;
+    }
+    setTimeout(poll, 50);
+  };
+  poll();
+});
+
+const createRuntimeRunnerLauncher = ({
+  spawnRunner = spawn,
+  validateRuntime = defaultValidateUpdateRuntime,
+  waitForReady = defaultWaitForRunnerReady,
+} = {}) => async ({
   applicationRoot,
+  repositoryRoot,
   dataDir,
   transactionPath,
+  transaction,
 }) => {
+  const targetRevision = String(transaction?.targetRevision || '').trim();
+  if (!repositoryRoot || !targetRevision) {
+    throw new Error('Revisione target mancante per il supervisore aggiornamento.');
+  }
   const runtimeDir = path.join(dataDir, '.update-runtime');
   fs.mkdirSync(runtimeDir, { recursive: true });
   const runtimeRunner = path.join(runtimeDir, 'update-runner.cjs');
   const runtimeProgress = path.join(runtimeDir, 'update-progress.js');
-  fs.copyFileSync(path.join(applicationRoot, 'server', 'update-runner.js'), runtimeRunner);
-  fs.copyFileSync(path.join(applicationRoot, 'server', 'update-progress.js'), runtimeProgress);
 
+  const targetFile = (sourcePath, destination) => {
+    const relative = path.relative(repositoryRoot, sourcePath);
+    if (!relative || path.isAbsolute(relative) || relative.startsWith('..')) {
+      throw new Error('Percorso runtime updater non valido.');
+    }
+    const gitPath = relative.replace(/\\/g, '/');
+    const content = execFileSync(
+      'git',
+      ['show', `${targetRevision}:${gitPath}`],
+      {
+        cwd: repositoryRoot,
+        windowsHide: true,
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    );
+    fs.writeFileSync(destination, content);
+  };
+  targetFile(path.join(applicationRoot, 'server', 'update-runner.js'), runtimeRunner);
+  targetFile(path.join(applicationRoot, 'server', 'update-progress.js'), runtimeProgress);
+
+  validateRuntime({ runtimeRunner, runtimeProgress, runtimeDir });
+
+  const readyPath = path.join(runtimeDir, '.runner-ready.json');
+  fs.rmSync(readyPath, { force: true });
   const logPath = path.join(dataDir, 'update-runner.log');
   const output = fs.openSync(logPath, 'a');
   let child;
   try {
-    child = spawnRunner(process.execPath, [runtimeRunner, transactionPath], {
+    child = spawnRunner(process.execPath, [runtimeRunner, transactionPath, readyPath], {
       cwd: applicationRoot,
       detached: true,
       windowsHide: true,
@@ -107,6 +209,14 @@ const createRuntimeRunnerLauncher = ({ spawnRunner = spawn } = {}) => ({
     try { fs.closeSync(output); } catch { /* best effort */ }
   }
   if (!child || !Number(child.pid)) throw new Error('Avvio supervisore aggiornamento non riuscito.');
+  try {
+    await waitForReady({ child, readyPath, transactionPath, runtimeRunner });
+  } catch (error) {
+    try { child.kill(); } catch { /* best effort */ }
+    throw error;
+  } finally {
+    fs.rmSync(readyPath, { force: true });
+  }
   if (typeof child.unref === 'function') child.unref();
   return { pid: child.pid, runtimeRunner };
 };
@@ -119,14 +229,24 @@ const createServerUpdateService = ({
   applicationRoot = defaultApplicationRoot,
   repositoryRoot = path.resolve(applicationRoot, '..'),
   repository = REPOSITORY,
+  dataDir = process.env.CRM_DATA_DIR || path.join(applicationRoot, 'server', 'data'),
   preflightUpdate = defaultPreflightUpdate,
   launchUpdateRunner = defaultLaunchUpdateRunner,
 } = {}) => {
-  const dataDir = path.join(applicationRoot, 'server', 'data');
-  const transactionPath = path.join(dataDir, '.update-transaction.json');
-  const runtimeDataPath = path.relative(repositoryRoot, path.join(applicationRoot, 'server', 'data'))
-    .replace(/\\/g, '/')
-    .toLowerCase();
+  const resolvedDataDir = path.resolve(dataDir);
+  const transactionPath = path.join(resolvedDataDir, '.update-transaction.json');
+  const protectedRuntimePaths = [
+    path.resolve(path.join(applicationRoot, 'server', 'data')),
+    resolvedDataDir,
+  ]
+    .filter((entry, index, items) => items.indexOf(entry) === index)
+    .map((entry) => path.relative(repositoryRoot, entry))
+    .filter((relative) => (
+      relative
+      && !path.isAbsolute(relative)
+      && !relative.startsWith('..')
+    ))
+    .map((relative) => relative.replace(/\\/g, '/').toLowerCase());
   let updateInProgress = false;
 
   const command = (args, timeout = 20000, trim = true) => new Promise((resolve, reject) => {
@@ -151,7 +271,9 @@ const createServerUpdateService = ({
 
   const isRuntimeFile = (file) => {
     const normalized = file.replace(/\\/g, '/').toLowerCase();
-    return normalized === runtimeDataPath || normalized.startsWith(`${runtimeDataPath}/`);
+    return protectedRuntimePaths.some(
+      (runtimePath) => normalized === runtimePath || normalized.startsWith(`${runtimePath}/`),
+    );
   };
   const updateError = (message, status = 503) => Object.assign(new Error(message), { status });
   const atomicJson = (target, value) => {
@@ -173,8 +295,9 @@ const createServerUpdateService = ({
     if (!fs.existsSync(path.join(repositoryRoot, '.git'))) {
       throw updateError('Aggiornamento server disponibile solo per installazioni collegate a GitHub.');
     }
-    const remote = (await command(['remote', 'get-url', 'origin'])).toLowerCase().replace(/\.git$/, '');
-    if (!remote.includes(String(repository).toLowerCase().replace(/\.git$/, ''))) {
+    const remote = normalizeRepositoryRemote(await command(['remote', 'get-url', 'origin']));
+    const expected = normalizeRepositoryRemote(repository);
+    if (!remote || !expected || remote !== expected) {
       throw updateError('Origine Git del server non riconosciuta.');
     }
   };
@@ -199,10 +322,28 @@ const createServerUpdateService = ({
     let pendingCommits = 0;
     try {
       remoteRevision = await command(['rev-parse', '--short', `origin/${branch}`]);
-      pendingCommits = Number(await command(['rev-list', '--count', `HEAD..origin/${branch}`])) || 0;
     } catch {
       // Primo avvio offline o branch non ancora tracciato: nessun update applicabile.
+      return {
+        supported: true,
+        version: localVersion(),
+        branch,
+        localRevision,
+        remoteRevision,
+        updateAvailable: false,
+        pendingCommits: 0,
+        progress: readUpdateProgress(resolvedDataDir),
+      };
     }
+    try {
+      await command(['merge-base', '--is-ancestor', 'HEAD', `origin/${branch}`]);
+    } catch {
+      throw updateError(
+        'Cronologia Git locale divergente dal branch remoto: aggiornamento automatico bloccato.',
+        409,
+      );
+    }
+    pendingCommits = Number(await command(['rev-list', '--count', `HEAD..origin/${branch}`])) || 0;
     return {
       supported: true,
       version: localVersion(),
@@ -211,32 +352,42 @@ const createServerUpdateService = ({
       remoteRevision,
       updateAvailable: pendingCommits > 0,
       pendingCommits,
-      progress: readUpdateProgress(dataDir),
+      progress: readUpdateProgress(resolvedDataDir),
     };
   };
 
   const applyServerUpdate = async ({ updateId = '' } = {}) => {
     const resolvedUpdateId = String(updateId || crypto.randomUUID());
     if (updateInProgress) throw updateError('Aggiornamento già in corso.', 409);
+    const transactionExists = fs.existsSync(transactionPath);
     const previousTransaction = readTransaction();
+    if (transactionExists && !previousTransaction) {
+      throw updateError('La transazione aggiornamento esistente non è leggibile. Recovery manuale richiesto.', 409);
+    }
     if (previousTransaction && !['completed', 'rolled_back'].includes(String(previousTransaction.state || ''))) {
       throw updateError('Esiste già un aggiornamento da completare o recuperare.', 409);
+    }
+    if (previousTransaction) {
+      fs.rmSync(transactionPath, { force: true });
+      fs.rmSync(path.join(resolvedDataDir, '.update-data-backup'), { recursive: true, force: true });
+    } else if (!transactionExists) {
+      fs.rmSync(path.join(resolvedDataDir, '.update-data-backup'), { recursive: true, force: true });
     }
 
     updateInProgress = true;
     let transactionCreated = false;
     try {
-      writeUpdateProgress(dataDir, { stage: 'checking', percent: 5, message: 'Controllo aggiornamento su GitHub...', updateId: resolvedUpdateId });
+      writeUpdateProgress(resolvedDataDir, { stage: 'checking', percent: 5, message: 'Controllo aggiornamento su GitHub...', updateId: resolvedUpdateId });
       await workingTreeIsSafe();
       const status = await checkForServerUpdate({ refresh: true });
       if (!status.updateAvailable) {
-        const progress = writeUpdateProgress(dataDir, { stage: 'ready', percent: 100, message: 'CRM già aggiornato e pronto per l’uso.' });
+        const progress = writeUpdateProgress(resolvedDataDir, { stage: 'ready', percent: 100, message: 'CRM già aggiornato e pronto per l’uso.' });
         return { ...status, progress, updated: false, restartRequired: false };
       }
 
       const fromRevision = await command(['rev-parse', 'HEAD']);
       const targetRevision = await command(['rev-parse', `origin/${status.branch}`]);
-      writeUpdateProgress(dataDir, {
+      writeUpdateProgress(resolvedDataDir, {
         stage: 'preflight',
         percent: 15,
         message: 'Verifico la nuova versione prima di fermare il server...',
@@ -265,7 +416,7 @@ const createServerUpdateService = ({
       atomicJson(transactionPath, transaction);
       transactionCreated = true;
 
-      const progress = writeUpdateProgress(dataDir, {
+      const progress = writeUpdateProgress(resolvedDataDir, {
         stage: 'restarting',
         percent: 30,
         message: 'Preflight completato. Riavvio controllato del server...',
@@ -274,10 +425,10 @@ const createServerUpdateService = ({
       if (typeof launchUpdateRunner !== 'function') {
         throw updateError('Supervisore aggiornamento non disponibile.');
       }
-      launchUpdateRunner({
+      await launchUpdateRunner({
         applicationRoot,
         repositoryRoot,
-        dataDir,
+        dataDir: resolvedDataDir,
         transactionPath,
         transaction,
       });
@@ -297,7 +448,7 @@ const createServerUpdateService = ({
       if (transactionCreated) {
         try { fs.rmSync(transactionPath, { force: true }); } catch { /* best effort */ }
       }
-      writeUpdateProgress(dataDir, {
+      writeUpdateProgress(resolvedDataDir, {
         stage: 'error',
         percent: 0,
         message: error.message || 'Aggiornamento non riuscito.',
@@ -320,4 +471,7 @@ module.exports = {
   createTargetPreflight,
   createRuntimeRunnerLauncher,
   resolveNpmBuildInvocation,
+  normalizeRepositoryRemote,
+  defaultValidateUpdateRuntime,
+  defaultWaitForRunnerReady,
 };

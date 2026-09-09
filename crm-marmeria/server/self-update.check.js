@@ -3,7 +3,13 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createServerUpdateService, createTargetPreflight, createRuntimeRunnerLauncher, resolveNpmBuildInvocation } = require('./self-update');
+const {
+  createServerUpdateService,
+  createTargetPreflight,
+  createRuntimeRunnerLauncher,
+  resolveNpmBuildInvocation,
+  normalizeRepositoryRemote,
+} = require('./self-update');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, content = '') => {
@@ -27,6 +33,18 @@ assert.deepEqual(windowsNpm.args, [
   'run',
   'build',
 ]);
+assert.equal(
+  normalizeRepositoryRemote('git@github.com:JackoPeru/Crm-Marmeria.git'),
+  'github.com/jackoperu/crm-marmeria',
+);
+assert.equal(
+  normalizeRepositoryRemote('https://github.com/JackoPeru/Crm-Marmeria.git'),
+  'github.com/jackoperu/crm-marmeria',
+);
+assert.notEqual(
+  normalizeRepositoryRemote('https://evil.example/github.com/jackoperu/crm-marmeria.git'),
+  'github.com/jackoperu/crm-marmeria',
+);
 
 const main = async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-self-update-'));
@@ -64,6 +82,8 @@ const main = async () => {
     write(path.join(publisher, 'crm-marmeria', '.gitignore'), 'server/data/*\n!server/data/.gitkeep\n');
     write(path.join(publisher, 'crm-marmeria', 'server', 'data', '.gitkeep'));
     write(path.join(publisher, 'crm-marmeria', 'README.md'), 'versione aggiornata\n');
+    write(path.join(publisher, 'crm-marmeria', 'server', 'update-runner.js'), "'use strict';\nmodule.exports = { targetRunner: true };\n");
+    write(path.join(publisher, 'crm-marmeria', 'server', 'update-progress.js'), "'use strict';\nmodule.exports = { targetProgress: true };\n");
     commit(publisher, 'update');
     git(['push'], publisher);
 
@@ -71,10 +91,12 @@ const main = async () => {
     const targetRevision = git(['rev-parse', 'HEAD'], publisher);
     const launches = [];
     let preflightCalls = 0;
+    const customDataDir = path.join(temp, 'external-runtime-data');
     const updater = createServerUpdateService({
       applicationRoot: path.join(local, 'crm-marmeria'),
       repositoryRoot: local,
       repository: remote,
+      dataDir: customDataDir,
       preflightUpdate: async ({ targetRevision: target }) => {
         preflightCalls += 1;
         assert.equal(target, targetRevision);
@@ -101,8 +123,14 @@ const main = async () => {
     assert.equal(git(['rev-parse', 'HEAD'], local), initialRevision, 'HEAD resta sulla versione attiva fino al riavvio');
     assert.equal(git(['rev-list', '--count', 'HEAD..origin/main'], local), '1');
 
-    const transactionPath = path.join(local, 'crm-marmeria', 'server', 'data', '.update-transaction.json');
-    assert.equal(fs.existsSync(transactionPath), true, 'La transazione deve essere persistita prima dello shutdown');
+    const transactionPath = path.join(customDataDir, '.update-transaction.json');
+    assert.equal(fs.existsSync(transactionPath), true, 'La transazione deve usare CRM_DATA_DIR anche fuori dall’app');
+    assert.equal(
+      fs.existsSync(path.join(local, 'crm-marmeria', 'server', 'data', '.update-transaction.json')),
+      false,
+      'La cartella dati predefinita non deve ricevere stato updater quando è configurato un dataDir esterno',
+    );
+    assert.equal(launches[0].dataDir, customDataDir);
     const transaction = JSON.parse(fs.readFileSync(transactionPath, 'utf8'));
     assert.equal(transaction.fromRevision, initialRevision);
     assert.equal(transaction.targetRevision, targetRevision);
@@ -137,26 +165,89 @@ const main = async () => {
 
     const spawned = [];
     const runtimeLauncher = createRuntimeRunnerLauncher({
+      validateRuntime: () => undefined,
+      waitForReady: async ({ child, readyPath }) => {
+        assert.equal(child.pid, 7654);
+        assert.ok(readyPath.endsWith('.runner-ready.json'));
+        return true;
+      },
       spawnRunner: (node, args, options) => {
         spawned.push({ node, args, options });
         return { pid: 7654, unref() {} };
       },
     });
-    runtimeLauncher({
+    await runtimeLauncher({
       applicationRoot: path.join(local, 'crm-marmeria'),
-      dataDir: path.join(local, 'crm-marmeria', 'server', 'data'),
+      repositoryRoot: local,
+      dataDir: customDataDir,
       transactionPath,
+      transaction: { targetRevision },
     });
-    const runtimeDir = path.join(local, 'crm-marmeria', 'server', 'data', '.update-runtime');
+    const runtimeDir = path.join(customDataDir, '.update-runtime');
     assert.equal(fs.existsSync(path.join(runtimeDir, 'update-runner.cjs')), true);
     assert.equal(fs.existsSync(path.join(runtimeDir, 'update-progress.js')), true);
+    assert.match(
+      fs.readFileSync(path.join(runtimeDir, 'update-runner.cjs'), 'utf8'),
+      /targetRunner: true/,
+      'Il supervisore deve essere preso dalla revisione target già verificata',
+    );
+    assert.match(
+      fs.readFileSync(path.join(runtimeDir, 'update-progress.js'), 'utf8'),
+      /targetProgress: true/,
+    );
     assert.equal(spawned.length, 1);
     assert.equal(spawned[0].args[0], path.join(runtimeDir, 'update-runner.cjs'));
     assert.equal(spawned[0].args[1], transactionPath);
+    assert.ok(spawned[0].args[2].endsWith('.runner-ready.json'));
     assert.equal(spawned[0].options.detached, true);
+
+    fs.rmSync(transactionPath, { force: true });
+    fs.mkdirSync(path.join(customDataDir, '.update-data-backup'), { recursive: true });
+    write(path.join(customDataDir, '.update-data-backup', 'stale.txt'), 'stale\n');
+    await updater.checkForServerUpdate();
+    assert.equal(fs.existsSync(path.join(customDataDir, '.update-data-backup')), true);
+
+    write(transactionPath, '{corrotto');
+    await assert.rejects(updater.applyServerUpdate(), (error) => error.status === 409);
+    assert.equal(
+      fs.existsSync(path.join(customDataDir, '.update-data-backup')),
+      true,
+      'Un checkpoint non deve essere eliminato se esiste una transazione illeggibile',
+    );
+    fs.rmSync(transactionPath, { force: true });
 
     write(path.join(local, 'uncommitted.txt'), 'unsafe\n');
     await assert.rejects(updater.applyServerUpdate(), (error) => error.status === 409);
+    assert.equal(
+      fs.existsSync(path.join(customDataDir, '.update-data-backup')),
+      false,
+      'Senza transazione attiva un checkpoint orfano può essere rimosso in sicurezza',
+    );
+
+    const diverged = path.join(temp, 'diverged');
+    git(['clone', '--branch', 'main', remote, diverged], temp);
+    git(['config', 'user.email', 'test@crm.local'], diverged);
+    git(['config', 'user.name', 'CRM update test'], diverged);
+    write(path.join(diverged, 'local-only.txt'), 'locale\n');
+    commit(diverged, 'local divergence');
+
+    write(path.join(publisher, 'remote-only.txt'), 'remoto\n');
+    commit(publisher, 'remote divergence');
+    git(['push'], publisher);
+
+    const divergedUpdater = createServerUpdateService({
+      applicationRoot: path.join(diverged, 'crm-marmeria'),
+      repositoryRoot: diverged,
+      repository: remote,
+      dataDir: path.join(temp, 'diverged-data'),
+      preflightUpdate: async () => {},
+      launchUpdateRunner: async () => ({ pid: 9999 }),
+    });
+    await assert.rejects(
+      divergedUpdater.checkForServerUpdate({ refresh: true }),
+      (error) => error.status === 409 && /divergente/i.test(error.message),
+      'Una cronologia non fast-forward deve essere bloccata senza modifiche',
+    );
 
     console.log('SELF_UPDATE_CHECK_OK');
   } finally {

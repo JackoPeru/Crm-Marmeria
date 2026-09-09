@@ -25,10 +25,17 @@ try {
   assert.equal(healthcheck.updateId, 'update-test-1');
 
   fs.rmSync(path.join(dataDir, '.update-transaction.json'));
+  writeUpdateProgress(dataDir, { stage: 'restarting', percent: 95, message: 'Legacy update pronto al riavvio' });
   const ready = markUpdateReady(dataDir);
   assert.equal(ready.percent, 100);
   assert.equal(ready.stage, 'ready');
   assert.equal(ready.updateId, 'update-test-1');
+
+  writeUpdateProgress(dataDir, { stage: 'error', percent: 0, message: 'Preflight fallito', error: true, updateId: 'failed-update' });
+  const preservedError = markUpdateReady(dataDir);
+  assert.equal(preservedError.stage, 'error');
+  assert.equal(preservedError.error, true);
+  assert.equal(preservedError.updateId, 'failed-update');
   console.log('UPDATE_PROGRESS_CHECK_OK');
 } finally {
   fs.rmSync(dataDir, { recursive: true, force: true });

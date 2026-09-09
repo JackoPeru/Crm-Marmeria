@@ -12,8 +12,9 @@ const forceRepair = process.argv.includes('--force');
 const updateMarker = path.join(root, '.crm-update-pending');
 const { writeUpdateProgress } = require('./server/update-progress');
 const updateInProgress = fs.existsSync(updateMarker);
+const runtimeDataDir = path.resolve(process.env.CRM_DATA_DIR || path.join(root, 'server', 'data'));
 const progress = (stage, percent, message, error = false) => {
-  if (updateInProgress) writeUpdateProgress(path.join(root, 'server', 'data'), { stage, percent, message, error });
+  if (updateInProgress) writeUpdateProgress(runtimeDataDir, { stage, percent, message, error });
 };
 
 const npmCliPath = () => {

@@ -36,6 +36,21 @@ const main = async () => {
     fs.rmSync(transactionPath);
     assert.equal(await recoverPendingUpdate({ dataDir, env: {} }), false);
 
+    for (const state of ['completed', 'rolled_back']) {
+      fs.writeFileSync(
+        transactionPath,
+        JSON.stringify({ state, applicationRoot: root, failure: state === 'rolled_back' ? 'target failed' : undefined }),
+        'utf8',
+      );
+      fs.mkdirSync(path.join(dataDir, '.update-data-backup'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.crm-update-pending'), 'pending\n', 'utf8');
+      const terminal = await recoverPendingUpdate({ dataDir, env: {}, currentParentPid: 888 });
+      assert.equal(terminal, false, `Lo stato terminale ${state} non deve rilanciare il runner`);
+      assert.equal(fs.existsSync(transactionPath), false);
+      assert.equal(fs.existsSync(path.join(dataDir, '.update-data-backup')), false);
+      assert.equal(fs.existsSync(path.join(root, '.crm-update-pending')), false);
+    }
+
     console.log('UPDATE_RECOVERY_CHECK_OK');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
