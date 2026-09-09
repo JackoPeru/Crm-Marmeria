@@ -351,10 +351,20 @@ const watchdogRestartAllowed = ({
   applicationRoot,
   dataDir,
   existsSync = fs.existsSync,
-}) => !existsSync(path.join(
-  path.resolve(dataDir || path.join(applicationRoot, 'server', 'data')),
-  '.update-transaction.json',
-));
+  readFileSync = fs.readFileSync,
+}) => {
+  const transactionPath = path.join(
+    path.resolve(dataDir || path.join(applicationRoot, 'server', 'data')),
+    '.update-transaction.json',
+  );
+  if (!existsSync(transactionPath)) return true;
+  try {
+    const transaction = JSON.parse(readFileSync(transactionPath, 'utf8'));
+    return ['completed', 'rolled_back'].includes(String(transaction?.state || ''));
+  } catch {
+    return false;
+  }
+};
 
 const watchdogEnvironment = ({
   baseEnv = process.env,
@@ -372,7 +382,7 @@ const watchdogEnvironment = ({
 
 const defaultStartWatchdog = async ({ applicationRoot, dataDir, server, revision }) => {
   if (process.platform !== 'win32') return null;
-  if (!server || typeof server.once !== 'function') {
+  if (!server || typeof server.once !== 'function' || !serverProcessIsAlive(server)) {
     throw new Error('Processo server non monitorabile dal watchdog.');
   }
   const command = process.env.ComSpec || 'cmd.exe';
@@ -473,7 +483,7 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       dataDir,
       transaction,
     });
-    if (!healthy) {
+    if (!healthy || !serverProcessIsAlive(server)) {
       const error = new Error(`Il server ${expectedVersion} non ha superato il controllo di salute.`);
       error.server = server;
       throw error;
@@ -521,8 +531,8 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
       server: targetServer,
       transaction,
     });
-    fs.rmSync(transactionPath, { force: true });
     removeDataCheckpoint(dataDir);
+    fs.rmSync(transactionPath, { force: true });
     fs.rmSync(marker, { force: true });
     writeUpdateProgress(dataDir, {
       stage: 'ready',
@@ -562,8 +572,8 @@ const runUpdateTransaction = async (transactionPath, dependencies = {}) => {
         server: rollbackServer,
         transaction,
       });
-      fs.rmSync(transactionPath, { force: true });
       removeDataCheckpoint(dataDir);
+      fs.rmSync(transactionPath, { force: true });
       fs.rmSync(marker, { force: true });
       writeUpdateProgress(dataDir, {
         stage: 'rolled_back',
