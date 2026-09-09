@@ -50,7 +50,7 @@ assert.equal(serverProcessIsAlive({ pid: 123, exitCode: null, signalCode: null }
 assert.equal(serverProcessIsAlive({ pid: 123, exitCode: 1, signalCode: null }), false);
 assert.equal(serverProcessIsAlive({ pid: undefined, exitCode: null, signalCode: null }), false);
 
-const fixture = () => {
+const fixture = ({ externalData = false } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-'));
   const repo = path.join(root, 'repo');
   const app = path.join(repo, 'crm-marmeria');
@@ -75,8 +75,8 @@ const fixture = () => {
   const target = git(['rev-parse', 'HEAD'], repo);
 
   git(['reset', '--hard', from], repo);
-  write(path.join(app, 'server', 'data', 'users.json'), 'REAL-DATA\n');
-  const data = path.join(app, 'server', 'data');
+  const data = externalData ? path.join(root, 'external-data') : path.join(app, 'server', 'data');
+  write(path.join(data, 'users.json'), 'REAL-DATA\n');
   const transaction = path.join(data, '.update-transaction.json');
   write(transaction, JSON.stringify({
     schemaVersion: 1,
@@ -173,7 +173,40 @@ const runRollback = async (failureMode) => {
   }
 };
 
+const runExternalDataSuccess = async () => {
+  const fx = fixture({ externalData: true });
+  try {
+    const starts = [];
+    const result = await runUpdateTransaction(fx.transaction, {
+      waitForParentExit: async () => {},
+      stopLegacyLauncher: async () => {},
+      startWatchdog: async ({ dataDir }) => {
+        assert.equal(dataDir, fx.data);
+      },
+      verifyApplication: async ({ dataDir }) => {
+        assert.equal(dataDir, fx.data);
+      },
+      startServer: async ({ expectedVersion, dataDir }) => {
+        starts.push({ expectedVersion, dataDir });
+        return { pid: 301, exitCode: null, signalCode: null };
+      },
+      waitForHealthy: async ({ expectedVersion, expectedRevision }) => (
+        expectedVersion === '2.0.0' && expectedRevision === fx.target
+      ),
+      stopServer: async () => {},
+    });
+    assert.equal(result.updated, true);
+    assert.equal(starts[0].dataDir, fx.data);
+    assert.equal(git(['rev-parse', 'HEAD'], fx.repo), fx.target);
+    assertData(fx);
+    assert.equal(fs.existsSync(fx.transaction), false);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+};
+
 (async () => {
+  await runExternalDataSuccess();
   await runSuccess();
   await runRollback('verify');
   await runRollback('health');
