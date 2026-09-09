@@ -119,14 +119,17 @@ const createServerUpdateService = ({
   applicationRoot = defaultApplicationRoot,
   repositoryRoot = path.resolve(applicationRoot, '..'),
   repository = REPOSITORY,
+  dataDir = process.env.CRM_DATA_DIR || path.join(applicationRoot, 'server', 'data'),
   preflightUpdate = defaultPreflightUpdate,
   launchUpdateRunner = defaultLaunchUpdateRunner,
 } = {}) => {
-  const dataDir = path.join(applicationRoot, 'server', 'data');
-  const transactionPath = path.join(dataDir, '.update-transaction.json');
-  const runtimeDataPath = path.relative(repositoryRoot, path.join(applicationRoot, 'server', 'data'))
-    .replace(/\\/g, '/')
-    .toLowerCase();
+  const resolvedDataDir = path.resolve(dataDir);
+  const transactionPath = path.join(resolvedDataDir, '.update-transaction.json');
+  const runtimeDataRelative = path.relative(repositoryRoot, resolvedDataDir);
+  const runtimeDataInsideRepository = runtimeDataRelative
+    && !path.isAbsolute(runtimeDataRelative)
+    && !runtimeDataRelative.startsWith('..');
+  const runtimeDataPath = runtimeDataRelative.replace(/\\/g, '/').toLowerCase();
   let updateInProgress = false;
 
   const command = (args, timeout = 20000, trim = true) => new Promise((resolve, reject) => {
@@ -151,7 +154,8 @@ const createServerUpdateService = ({
 
   const isRuntimeFile = (file) => {
     const normalized = file.replace(/\\/g, '/').toLowerCase();
-    return normalized === runtimeDataPath || normalized.startsWith(`${runtimeDataPath}/`);
+    return Boolean(runtimeDataInsideRepository)
+      && (normalized === runtimeDataPath || normalized.startsWith(`${runtimeDataPath}/`));
   };
   const updateError = (message, status = 503) => Object.assign(new Error(message), { status });
   const atomicJson = (target, value) => {
@@ -211,7 +215,7 @@ const createServerUpdateService = ({
       remoteRevision,
       updateAvailable: pendingCommits > 0,
       pendingCommits,
-      progress: readUpdateProgress(dataDir),
+      progress: readUpdateProgress(resolvedDataDir),
     };
   };
 
@@ -226,17 +230,17 @@ const createServerUpdateService = ({
     updateInProgress = true;
     let transactionCreated = false;
     try {
-      writeUpdateProgress(dataDir, { stage: 'checking', percent: 5, message: 'Controllo aggiornamento su GitHub...', updateId: resolvedUpdateId });
+      writeUpdateProgress(resolvedDataDir, { stage: 'checking', percent: 5, message: 'Controllo aggiornamento su GitHub...', updateId: resolvedUpdateId });
       await workingTreeIsSafe();
       const status = await checkForServerUpdate({ refresh: true });
       if (!status.updateAvailable) {
-        const progress = writeUpdateProgress(dataDir, { stage: 'ready', percent: 100, message: 'CRM già aggiornato e pronto per l’uso.' });
+        const progress = writeUpdateProgress(resolvedDataDir, { stage: 'ready', percent: 100, message: 'CRM già aggiornato e pronto per l’uso.' });
         return { ...status, progress, updated: false, restartRequired: false };
       }
 
       const fromRevision = await command(['rev-parse', 'HEAD']);
       const targetRevision = await command(['rev-parse', `origin/${status.branch}`]);
-      writeUpdateProgress(dataDir, {
+      writeUpdateProgress(resolvedDataDir, {
         stage: 'preflight',
         percent: 15,
         message: 'Verifico la nuova versione prima di fermare il server...',
@@ -265,7 +269,7 @@ const createServerUpdateService = ({
       atomicJson(transactionPath, transaction);
       transactionCreated = true;
 
-      const progress = writeUpdateProgress(dataDir, {
+      const progress = writeUpdateProgress(resolvedDataDir, {
         stage: 'restarting',
         percent: 30,
         message: 'Preflight completato. Riavvio controllato del server...',
@@ -277,7 +281,7 @@ const createServerUpdateService = ({
       launchUpdateRunner({
         applicationRoot,
         repositoryRoot,
-        dataDir,
+        dataDir: resolvedDataDir,
         transactionPath,
         transaction,
       });
@@ -297,7 +301,7 @@ const createServerUpdateService = ({
       if (transactionCreated) {
         try { fs.rmSync(transactionPath, { force: true }); } catch { /* best effort */ }
       }
-      writeUpdateProgress(dataDir, {
+      writeUpdateProgress(resolvedDataDir, {
         stage: 'error',
         percent: 0,
         message: error.message || 'Aggiornamento non riuscito.',
