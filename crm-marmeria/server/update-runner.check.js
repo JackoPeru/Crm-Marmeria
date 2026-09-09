@@ -11,6 +11,7 @@ const {
   watchdogRestartAllowed,
   watchdogEnvironment,
   defaultStopServer,
+  signalRunnerReady,
 } = require('./update-runner');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -63,6 +64,21 @@ assert.equal(watchdogEnv.CRM_UPDATE_CHILD, undefined, 'Il launcher riavviato non
 assert.equal(serverProcessIsAlive({ pid: 123, exitCode: null, signalCode: null }), true);
 assert.equal(serverProcessIsAlive({ pid: 123, exitCode: 1, signalCode: null }), false);
 assert.equal(serverProcessIsAlive({ pid: undefined, exitCode: null, signalCode: null }), false);
+
+{
+  const readyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-ready-'));
+  try {
+    const transactionPath = path.join(readyRoot, '.update-transaction.json');
+    const readyPath = path.join(readyRoot, '.runner-ready.json');
+    write(transactionPath, JSON.stringify({ state: 'prepared', fromRevision: 'a', targetRevision: 'b' }));
+    signalRunnerReady({ readyPath, transactionPath });
+    const ready = JSON.parse(fs.readFileSync(readyPath, 'utf8'));
+    assert.equal(ready.transactionPath, transactionPath);
+    assert.equal(ready.pid, process.pid);
+  } finally {
+    fs.rmSync(readyRoot, { recursive: true, force: true });
+  }
+}
 
 const fixture = ({ externalData = false } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-runner-'));
