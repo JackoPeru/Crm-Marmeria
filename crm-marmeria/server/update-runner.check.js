@@ -29,7 +29,13 @@ assert.equal(healthIsValid({
 assert.equal(watchdogRestartAllowed({
   applicationRoot: 'C:\\crm',
   existsSync: (candidate) => candidate.endsWith('.update-transaction.json'),
+  readFileSync: () => JSON.stringify({ state: 'applying' }),
 }), false, 'Il watchdog precedente non deve rilanciare il server durante un nuovo update');
+assert.equal(watchdogRestartAllowed({
+  applicationRoot: 'C:\\crm',
+  existsSync: (candidate) => candidate.endsWith('.update-transaction.json'),
+  readFileSync: () => JSON.stringify({ state: 'completed' }),
+}), true, 'Un server già verificato deve poter essere riavviato durante la finalizzazione');
 assert.equal(watchdogRestartAllowed({
   applicationRoot: 'C:\\crm',
   existsSync: () => false,
@@ -172,6 +178,7 @@ const runRollback = async (failureMode) => {
     assert.equal(fs.readFileSync(path.join(fx.app, 'README.md'), 'utf8'), 'OLD\n');
     assertData(fx);
     assert.equal(fs.existsSync(fx.transaction), false);
+    assert.equal(fs.existsSync(path.join(fx.data, '.update-data-backup')), false);
     const progress = JSON.parse(fs.readFileSync(path.join(fx.data, '.update-progress.json'), 'utf8'));
     assert.equal(progress.stage, 'rolled_back');
     assert.equal(progress.error, true);
