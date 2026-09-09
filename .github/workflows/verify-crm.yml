@@ -79,6 +79,9 @@ jobs:
       - name: Verify interrupted update recovery
         run: node server/update-recovery.check.js
 
+      - name: Verify update probation
+        run: node server/update-probation.check.js
+
       - name: Verify calendar, Word templates and quote attachments
         run: node server/features.check.js
 
