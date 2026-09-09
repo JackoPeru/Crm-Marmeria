@@ -1163,6 +1163,7 @@ async function createCrmServer(options = {}) {
   let googleDriveBackupQueue = Promise.resolve();
   const runGoogleDriveBackup = (force = false) => {
     const task = googleDriveBackupQueue.then(async () => {
+      if (updateProbationActive()) return null;
       if (!force && !googleDriveBackups.isDue()) return null;
       const status = googleDriveBackups.status();
       if (!status.enabled) throw Object.assign(new Error('Backup Google Drive disattivato'), { status: 409 });
@@ -2799,6 +2800,7 @@ async function createCrmServer(options = {}) {
 
   const ensureDailyBackup = async () => {
     try {
+      if (updateProbationActive()) return;
       if (!hasActiveAdmin()) return;
       const today = localToday();
       const alreadyCreated = db.listSnapshots().some(
