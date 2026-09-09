@@ -8,6 +8,30 @@ const { readUpdateProgress, writeUpdateProgress } = require('./update-progress')
 const REPOSITORY = 'github.com/jackoperu/crm-marmeria';
 const defaultApplicationRoot = path.resolve(__dirname, '..');
 
+const normalizeRepositoryRemote = (value) => {
+  const raw = String(value || '').trim().replace(/\\/g, '/');
+  if (!raw) return '';
+  if (/^git@[^:]+:/i.test(raw)) {
+    return raw
+      .replace(/^git@([^:]+):/i, '$1/')
+      .replace(/\.git\/?$/i, '')
+      .replace(/\/$/, '')
+      .toLowerCase();
+  }
+  try {
+    const url = new URL(raw);
+    if (url.hostname) {
+      return `${url.hostname}${url.pathname}`
+        .replace(/\.git\/?$/i, '')
+        .replace(/\/$/, '')
+        .toLowerCase();
+    }
+  } catch {
+    // Path locale o sintassi Git non-URL.
+  }
+  return raw.replace(/\.git\/?$/i, '').replace(/\/$/, '').toLowerCase();
+};
+
 const resolveNpmBuildInvocation = ({
   platform = process.platform,
   execPath = process.execPath,
@@ -209,8 +233,9 @@ const createServerUpdateService = ({
     if (!fs.existsSync(path.join(repositoryRoot, '.git'))) {
       throw updateError('Aggiornamento server disponibile solo per installazioni collegate a GitHub.');
     }
-    const remote = (await command(['remote', 'get-url', 'origin'])).toLowerCase().replace(/\.git$/, '');
-    if (!remote.includes(String(repository).toLowerCase().replace(/\.git$/, ''))) {
+    const remote = normalizeRepositoryRemote(await command(['remote', 'get-url', 'origin']));
+    const expected = normalizeRepositoryRemote(repository);
+    if (!remote || !expected || remote !== expected) {
       throw updateError('Origine Git del server non riconosciuta.');
     }
   };
@@ -366,4 +391,5 @@ module.exports = {
   createTargetPreflight,
   createRuntimeRunnerLauncher,
   resolveNpmBuildInvocation,
+  normalizeRepositoryRemote,
 };
