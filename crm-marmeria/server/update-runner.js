@@ -239,10 +239,14 @@ const watchdogRestartAllowed = ({
 const watchdogEnvironment = ({
   baseEnv = process.env,
   revision,
-}) => ({
-  ...baseEnv,
-  CRM_RUNTIME_REVISION: String(revision || ''),
-});
+}) => {
+  const env = {
+    ...baseEnv,
+    CRM_RUNTIME_REVISION: String(revision || ''),
+  };
+  delete env.CRM_UPDATE_CHILD;
+  return env;
+};
 
 const defaultStartWatchdog = async ({ applicationRoot, server, revision }) => {
   if (process.platform !== 'win32') return null;
