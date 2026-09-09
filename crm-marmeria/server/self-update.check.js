@@ -165,12 +165,18 @@ const main = async () => {
 
     const spawned = [];
     const runtimeLauncher = createRuntimeRunnerLauncher({
+      validateRuntime: () => undefined,
+      waitForReady: async ({ child, readyPath }) => {
+        assert.equal(child.pid, 7654);
+        assert.ok(readyPath.endsWith('.runner-ready.json'));
+        return true;
+      },
       spawnRunner: (node, args, options) => {
         spawned.push({ node, args, options });
         return { pid: 7654, unref() {} };
       },
     });
-    runtimeLauncher({
+    await runtimeLauncher({
       applicationRoot: path.join(local, 'crm-marmeria'),
       repositoryRoot: local,
       dataDir: customDataDir,
@@ -192,6 +198,7 @@ const main = async () => {
     assert.equal(spawned.length, 1);
     assert.equal(spawned[0].args[0], path.join(runtimeDir, 'update-runner.cjs'));
     assert.equal(spawned[0].args[1], transactionPath);
+    assert.ok(spawned[0].args[2].endsWith('.runner-ready.json'));
     assert.equal(spawned[0].options.detached, true);
 
     fs.rmSync(transactionPath, { force: true });
