@@ -112,8 +112,8 @@ const start = async () => {
   if (upgradedSnapshots > 0) {
     console.log(`Aggiornati ${upgradedSnapshots} snapshot legacy con gli account correnti`);
   }
-  startupReady = true;
   markUpdateReady(dataDir);
+  startupReady = true;
   console.log(`CRM Marmeria centrale ${tlsIdentity ? 'HTTPS' : 'HTTP'} attivo su ${instance.host}:${instance.port}`);
   console.log(`ID server: ${serverId}`);
   if (tlsIdentity) console.log(`Impronta certificato TLS: ${tlsIdentity.fingerprint}`);
