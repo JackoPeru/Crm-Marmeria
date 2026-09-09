@@ -89,10 +89,18 @@ const start = async () => {
     serverId,
     revision: String(process.env.CRM_RUNTIME_REVISION || ''),
     isStartupReady: () => startupReady,
-    isUpdateProbationActive: () => (
-      String(process.env.CRM_UPDATE_CHILD || '') === '1'
-      && require('fs').existsSync(path.join(dataDir, '.update-transaction.json'))
-    ),
+    isUpdateProbationActive: () => {
+      if (String(process.env.CRM_UPDATE_CHILD || '') !== '1') return false;
+      const transactionPath = path.join(dataDir, '.update-transaction.json');
+      const runtimeFs = require('fs');
+      if (!runtimeFs.existsSync(transactionPath)) return false;
+      try {
+        const transaction = JSON.parse(runtimeFs.readFileSync(transactionPath, 'utf8'));
+        return !['completed', 'rolled_back'].includes(String(transaction?.state || ''));
+      } catch {
+        return true;
+      }
+    },
     setupSecret,
     tls: tlsIdentity,
     webRoot,
