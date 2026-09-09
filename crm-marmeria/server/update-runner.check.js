@@ -3,7 +3,15 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runUpdateTransaction, healthIsValid, serverProcessIsAlive, watchdogRestartAllowed, watchdogEnvironment } = require('./update-runner');
+const { EventEmitter } = require('events');
+const {
+  runUpdateTransaction,
+  healthIsValid,
+  serverProcessIsAlive,
+  watchdogRestartAllowed,
+  watchdogEnvironment,
+  defaultStopServer,
+} = require('./update-runner');
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const write = (file, value) => {
@@ -226,6 +234,43 @@ const runExternalDataSuccess = async () => {
 };
 
 (async () => {
+  {
+    const child = new EventEmitter();
+    const signals = [];
+    child.pid = 901;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = (signal) => {
+      signals.push(signal);
+      setTimeout(() => {
+        child.exitCode = 0;
+        child.emit('exit', 0, null);
+      }, 5);
+      return true;
+    };
+    await defaultStopServer(child, { graceMs: 100, forceMs: 100 });
+    assert.deepEqual(signals, ['SIGTERM']);
+  }
+  {
+    const child = new EventEmitter();
+    const signals = [];
+    child.pid = 902;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = (signal) => {
+      signals.push(signal);
+      if (signal === 'SIGKILL') {
+        setTimeout(() => {
+          child.signalCode = 'SIGKILL';
+          child.emit('exit', null, 'SIGKILL');
+        }, 5);
+      }
+      return true;
+    };
+    await defaultStopServer(child, { graceMs: 10, forceMs: 100 });
+    assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+  }
+
   await runExternalDataSuccess();
   await runSuccess();
   await runRollback('verify');
