@@ -71,10 +71,12 @@ const main = async () => {
     const targetRevision = git(['rev-parse', 'HEAD'], publisher);
     const launches = [];
     let preflightCalls = 0;
+    const customDataDir = path.join(temp, 'external-runtime-data');
     const updater = createServerUpdateService({
       applicationRoot: path.join(local, 'crm-marmeria'),
       repositoryRoot: local,
       repository: remote,
+      dataDir: customDataDir,
       preflightUpdate: async ({ targetRevision: target }) => {
         preflightCalls += 1;
         assert.equal(target, targetRevision);
@@ -101,8 +103,14 @@ const main = async () => {
     assert.equal(git(['rev-parse', 'HEAD'], local), initialRevision, 'HEAD resta sulla versione attiva fino al riavvio');
     assert.equal(git(['rev-list', '--count', 'HEAD..origin/main'], local), '1');
 
-    const transactionPath = path.join(local, 'crm-marmeria', 'server', 'data', '.update-transaction.json');
-    assert.equal(fs.existsSync(transactionPath), true, 'La transazione deve essere persistita prima dello shutdown');
+    const transactionPath = path.join(customDataDir, '.update-transaction.json');
+    assert.equal(fs.existsSync(transactionPath), true, 'La transazione deve usare CRM_DATA_DIR anche fuori dall’app');
+    assert.equal(
+      fs.existsSync(path.join(local, 'crm-marmeria', 'server', 'data', '.update-transaction.json')),
+      false,
+      'La cartella dati predefinita non deve ricevere stato updater quando è configurato un dataDir esterno',
+    );
+    assert.equal(launches[0].dataDir, customDataDir);
     const transaction = JSON.parse(fs.readFileSync(transactionPath, 'utf8'));
     assert.equal(transaction.fromRevision, initialRevision);
     assert.equal(transaction.targetRevision, targetRevision);
@@ -144,10 +152,10 @@ const main = async () => {
     });
     runtimeLauncher({
       applicationRoot: path.join(local, 'crm-marmeria'),
-      dataDir: path.join(local, 'crm-marmeria', 'server', 'data'),
+      dataDir: customDataDir,
       transactionPath,
     });
-    const runtimeDir = path.join(local, 'crm-marmeria', 'server', 'data', '.update-runtime');
+    const runtimeDir = path.join(customDataDir, '.update-runtime');
     assert.equal(fs.existsSync(path.join(runtimeDir, 'update-runner.cjs')), true);
     assert.equal(fs.existsSync(path.join(runtimeDir, 'update-progress.js')), true);
     assert.equal(spawned.length, 1);
