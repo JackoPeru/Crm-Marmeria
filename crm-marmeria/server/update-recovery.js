@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeUpdateProgress } = require('./update-progress');
 
 const recoverPendingUpdate = async ({
   dataDir,
@@ -21,6 +22,29 @@ const recoverPendingUpdate = async ({
   }
 
   const transaction = JSON.parse(fs.readFileSync(transactionPath, 'utf8'));
+  if (['completed', 'rolled_back'].includes(String(transaction.state || ''))) {
+    fs.rmSync(path.join(dataDir, '.update-data-backup'), { recursive: true, force: true });
+    if (transaction.applicationRoot) {
+      fs.rmSync(path.join(path.resolve(transaction.applicationRoot), '.crm-update-pending'), { force: true });
+    }
+    fs.rmSync(transactionPath, { force: true });
+    if (transaction.state === 'rolled_back') {
+      writeUpdateProgress(dataDir, {
+        stage: 'rolled_back',
+        percent: 100,
+        message: `Aggiornamento annullato: versione precedente già ripristinata. Motivo: ${transaction.failure || 'target non valido'}`,
+        error: true,
+      });
+    } else {
+      writeUpdateProgress(dataDir, {
+        stage: 'ready',
+        percent: 100,
+        message: 'Aggiornamento completato. CRM pronto per l’uso.',
+      });
+    }
+    return false;
+  }
+
   transaction.parentPid = 0;
   transaction.launcherPid = Number(currentParentPid) || 0;
   const temporary = `${transactionPath}.${process.pid}.recovery.tmp`;
